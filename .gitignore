@@ -37,3 +37,6 @@ data/
 # Clones vendidos apenas para referência local
 deepseek-harness-container/
 deepseek-harness-docker/
+
+# BMad Method (v6): respostas pessoais por usuário — cada dev regenera com `npx bmad-method install`
+_bmad/config.user.toml

@@ -34,3 +34,28 @@ com ambiguidade; o restante é obrigatório.)
 - Respeitar gating por plano (trial/premium) e isolamento por organização em
   qualquer endpoint novo.
 - Commits no padrão conventional, em PT-BR (ex.: `feat(score): ...`).
+
+## BMad Method (v6)
+
+Camada opcional de agentes/workflows de planejamento e desenvolvimento
+(BMAD-METHOD, módulo `bmm`), instalada em `_bmad/` com skills em
+`.agents/skills/bmad-*` (descobertas nativamente pelo ZCode e por outras
+ferramentas — `/bmad-help`, `/bmad-prd`, `/bmad-architecture`,
+`/bmad-create-epics-and-stories`, `/bmad-build`, `/bmad-code-review`,
+`/bmad-agent-pm`, entre outras; catálogo completo em
+`_bmad/_config/bmad-help.csv`, e `/bmad-help` recomenda o próximo passo).
+
+- Artefatos gerados (PRD, arquitetura, epics/stories, reviews) vão para
+  `_bmad-output/` e podem ser versionados como insumo das specs.
+- `_bmad/config.toml` é gerenciado pelo instalador (`npx bmad-method install`
+  ou o CLI global `bmad`); overrides de time em `_bmad/custom/config.toml`
+  (versionado) e pessoais em `config.user.toml` (gitignored — cada dev
+  regenera rodando o instalador).
+- Skills do BMad executam scripts Python via `uv` (`_bmad/scripts/`); exigem
+  `uv` no PATH.
+
+**Governança**: a constituição continua mandando — features de produto que
+viram código seguem o fluxo Spec Kit (`specs/<NNN>-<nome>/`, seção acima).
+Use o BMad para descoberta/exploração (brainstorming, PRD, arquitetura,
+refino de ideias) e transporte as decisões para a spec Spec Kit
+correspondente.
