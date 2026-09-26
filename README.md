@@ -51,24 +51,19 @@ pytest tests/unit -q
 docker compose up -d    # pgvector + nats + worker em mock mode
 ```
 
-## Spec-Driven Development (Spec Kit)
+## Spec-Driven Development (BMad)
 
-Features de produto seguem o [GitHub Spec Kit](https://github.com/github/spec-kit):
-spec → plan → tasks → implement, com a constituição do projeto
-(`.specify/memory/constitution.md`) como conjunto de princípios.
+Features de produto seguem o [BMad Method](https://github.com/bmad-code-org/BMAD-METHOD)
+(v6, instalado em `_bmad/`), com a constituição do projeto
+(`docs/constitution.md`) como conjunto de princípios.
 
-```bash
-uv tool install specify-cli   # CLI de manutenção (uma vez por máquina)
-specify check                 # valida estrutura spec-kit do projeto
-```
+Fluxo por feature (skills no ZCode): `$bmad-brainstorming` (opcional) →
+`$bmad-spec` → `$bmad-prd` → `$bmad-architecture` / `$bmad-ux` →
+`$bmad-create-epics-and-stories` → `$bmad-build` → `$bmad-review`.
 
-Fluxo por feature (skills no ZCode): `$speckit-specify` → `$speckit-clarify` →
-`$speckit-plan` → `$speckit-tasks` → `$speckit-analyze` → `$speckit-implement` →
-`$speckit-converge`.
-
-- Specs por feature: `specs/<NNN>-<nome>/` (branch `NNN-<nome>`)
-- Skills do fluxo: `.zcode/skills/speckit-*/`
-- Templates: `.specify/templates/` · Scripts: `.specify/scripts/`
+- Spec por feature: `_bmad-output/specs/spec-<slug>/` (`SPEC.md` = contrato canônico)
+- Skills do fluxo: `.agents/skills/bmad-*/` (descobertas pelo ZCode e outras ferramentas)
+- Artefatos: `_bmad-output/` · Features 001–010 (era Spec Kit): `specs/` (histórico)
 - Instruções para agentes: `AGENTS.md`
 
 ## Build & deploy (GitOps)

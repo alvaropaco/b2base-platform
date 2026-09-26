@@ -2,22 +2,23 @@
 
 Instruções para agentes de código (ZCode e afins) neste repositório.
 
-## Spec-Driven Development (Spec Kit)
+## Spec-Driven Development (BMad)
 
-Este projeto usa o GitHub Spec Kit (estrutura em `.specify/`). Features de
-produto seguem o fluxo, nesta ordem:
+Este projeto usa o **BMad Method** (estrutura em `_bmad/`) como fluxo canônico
+de features de produto:
 
-`$speckit-specify` → `$speckit-clarify` → `$speckit-plan` → `$speckit-tasks` →
-`$speckit-analyze` → `$speckit-implement` → `$speckit-converge`
+`$bmad-brainstorming` (opcional) → `$bmad-spec` → `$bmad-prd` →
+`$bmad-architecture` / `$bmad-ux` (conforme a feature) →
+`$bmad-create-epics-and-stories` → `$bmad-build` → `$bmad-review` /
+`$bmad-code-review`
 
-(`clarify`, `analyze` e `checklist` são opcionais, mas recomendados em features
-com ambiguidade; o restante é obrigatório.)
-
-- Spec de cada feature: `specs/<NNN>-<nome>/` (branch `NNN-<nome>` criado pelo
-  script de spec-kit).
+- Spec de cada feature: `_bmad-output/specs/spec-<slug>/` (`SPEC.md` é o
+  contrato canônico + companions; derivada do `.memlog.md` da spec).
 - Constituição — princípios inegociáveis do projeto:
-  `.specify/memory/constitution.md`. Toda decisão de spec/plan valida contra ela.
-- Templates de artefatos: `.specify/templates/`.
+  `docs/constitution.md`. Toda decisão de spec/plan valida contra ela.
+- Artefatos: `_bmad-output/` (specs, `planning-artifacts/`,
+  `implementation-artifacts/`). Features 001–010 (era Spec Kit, removido em
+  2026-09-26) permanecem em `specs/` apenas como histórico.
 
 ## Regras rápidas
 
@@ -54,8 +55,7 @@ ferramentas — `/bmad-help`, `/bmad-prd`, `/bmad-architecture`,
 - Skills do BMad executam scripts Python via `uv` (`_bmad/scripts/`); exigem
   `uv` no PATH.
 
-**Governança**: a constituição continua mandando — features de produto que
-viram código seguem o fluxo Spec Kit (`specs/<NNN>-<nome>/`, seção acima).
-Use o BMad para descoberta/exploração (brainstorming, PRD, arquitetura,
-refino de ideias) e transporte as decisões para a spec Spec Kit
-correspondente.
+**Governança**: a constituição (`docs/constitution.md`) continua mandando — o
+fluxo BMad da seção acima é o caminho canônico de features; use as skills
+conforme a etapa (brainstorming e brief na descoberta, PRD/arquitetura/UX no
+plan, epics/stories e build na execução, review/retro no fechamento).

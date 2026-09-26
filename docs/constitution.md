@@ -1,17 +1,23 @@
 # b2base-platform Constitution
 
 Princípios que governam especificações, planos e implementações deste monorepo.
-Qualquer feature guiada pelo Spec Kit (`$speckit-*`) valida as decisões contra
-este documento; violações precisam de justificativa explícita na spec/plan.
+Features guiadas pelo BMad Method (`$bmad-*`) validam as decisões contra este
+documento; violações precisam de justificativa explícita na spec/plan.
+
+> **Histórico de emendas:** 1.0.0 (2026-09-16, ratificação; fluxo Spec Kit) →
+> **2.0.0 (2026-09-26): fluxo Spec Kit substituído pelo BMad Method —
+> princípio I reescrito e Fluxo de Desenvolvimento atualizado; demais
+> princípios intactos.** Migrado de `.specify/memory/constitution.md`.
 
 ## Princípios Fundamentais
 
 ### I. Especificação antes de código
-Toda feature de produto nasce como spec em `specs/<NNN>-<nome>/spec.md`, criada
-via `$speckit-specify` (branch `NNN-<nome>`). Implementação sem spec/plan
-correspondente só é aceitável para fixes triviais, chores e ajustes de
-infraestrutura documentados. A spec define o "quê" e os critérios de aceite; o
-plan define o "como".
+Toda feature de produto nasce como spec BMad em
+`_bmad-output/specs/spec-<slug>/` (via `$bmad-spec`, a partir de
+`$bmad-brainstorming` / `$bmad-product-brief` quando aplicável).
+Implementação sem spec/plan correspondente só é aceitável para fixes triviais,
+chores e ajustes de infraestrutura documentados. A spec define o "quê" e os
+critérios de aceite; o plan (PRD, arquitetura, epics/stories) define o "como".
 
 ### II. Persistência idempotente orientada a eventos
 Os serviços conversam por NATS JetStream com contratos de evento versionados
@@ -23,8 +29,7 @@ quebrada: evolução ganha sufixo `.v2` e período de convivência.
 ### III. Testes como porta de entrada (NÃO-NEGOCIÁVEL)
 Feature nova ou comportamento alterado exige teste antes do merge:
 `pnpm test` (`node --test test/*.test.js`) na plataforma, `pytest` +
-`make lint typecheck test` nos serviços Python. Nas tarefas geradas pelo
-`$speckit-tasks`, os testes vêm antes das tarefas de implementação.
+`make lint typecheck test` nos serviços Python.
 
 ### IV. Multi-tenancy e gating por plano
 Dados e ações são isolados por organização (contexto via `org-context.js`).
@@ -61,14 +66,19 @@ estruturados suficientes para diagnóstico sem acesso a dados de cliente.
 
 ## Fluxo de Desenvolvimento
 
-1. Feature: `$speckit-specify` → `$speckit-clarify` (opcional, recomendado) →
-   `$speckit-plan` → `$speckit-checklist` (opcional) → `$speckit-tasks` →
-   `$speckit-analyze` (opcional) → `$speckit-implement` → `$speckit-converge`.
-2. Branch `NNN-<nome>` por feature; commits no padrão conventional (PT-BR),
+1. Feature: `$bmad-brainstorming` (opcional) → `$bmad-spec` → `$bmad-prd` →
+   `$bmad-architecture` / `$bmad-ux` (conforme a feature) →
+   `$bmad-create-epics-and-stories` → `$bmad-build` → `$bmad-review` /
+   `$bmad-code-review`. Catálogo e orientação: `$bmad-help`.
+2. Artefatos vivem em `_bmad-output/`: specs (`specs/spec-<slug>/`),
+   planejamento (`planning-artifacts/`), implementação
+   (`implementation-artifacts/`). Features 001–010 (era Spec Kit) permanecem
+   em `specs/` como histórico.
+3. Branch por feature; commits no padrão conventional (PT-BR),
    ex.: `feat(score): ...`, `fix(enrichment): ...`.
-3. Quality gates antes do merge: `pnpm test`, build do web, lint/typecheck/test
+4. Quality gates antes do merge: `pnpm test`, build do web, lint/typecheck/test
    dos serviços afetados.
-4. Merge em `main` dispara CI por paths e deploy automático da plataforma;
+5. Merge em `main` dispara CI por paths e deploy automático da plataforma;
    serviços Python publicam por tags (`v*`, `enrichment-v*`).
 
 ## Governança
@@ -78,7 +88,7 @@ estruturados suficientes para diagnóstico sem acesso a dados de cliente.
   justificativa na própria spec; complexidade sem justificativa é recusada em review.
 - Emendas seguem versionamento MAJOR.MINOR.PATCH: MAJOR remove ou reescreve um
   princípio, MINOR adiciona princípio/seção, PATCH esclarece redação. A emenda
-  é documentada no PR correspondente com plano de migração do que já existe.
+  é documentada no commit correspondente com plano de migração do que já existe.
 - Orientação de runtime para agentes: `AGENTS.md` na raiz.
 
-**Version**: 1.0.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-09-16
+**Version**: 2.0.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-09-26
