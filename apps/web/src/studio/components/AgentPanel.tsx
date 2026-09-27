@@ -87,8 +87,8 @@ export function AgentPanel() {
     try {
       const items = Object.entries(decisions).map(([key, decision]) => ({ key, decision }));
       const data = await api<{ campaignId?: string }>(
-        `/agent/proposals/${proposal.id}/decide`,
         'POST',
+        `/agent/proposals/${proposal.id}/decide`,
         { items, confirm: true }
       );
       setNotice(
