@@ -159,7 +159,7 @@ test('audiência manual: lead em supressão é excluído com motivo e não pode 
   }
 });
 
-test('approve com compliance block (e-mail sem descadastro) → 409 COMPLIANCE_BLOCKED', async () => {
+test('approve com conteúdo sem descadastro no corpo → aprovado (garantia vive no compile — FR-37/AD-2)', async () => {
   const { server, prisma, api, createCampaign } = await startServer();
   try {
     const campaign = await createCampaign(['email']);
@@ -176,10 +176,9 @@ test('approve com compliance block (e-mail sem descadastro) → 409 COMPLIANCE_B
     });
 
     await api('POST', `/campaigns/${campaign.id}/submit-review`);
-    const { res, body } = await api('POST', `/campaigns/${campaign.id}/approve`);
-    assert.equal(res.status, 409);
-    assert.equal(body.error, 'COMPLIANCE_BLOCKED');
-    assert.ok((await api('GET', `/campaigns/${campaign.id}`)).body.data.status !== 'approved');
+    const { res } = await api('POST', `/campaigns/${campaign.id}/approve`);
+    assert.equal(res.status, 200);
+    assert.equal((await api('GET', `/campaigns/${campaign.id}`)).body.data.status, 'approved');
   } finally {
     server.close();
   }
