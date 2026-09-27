@@ -38,10 +38,13 @@ test('compliance completo: LGPD/consentimento, spam e bloqueio real (FR-073)', a
 
   // Campanha com conteúdo válido e descadastro — nível ok/attention.
   assert.ok(['ok', 'attention'].includes(review.level));
-  // E-mail sem descadastro → BLOQUEIO.
+  // E-mail sem descadastro NO CONTEÚDO → não bloqueia mais: a garantia vive
+  // no compile (FR-37/AD-2 — headers List-Unsubscribe injetados em todo e-mail).
   prisma.studioContent.rows[0].emailDoc = { blocks: [{ type: 'text', text: 'Compre agora sem compromisso!!!' }] };
   const hard = await compliance.runFullCompliance(prisma, prisma.studioCampaign.rows[0]);
-  assert.equal(hard.level, 'block', 'spam + sem descadastro → bloqueio');
+  const desc = hard.items.find((i) => i.check === 'descadastro_email');
+  assert.equal(desc.level, 'ok', 'descadastro é garantido no compile (FR-37) — nunca bloqueia');
+  assert.notEqual(hard.level, 'block', 'ausência no conteúdo não é mais bloqueio');
 });
 
 test('brand voice aprendida de samples e verificador de consistência aponta desvio', async () => {

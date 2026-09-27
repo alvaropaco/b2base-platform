@@ -151,15 +151,18 @@ async function runPreApprovalChecks(prisma, campaign) {
       }
     }
 
-    // 3) E-mail precisa de mecanismo de descadastro (FR-073/US12-AC3).
-    if (content.channel === 'email' && !hasUnsubscribeHint(content)) {
-      items.push({
-        check: 'descadastro_email',
-        level: 'block',
-        detail: 'E-mail sem mecanismo de descadastro (LGPD). Inclua um bloco de descadastro.',
-      });
-      raise('block');
-    }
+    // 3) Mecanismo de descadastro (FR-073) — a garantia vive no COMPILE
+    //    (FR-37/AD-2): o bridge injeta headers List-Unsubscribe one-click +
+    //    rodapé em TODO e-mail. Menção no conteúdo é sinal positivo; ausência
+    //    não bloqueia (seria condição impossível pós-FR-37).
+    const mencionaDescadastro = hasUnsubscribeHint(content);
+    items.push({
+      check: 'descadastro_email',
+      level: 'ok',
+      detail: mencionaDescadastro
+        ? 'Descadastro mencionado no conteúdo + headers List-Unsubscribe garantidos no compile (FR-37).'
+        : 'Descadastro garantido no compile: headers List-Unsubscribe one-click + rodapé injetados em todo e-mail (FR-37).',
+    });
   }
 
   return { level, items };
