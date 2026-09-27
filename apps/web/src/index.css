@@ -224,8 +224,29 @@
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(1100px 520px at 50% -12%, rgba(139, 92, 246, 0.28), transparent 68%),
-    radial-gradient(700px 380px at 85% 110%, rgba(217, 70, 239, 0.1), transparent 70%);
+    radial-gradient(1100px 520px at 50% -12%, rgba(139, 92, 246, 0.3), transparent 68%),
+    radial-gradient(820px 420px at 88% 108%, rgba(217, 70, 239, 0.12), transparent 70%),
+    radial-gradient(680px 420px at 6% 96%, rgba(99, 102, 241, 0.14), transparent 72%),
+    radial-gradient(420px 220px at 78% 22%, rgba(192, 132, 252, 0.05), transparent 75%);
+}
+/* Malha sutil + grão: profundidade sem poluir (fade mascarado no topo). */
+.cockpit-bloom::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(1200px 640px at 50% 8%, black, transparent 78%);
+  -webkit-mask-image: radial-gradient(1200px 640px at 50% 8%, black, transparent 78%);
+}
+.cockpit-bloom::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.5;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
 }
 /* Superfície glass do Cockpit (cartões, composer, sidebar). */
 .cockpit-glass {
@@ -272,10 +293,21 @@
   box-shadow: 0 4px 18px rgba(139, 92, 246, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 .cockpit-send:active { transform: scale(0.96); }
-/* Composer em foco: borda violeta + halo sutil (afordância de digitação). */
+/* Composer: glow de borda em repouso (presença) e intenso em foco. */
+.cockpit-composer {
+  border-color: rgba(168, 85, 247, 0.22);
+  box-shadow:
+    0 0 0 1px rgba(168, 85, 247, 0.1),
+    0 6px 26px rgba(139, 92, 246, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
 .cockpit-composer:focus-within {
-  border-color: rgba(168, 85, 247, 0.55);
-  box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.35), 0 8px 34px rgba(139, 92, 246, 0.18);
+  border-color: rgba(168, 85, 247, 0.6);
+  box-shadow:
+    0 0 0 1px rgba(168, 85, 247, 0.4),
+    0 0 22px rgba(139, 92, 246, 0.28),
+    0 10px 40px rgba(139, 92, 246, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
 /* Rail: máscara de fade na borda direita — indica scroll sem cortar seco. */
 .cockpit-rail-scroll {

@@ -38,6 +38,9 @@ function actionParams(action) {
       return { materialId: action.materialId || null };
     case 'generate_content':
       return { tones: action.tones || null };
+    case 'show_balance':
+    case 'start_whatsapp_pairing':
+      return {};
     case 'set_schedule':
       return {
         mode: action.mode || null,
@@ -69,7 +72,7 @@ async function currentExtras(prisma, campaign) {
   const materials = await prisma.studioMaterial.findMany({
     where: { orgId: campaign.orgId },
   });
-  return {
+  const extras = {
     audienceCount: snapshotRows[0]?.includedCount ?? null,
     contentSummary: contents.map((c) => ({ channel: c.channel, tone: c.tone, subject: c.subject || c.whatsappText?.slice(0, 60) || null })),
     materials: materials.slice(0, 5).map((m) => ({
@@ -77,6 +80,75 @@ async function currentExtras(prisma, campaign) {
       product: m.extraction?.product || null,
     })),
   };
+
+  // Canais para o agente explicar limites/bloqueios com passo a passo:
+  // saldo por canal + status da sessão WhatsApp + domínio do e-mail.
+  try {
+    const reputation = require('./reputation');
+    const channels = {};
+    for (const b of await reputation.listBalances(prisma, campaign.orgId)) {
+      if (b) channels[b.channel] = { disponivel: b.available, piso: b.floor, teto: b.ceiling, dominio: b.domainAuthStatus };
+    }
+    let whatsapp = 'nao_conectado';
+    try {
+      const account = await prisma.whatsAppAccount.findFirst({ where: { orgId: campaign.orgId } });
+      if (account) whatsapp = account.status;
+    } catch (_e) { /* modelo ausente em alguns harnesses */ }
+    extras.canais = { reputacao: channels, whatsapp };
+  } catch (_e) { /* sem reputação configurada */ }
+
+  // Respostas quentes recentes: o agente cita QUEM respondeu e rascunha a
+  // próxima mensagem — o chip "mostre e responda" vira ação real, não promessa.
+  try {
+    const rows = await prisma.studioReplyClassification.findMany({ where: { orgId: campaign.orgId }, take: 200 });
+    const hotLabels = ['interested', 'meeting_request'];
+    const cutoff = Date.now() - 7 * 86_400_000;
+    const hot = rows
+      .filter((r) => hotLabels.includes(r.label) && Number(r.confidence) >= 0.7 && new Date(r.createdAt).getTime() >= cutoff)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 5);
+    if (hot.length > 0) {
+      const prospectIds = [...new Set(hot.map((r) => r.prospectId))];
+      const prospects = await prisma.prospect.findMany({ where: { id: { in: prospectIds } } });
+      const byId = new Map(prospects.map((p) => [p.id, p]));
+      extras.respostasQuentes = hot.map((r) => {
+        const p = byId.get(r.prospectId);
+        return {
+          empresa: p?.companyName || 'lead',
+          contato: p?.firstName || p?.email || null,
+          canal: r.channel,
+          interesse: r.label,
+          confianca: Math.round(Number(r.confidence) * 100) + '%',
+          recebidaEm: r.createdAt,
+        };
+      });
+    }
+  } catch (_e) { /* sem classificações no workspace */ }
+
+  // Marca: diretriz de voz + assets de contexto (txt/md lidos, limitados).
+  try {
+    const rows = await prisma.studioBrandProfile.findMany({ where: { orgId: campaign.orgId } });
+    const profile = rows[0];
+    if (profile) {
+      const assets = (profile.kit?.assets || []).filter(Boolean);
+      extras.marca = {
+        tomDeVoz: profile.voice?.toneNotes || null,
+        assets: assets.map((a) => ({ tipo: a.kind, nome: a.originalName || a.fileName })),
+      };
+      const storage = require('./storage');
+      const contextText = assets
+        .filter((a) => a.kind === 'context' && /\.(txt|md)$/i.test(String(a.fileName)))
+        .slice(0, 3)
+        .map((a) => {
+          try { return storage.readBuffer(a.fileName).toString('utf8').slice(0, 1500); } catch (_e) { return ''; }
+        })
+        .filter(Boolean)
+        .join('\n---\n');
+      if (contextText) extras.marca.contexto = contextText.slice(0, 4000);
+    }
+  } catch (_e) { /* sem marca configurada */ }
+
+  return extras;
 }
 
 function registerChatRoutes(router, context) {
@@ -247,18 +319,134 @@ function registerChatRoutes(router, context) {
         };
       }
 
+      case 'show_balance':
+        return await buildBalanceCard(prisma, orgId);
+
+      case 'start_whatsapp_pairing': {
+        // Pareamento WAHA dentro do chat: cria/retoma a sessão do workspace e
+        // devolve o QR como card — o usuário nunca sai da conversa.
+        const waha = require('../waha-provider');
+        if (!waha.isConfigured()) {
+          return {
+            type: 'whatsapp_qr',
+            label: 'WhatsApp indisponível neste ambiente',
+            detail: 'O servidor WhatsApp (WAHA) não está configurado. Peça ao administrador para configurar WHATSAPP_WAHA_URL antes de parear.',
+            status: 'unavailable',
+            qrCode: null,
+          };
+        }
+        const provider = waha.WAHAWhatsAppProvider;
+        const sessionName = waha.deterministicSessionName(orgId);
+        let account = await prisma.whatsAppAccount.findUnique({ where: { sessionName } });
+        if (!account) {
+          account = await prisma.whatsAppAccount.create({
+            data: { orgId, userId, provider: 'waha', sessionName, status: 'CREATED' },
+          });
+        }
+        try { await provider.createSession(sessionName); } catch (_e) { /* idempotente */ }
+        let currentStatus = null;
+        try { currentStatus = (await provider.getSessionStatus(sessionName))?.status; } catch (_e) { /* sessão subindo */ }
+        if (currentStatus === 'FAILED') {
+          try { await provider.restartSession(sessionName); } catch (_e) { /* o wait abaixo decide */ }
+        } else if (!currentStatus || ['STOPPED', 'DISCONNECTED'].includes(currentStatus)) {
+          await provider.startSession(sessionName);
+        }
+        await prisma.whatsAppAccount.update({ where: { sessionName }, data: { status: 'STARTING' } }).catch(() => {});
+        const { connected, qr } = await waitForChatQr(provider, sessionName, 25_000);
+        if (connected) {
+          await prisma.whatsAppAccount.update({ where: { sessionName }, data: { status: 'CONNECTED' } }).catch(() => {});
+          return {
+            type: 'whatsapp_qr',
+            label: 'WhatsApp já está conectado',
+            detail: 'A sessão deste workspace está ativa — pode disparar por WhatsApp assim que o saldo permitir.',
+            status: 'connected',
+            qrCode: null,
+          };
+        }
+        if (qr && qr.qrCode) {
+          await prisma.whatsAppAccount.update({ where: { sessionName }, data: { status: 'QR_REQUIRED' } }).catch(() => {});
+          return {
+            type: 'whatsapp_qr',
+            label: 'Pareamento do WhatsApp — escaneie o QR',
+            detail: '1. Abra o WhatsApp no celular · 2. Toque em Aparelhos conectados → Conectar aparelho · 3. Aponte a câmera para o QR abaixo. Ele expira em ~1 minuto — se expirar, me peça "mostrar o QR de novo".',
+            status: 'qr_required',
+            qrCode: qr.qrCode,
+          };
+        }
+        return {
+          type: 'whatsapp_qr',
+          label: 'Sessão do WhatsApp subindo…',
+          detail: 'A sessão está iniciando no servidor. Me peça "mostrar o QR do WhatsApp" novamente em alguns segundos.',
+          status: 'starting',
+          qrCode: null,
+        };
+      }
+
       case 'none':
       default:
         return null;
     }
   }
 
-  function criteriaDescription(criteria) {
-    return (criteria?.groups || [])
-      .flatMap((g) => g.conditions || [])
-      .map((c) => `${c.field} ${c.op} ${Array.isArray(c.value) ? c.value.join('/') : c.value}`)
-      .join(' E ');
+function criteriaDescription(criteria) {
+  return (criteria?.groups || [])
+    .flatMap((g) => g.conditions || [])
+    .map((c) => `${c.field} ${c.op} ${Array.isArray(c.value) ? c.value.join('/') : c.value}`)
+    .join(' E ');
   }
+
+/**
+ * Card do Orçamento de Reputação em linguagem clara (FR-20): status por canal
+ * (PRONTO / PENDENTE / BLOQUEADO) + passo a passo numerado de desbloqueio.
+ */
+async function buildBalanceCard(prisma, orgId) {
+  const reputation = require('./reputation');
+  const balances = (await reputation.listBalances(prisma, orgId)).filter(Boolean);
+  const lines = [];
+  for (const b of balances) {
+    const channelLabel = b.channel === 'email' ? 'E-mail' : 'WhatsApp';
+    const pct = b.ceiling ? Math.round((b.available / b.ceiling) * 100) : null;
+    const blocked = b.available <= b.floor;
+    const pendingDomain = b.channel === 'email' && b.domainAuthStatus !== 'verified';
+    const status = blocked ? 'BLOQUEADO' : pendingDomain ? 'PENDENTE — domínio não autenticado' : 'PRONTO';
+    const steps = [];
+    if (pendingDomain) {
+      steps.push('Autenticar o domínio: publicar SPF, DKIM e DMARC no DNS (me peça "listar os registros DNS" que eu mostro cada um)');
+    }
+    if (blocked) {
+      steps.push(`Recarregar o saldo: há ${b.available} disponíveis e o piso é ${b.floor} — disparos param abaixo do piso`);
+    }
+    if (b.channel === 'whatsapp') {
+      steps.push('Manter o WhatsApp pareado — se a sessão cair, me peça "mostrar o QR do WhatsApp"');
+    }
+    if (steps.length === 0) steps.push('Nada a fazer — canal saudável e autorizado a disparar');
+    lines.push(
+      `**${channelLabel} — ${status}**: ${b.available} envios disponíveis de ${b.ceiling}${pct != null ? ` (${pct}%)` : ''}. ` +
+        steps.map((s, i) => `${i + 1}. ${s}`).join(' ')
+    );
+  }
+  if (lines.length === 0) lines.push('Nenhuma conta de canal configurada ainda.');
+  return { type: 'balance', label: 'Orçamento de Reputação — como liberar seus disparos', detail: lines.join('\n') };
+}
+
+/**
+ * Espera o QR utilizável (espelha waitForWhatsAppQr do server-prod, com janela
+ * menor para caber num turno de chat sem travar o stream).
+ */
+async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    let status = null;
+    try { status = (await provider.getSessionStatus(sessionName))?.status; } catch (_e) { /* sessão pode não existir ainda */ }
+    if (status === 'WORKING' || status === 'CONNECTED') return { connected: true, qr: null };
+    if (status === 'SCAN_QR_CODE' || status === 'QRCODE') {
+      const qr = await provider.getQRCode(sessionName).catch(() => null);
+      if (qr && qr.qrCode) return { connected: false, qr };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  return { connected: false, qr: null };
+}
 
   // Rótulos das etapas em pt-BR — exibidos ao vivo no chat (status SSE).
   const ACTION_LABELS = {
@@ -268,6 +456,8 @@ function registerChatRoutes(router, context) {
     confirm_material: 'Confirmando extração…',
     generate_content: 'Gerando conteúdo…',
     set_schedule: 'Configurando agendamento…',
+    show_balance: 'Consultando o Orçamento de Reputação…',
+    start_whatsapp_pairing: 'Preparando o pareamento do WhatsApp…',
   };
 
   /**

@@ -44,13 +44,17 @@ async function hotReplies(prisma, orgId, now) {
       hoursSince(r.createdAt, now) <= HOT_MAX_AGE_HOURS
   );
   if (hot.length === 0) return null;
+  const n = hot.length;
+  const dias = Math.round(HOT_MAX_AGE_HOURS / 24);
   return {
     kind: 'hot_replies',
     priority: 1,
-    count: hot.length,
-    label: `${hot.length} resposta${hot.length > 1 ? 's' : ''} quente${hot.length > 1 ? 's' : ''} esperando tratamento`,
-    motivo: `Classificação de respostas: ${hot.length} mensagem(ns) com interesse claro nas últimas ${Math.round(HOT_MAX_AGE_HOURS / 24)} dia(s).`,
-    prompt: 'Monte uma campanha de reengajamento para os leads que já mostraram interesse nos meus e-mails.',
+    count: n,
+    // Linguagem de gente (não de funil): diz O QUE aconteceu, O QUE fazer e
+    // abre o diálogo — o box críptico "esperando tratamento" morreu.
+    label: n === 1 ? '1 pessoa respondeu com interesse — quer que eu mostre e responda?' : `${n} pessoas responderam com interesse — quer que eu mostre e responda?`,
+    motivo: `${n} resposta${n > 1 ? 's' : ''} com interesse claro (confiança alta) nas últimas ${dias} dia(s). Eu listo quem mandou, o que cada uma disse e rascunho a próxima resposta para você só revisar.`,
+    prompt: `Mostre as ${n} resposta${n > 1 ? 's' : ''} com interesse que ${n > 1 ? 'chegaram' : 'chegou'}: quem mandou, o que disse, e rascunhe a próxima resposta de cada uma para eu revisar antes de enviar.`,
   };
 }
 

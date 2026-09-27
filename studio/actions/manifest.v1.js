@@ -30,6 +30,8 @@ const ACTIONS_V1 = {
   confirm_material: { version: 1, idempotency: 'params', description: 'Confirma a extração do material' },
   generate_content: { version: 1, idempotency: 'params', description: 'Gera pacote de conteúdo (create-style)' },
   set_schedule: { version: 1, idempotency: 'none', description: 'Configura agenda/ritmo e transita para scheduled' },
+  show_balance: { version: 1, idempotency: 'none', description: 'Mostra o Orçamento de Reputação por canal com passo a passo de desbloqueio' },
+  start_whatsapp_pairing: { version: 1, idempotency: 'none', description: 'Inicia/retoma o pareamento do WhatsApp (WAHA) e devolve o QR no chat' },
 };
 
 /**

@@ -20,12 +20,14 @@ import {
   ArrowUp,
   Bell,
   Bot,
+  ChevronLeft,
   Mail,
   Megaphone,
   Menu,
   MessageCircle,
   MessageSquare,
   Palette,
+  Play,
   Plus,
   ShieldCheck,
   Sparkles,
@@ -174,6 +176,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
   const openSaldo = async () => {
     setSaldoOpen((v) => !v);
     setWakesOpen(false);
+    setNavOpen(false); // mobile: painel atrás do overlay ficaria inalcançável
     if (!saldoOpen) {
       try {
         const data = await fetchReputation();
@@ -240,6 +243,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
   };
 
   const railCurrent = campaignDetail ? currentRailStep(campaignDetail) : null;
+  const [lastCampaign, setLastCampaign] = useState<{ id: string; name: string } | null>(null);
   const railRef = useRef<HTMLOListElement>(null);
   // Rail no mobile: o passo CORRENTE é o que importa — centraliza-o na faixa
   // scrollável em vez de deixar cortado sob a máscara de fade.
@@ -265,6 +269,23 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
     setSaldoOpen(false);
     setWakesOpen(false);
   };
+
+  /** "Salvar rascunho e sair": volta ao briefing; a campanha continua salva. */
+  const exitToBriefing = useCallback(() => {
+    setHome((prev) => {
+      if (prev?.activeCampaignId) {
+        setLastCampaign({ id: prev.activeCampaignId, name: prev.activeCampaignName || 'Campanha em andamento' });
+      }
+      return prev ? { ...prev, activeCampaignId: null, activeCampaignName: null } : prev;
+    });
+    setPane('home');
+  }, []);
+
+  const resumeCampaign = useCallback((id: string, name?: string) => {
+    setLastCampaign(null);
+    setHome((prev) => (prev ? { ...prev, activeCampaignId: id, activeCampaignName: name || null } : prev));
+    setPane('home');
+  }, []);
 
   const navItems: Array<{ key: typeof pane; label: string; icon: typeof Bot }> = [
     { key: 'home', label: 'Cockpit', icon: MessageCircle },
@@ -443,12 +464,24 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
           >
             <Menu className="h-4 w-4" />
           </button>
-          <div className="cockpit-glass flex min-w-0 items-center gap-2 rounded-full px-3 py-1.5 text-xs">
-            <Sparkles className="h-3.5 w-3.5 shrink-0 text-violet-300" />
-            <span className="truncate font-medium text-foreground">
-              {pane === 'home' ? home?.activeCampaignName || 'Briefing do Mordomo' : navItems.find((n) => n.key === pane)?.label}
-            </span>
-          </div>
+          {pane === 'home' && hasCampaign ? (
+            <button
+              type="button"
+              onClick={exitToBriefing}
+              className="cockpit-glass flex min-w-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs transition-colors hover:border-violet-400/30"
+              title="Voltar ao briefing — a campanha fica salva como rascunho"
+            >
+              <ChevronLeft className="h-3.5 w-3.5 shrink-0 text-violet-300" />
+              <span className="truncate font-medium text-foreground">{home?.activeCampaignName || 'Campanha'}</span>
+            </button>
+          ) : (
+            <div className="cockpit-glass flex min-w-0 items-center gap-2 rounded-full px-3 py-1.5 text-xs">
+              <Sparkles className="h-3.5 w-3.5 shrink-0 text-violet-300" />
+              <span className="truncate font-medium text-foreground">
+                {pane === 'home' ? 'Briefing do Mordomo' : navItems.find((n) => n.key === pane)?.label}
+              </span>
+            </div>
+          )}
           <p className="ml-1 hidden truncate text-xs text-muted-foreground sm:block">{userName || 'sua operação'}</p>
           <div className="ml-auto flex items-center gap-1.5 text-xs">
             <button
@@ -540,27 +573,56 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
           </nav>
         )}
 
-        {/* Painéis secundários (saldo / despertares) — superfícies sob demanda. */}
+        {/* Painéis secundários (saldo / despertares) — superfícies sob demanda.
+            Saldo em linguagem clara: status por canal + PASSO A PASSO para
+            liberar disparos (o box críptico "unidades" morreu). */}
         {saldoOpen && (
           <aside id="cockpit-saldo" className="cockpit-rise border-b border-white/[0.07] bg-black/20 px-4 py-3 text-xs">
-            <h2 className="mb-2 font-semibold">Saldo por canal</h2>
-            <div className="space-y-1.5">
-              {balances.map((b) => (
-                <p key={b.channel} className="flex items-center gap-2">
-                  <span
-                    aria-hidden="true"
-                    className={`inline-block h-2 w-2 rounded-full ${
-                      channelHealthy(b) ? 'bg-emerald-400' : 'bg-rose-400'
-                    }`}
-                  />
-                  <span>
-                    <strong className="capitalize">{b.channel === 'email' ? 'E-mail' : 'WhatsApp'}</strong>: {b.available}{' '}
-                    unidades livres de {b.ceiling} · domínio{' '}
-                    {b.domainAuthStatus === 'verified' ? 'verificado' : 'não verificado'}
-                    {!channelHealthy(b) && <span className="text-rose-300"> — abaixo do piso ({b.floor})</span>}
-                  </span>
-                </p>
-              ))}
+            <h2 className="mb-2 font-semibold">Limites de envio — como liberar seus disparos</h2>
+            <div className="space-y-3">
+              {balances.map((b) => {
+                const label = b.channel === 'email' ? 'E-mail' : 'WhatsApp';
+                const blocked = !channelHealthy(b);
+                const pendingDomain = b.channel === 'email' && b.domainAuthStatus !== 'verified';
+                const state = blocked ? 'BLOQUEADO' : pendingDomain ? 'PENDENTE' : 'PRONTO';
+                const steps: string[] = [];
+                if (pendingDomain) {
+                  steps.push('Autenticar seu domínio: publicar SPF, DKIM e DMARC no DNS — sem isso, e-mail não sai (peça no chat: "listar os registros DNS").');
+                }
+                if (blocked) {
+                  steps.push(`Recarregar o saldo: há ${b.available} disponíveis e o piso é ${b.floor} — abaixo do piso os disparos param para proteger sua reputação.`);
+                }
+                if (b.channel === 'whatsapp') {
+                  steps.push('Manter o WhatsApp conectado — se cair, peça no chat: "mostrar o QR do WhatsApp".');
+                }
+                if (steps.length === 0) steps.push('Nada a fazer — canal saudável e autorizado a disparar.');
+                return (
+                  <div key={b.channel} className="cockpit-glass rounded-xl p-3">
+                    <p className="flex items-center gap-2">
+                      <span
+                        aria-hidden="true"
+                        className={`inline-block h-2 w-2 rounded-full ${blocked ? 'bg-rose-400' : pendingDomain ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                      />
+                      <strong className="text-foreground">{label}</strong>
+                      <span
+                        className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                          blocked ? 'bg-rose-500/15 text-rose-300' : pendingDomain ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/15 text-emerald-300'
+                        }`}
+                      >
+                        {state}
+                      </span>
+                      <span className="ml-auto text-muted-foreground">
+                        {b.available} envios disponíveis de {b.ceiling}
+                      </span>
+                    </p>
+                    <ol className="mt-1.5 list-decimal space-y-1 pl-9 text-muted-foreground [&_li::marker]:text-violet-300">
+                      {steps.map((s, i) => (
+                        <li key={i} className="leading-relaxed">{s}</li>
+                      ))}
+                    </ol>
+                  </div>
+                );
+              })}
             </div>
             <h3 className="mb-1 mt-3 font-semibold">Movimentos recentes</h3>
             <ul className="space-y-1">
@@ -686,6 +748,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
             <CampaignChat
               campaignId={home.activeCampaignId}
               suggestions={home.chips}
+              onExitToHome={exitToBriefing}
               onStateChange={() => {
                 void loadHome();
                 if (home.activeCampaignId) {
@@ -708,6 +771,18 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                       Converse com o piloto: ele monta audiência, escreve, agenda e só dispara com o Certificado verde.
                     </p>
                   </div>
+
+                  {/* Rascunho guardado: retomar é um clique (multi-campanhas). */}
+                  {lastCampaign && (
+                    <button
+                      type="button"
+                      onClick={() => resumeCampaign(lastCampaign.id, lastCampaign.name)}
+                      className="cockpit-glass flex items-center gap-2 rounded-full px-4 py-2.5 text-sm text-foreground transition-colors hover:border-violet-400/30"
+                    >
+                      <Play className="h-4 w-4 text-violet-300" />
+                      Continuar “{lastCampaign.name}”
+                    </button>
+                  )}
 
                   {/* Composer da abertura (ref: cartão de entrada do Zyricon). */}
                   <form

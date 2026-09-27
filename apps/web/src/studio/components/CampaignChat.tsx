@@ -20,6 +20,9 @@ interface ChatCard {
   replayed?: boolean;
   /** FR-26: campos de dados citados (ex. "Founders: José e Maria · CNAE 6201"). */
   sources?: string[];
+  /** Card de pareamento WhatsApp: QR como data-url + estado da sessão. */
+  qrCode?: string;
+  status?: string;
 }
 
 interface ChatMessage {
@@ -59,6 +62,8 @@ export interface CampaignChatProps {
   suggestions?: CockpitChip[];
   onStateChange?: () => void;
   onApproved?: () => void;
+  /** "Salvar rascunho e sair": volta ao briefing mantendo a campanha em draft. */
+  onExitToHome?: () => void;
 }
 
 /** Próximas ações válidas da máquina de estados (FR-3/FR-8) → chips. */
@@ -74,7 +79,7 @@ function nextStepChips(state: CampaignState | null): Array<{ key: string; label:
   return chips.slice(0, 3);
 }
 
-export function CampaignChat({ campaignId, suggestions, onStateChange, onApproved }: CampaignChatProps) {
+export function CampaignChat({ campaignId, suggestions, onStateChange, onApproved, onExitToHome }: CampaignChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [state, setState] = useState<CampaignState | null>(null);
   const [input, setInput] = useState('');
@@ -247,6 +252,67 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
   const stepChips = nextStepChips(state);
   const chips = (suggestions && suggestions.length > 0 ? suggestions : stepChips).slice(0, 3);
 
+  /** Card do thread: glass padrão; QR do WhatsApp e saldo têm cor própria. */
+  const renderCard = (card: ChatCard, i: number) => {
+    if (card.type === 'whatsapp_qr') {
+      return (
+        <div key={i} className="cockpit-glass rounded-xl border-emerald-400/20 p-3 text-xs">
+          <p className="font-semibold text-foreground">{card.label}</p>
+          {card.detail && <p className="mt-0.5 leading-relaxed text-muted-foreground">{card.detail}</p>}
+          {card.qrCode ? (
+            <div className="mt-3 flex flex-col items-center gap-2">
+              <div className="rounded-xl bg-white p-2.5 shadow-lg shadow-emerald-900/20">
+                <img src={card.qrCode} alt="QR Code de pareamento do WhatsApp" className="h-44 w-44" />
+              </div>
+              <span className="text-[11px] text-muted-foreground">Escaneie pelo WhatsApp → Aparelhos conectados</span>
+            </div>
+          ) : (
+            <p className="mt-2 rounded-lg bg-emerald-500/10 px-2 py-1.5 text-emerald-300">
+              {card.status === 'connected' ? '✓ Sessão ativa — nada a fazer.' : 'Aguardando a sessão…'}
+            </p>
+          )}
+        </div>
+      );
+    }
+    if (card.type === 'balance') {
+      return (
+        <div key={i} className="cockpit-glass rounded-xl border-violet-400/25 p-3 text-xs">
+          <p className="font-semibold text-foreground">{card.label}</p>
+          {card.detail && (
+            <div className="mt-1.5 space-y-2">
+              {card.detail.split('\n').map((line, j) => (
+                <p key={j} className="leading-relaxed text-muted-foreground">
+                  {/* O backend manda **negrito** nos rótulos dos canais — renderiza sem markdown cru. */}
+                  {line.split(/(\*\*[^*]+\*\*)/g).map((part, k) =>
+                    part.startsWith('**') && part.endsWith('**') ? (
+                      <strong key={k} className="text-foreground">{part.slice(2, -2)}</strong>
+                    ) : (
+                      <span key={k}>{part}</span>
+                    )
+                  )}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+    return (
+      <div key={i} className="cockpit-glass rounded-xl p-3 text-xs">
+        <p className="font-semibold text-foreground">
+          {card.label}
+          {card.replayed && <span className="ml-1 font-normal text-muted-foreground">(já feito — nada duplicado)</span>}
+        </p>
+        {card.detail && <p className="mt-0.5 text-muted-foreground">{card.detail}</p>}
+        {card.sources && card.sources.length > 0 && (
+          <p className="mt-1.5 text-muted-foreground">
+            <span className="font-medium text-violet-200">Fontes dos dados:</span> {card.sources.join(' · ')}
+          </p>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="mx-auto flex h-full w-full max-w-2xl flex-col">
       {/* Thread — a conversa cresce do centro; cards vivem aqui (FR-4).
@@ -278,20 +344,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
                 <div className="space-y-2 text-[15px] leading-relaxed [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_li]:ml-4 [&_li]:list-disc [&_ol_li]:list-decimal [&_p]:mb-1.5 [&_p:last-child]:mb-0 [&_strong]:font-semibold">
                   <ReactMarkdown>{m.text}</ReactMarkdown>
                 </div>
-                {m.cards?.map((card, i) => (
-                  <div key={i} className="cockpit-glass rounded-xl p-3 text-xs">
-                    <p className="font-semibold text-foreground">
-                      {card.label}
-                      {card.replayed && <span className="ml-1 font-normal text-muted-foreground">(já feito — nada duplicado)</span>}
-                    </p>
-                    {card.detail && <p className="mt-0.5 text-muted-foreground">{card.detail}</p>}
-                    {card.sources && card.sources.length > 0 && (
-                      <p className="mt-1.5 text-muted-foreground">
-                        <span className="font-medium text-violet-200">Fontes dos dados:</span> {card.sources.join(' · ')}
-                      </p>
-                    )}
-                  </div>
-                ))}
+                {m.cards?.map(renderCard)}
               </div>
             </div>
           )
@@ -317,24 +370,16 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
                   <ReactMarkdown>{pending.reply}</ReactMarkdown>
                 </div>
               ) : null}
-              {pending.cards.map((card, i) => (
-                <div
-                  key={i}
-                  className={`rounded-xl border p-3 text-xs ${
-                    card.type === 'error'
-                      ? 'border-rose-400/40 bg-rose-500/10'
-                      : 'border-white/[0.09] bg-white/[0.04]'
-                  }`}
-                >
-                  <p className="font-semibold text-foreground">{card.label}</p>
-                  {card.detail && <p className="mt-0.5 text-muted-foreground">{card.detail}</p>}
-                  {card.sources && card.sources.length > 0 && (
-                    <p className="mt-1.5 text-muted-foreground">
-                      <span className="font-medium text-violet-200">Fontes dos dados:</span> {card.sources.join(' · ')}
-                    </p>
-                  )}
-                </div>
-              ))}
+              {pending.cards.map((card, i) =>
+                card.type === 'error' ? (
+                  <div key={i} className="rounded-xl border border-rose-400/40 bg-rose-500/10 p-3 text-xs">
+                    <p className="font-semibold text-foreground">{card.label}</p>
+                    {card.detail && <p className="mt-0.5 text-muted-foreground">{card.detail}</p>}
+                  </div>
+                ) : (
+                  renderCard(card, i)
+                )
+              )}
             </div>
           </div>
         )}
@@ -437,8 +482,8 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
       {/* Zona de decisão: ações de confiança agrupadas ao composer
           (Certificado → Aprovar → Colocar em voo, FR-27). */}
       <div className="p-3 sm:p-4">
-        {(canFly || status === 'in_review') && (
-          <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          {(canFly || status === 'in_review') && (
             <button
               type="button"
               onClick={() => void handleCertificate()}
@@ -447,29 +492,39 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
             >
               {certificateLoading ? 'Conferindo…' : 'Ver Certificado'}
             </button>
-            {status === 'in_review' && (
-              <button
-                type="button"
-                onClick={() => void handleApprove()}
-                className="rounded-full bg-gradient-to-r from-violet-500 to-violet-700 px-3.5 py-2 text-xs font-medium text-white shadow-lg shadow-violet-900/40 disabled:opacity-40"
-                title="Aprova a campanha — a audiência congela aqui"
-              >
-                Aprovar campanha
-              </button>
-            )}
-            {status !== 'in_review' && (
-              <button
-                type="button"
-                onClick={() => void handleLaunch()}
-                disabled={launching || isRunning}
-                className={`rounded-full bg-gradient-to-r from-violet-500 to-violet-700 px-3.5 py-2 text-xs font-medium text-white shadow-lg shadow-violet-900/40 disabled:opacity-40 ${isRunning ? '' : 'cockpit-glow-approve'}`}
-                title="Confere o Certificado e o saldo antes de autorizar"
-              >
-                {isRunning ? 'Em voo' : launching ? 'Autorizando…' : 'Colocar em voo'}
-              </button>
-            )}
-          </div>
-        )}
+          )}
+          {status === 'in_review' && (
+            <button
+              type="button"
+              onClick={() => void handleApprove()}
+              className="rounded-full bg-gradient-to-r from-violet-500 to-violet-700 px-3.5 py-2 text-xs font-medium text-white shadow-lg shadow-violet-900/40 disabled:opacity-40"
+              title="Aprova a campanha — a audiência congela aqui"
+            >
+              Aprovar campanha
+            </button>
+          )}
+          {canFly && status !== 'in_review' && (
+            <button
+              type="button"
+              onClick={() => void handleLaunch()}
+              disabled={launching || isRunning}
+              className={`rounded-full bg-gradient-to-r from-violet-500 to-violet-700 px-3.5 py-2 text-xs font-medium text-white shadow-lg shadow-violet-900/40 disabled:opacity-40 ${isRunning ? '' : 'cockpit-glow-approve'}`}
+              title="Confere o Certificado e o saldo antes de autorizar"
+            >
+              {isRunning ? 'Em voo' : launching ? 'Autorizando…' : 'Colocar em voo'}
+            </button>
+          )}
+          {onExitToHome && (
+            <button
+              type="button"
+              onClick={onExitToHome}
+              className="ml-auto rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
+              title="A campanha fica salva como rascunho — retome quando quiser"
+            >
+              Salvar rascunho e sair
+            </button>
+          )}
+        </div>
         <div className="cockpit-glass cockpit-composer rounded-2xl p-3 transition-shadow">
           <textarea
             value={input}

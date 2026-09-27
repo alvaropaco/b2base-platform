@@ -97,9 +97,14 @@ test('actionKey: escopada em org+campanha; actionId do cliente vence; hash deter
   assert.equal(manifest.actionKey({ orgId: 'org-1', campaignId: 'c1', action: 'set_objective', params: {} }), null, 'idempotência none não gera chave');
 });
 
-test('manifest v1: contrato fechado com as 6 actions do orquestrador', () => {
+test('manifest v1: contrato fechado com as 8 actions do orquestrador', () => {
+  // Evolução ADITIVA (2026-09-27): show_balance (leitura pura) e
+  // start_whatsapp_pairing (pareamento WAHA) entraram sem alterar forma,
+  // idempotência ou chaves das 6 originais — consumidores existentes não
+  // quebram. Mudança de forma/semântica das existentes segue exigindo v2.
   assert.deepEqual(Object.keys(manifest.ACTIONS_V1).sort(), [
-    'attach_url', 'confirm_material', 'generate_content', 'set_audience', 'set_objective', 'set_schedule',
+    'attach_url', 'confirm_material', 'generate_content', 'set_audience',
+    'set_objective', 'set_schedule', 'show_balance', 'start_whatsapp_pairing',
   ]);
   for (const spec of Object.values(manifest.ACTIONS_V1)) {
     assert.equal(spec.version, 1);

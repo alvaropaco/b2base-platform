@@ -1,43 +1,48 @@
 /**
  * BrandSettings — Brand Voice + Brand Kit da organização (US12, T120) e
  * painel de parecer de compliance embutido no fluxo de revisão.
+ *
+ * Assets da marca (2026-09-27): upload de logo, materiais de marketing
+ * (imagem/PDF) e arquivos de contexto (.txt/.md) que alimentam os agentes.
  */
-import { useCallback, useEffect, useState } from 'react';
-import { StudioRequestError } from '../api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { FileText, Image as ImageIcon, Loader2, Trash2, Upload } from 'lucide-react';
+import {
+  deleteBrandAsset,
+  fetchBrand,
+  saveBrand,
+  StudioRequestError,
+  uploadBrandAsset,
+  type BrandAsset,
+} from '../api';
 
-interface BrandProfile {
-  voice?: { toneNotes?: string; doExamples?: string[]; dontExamples?: string[] };
-  kit?: { logoUrl?: string; colors?: Record<string, string>; fonts?: string };
-}
+const CONTEXT_ACCEPT = '.txt,.md,.pdf';
 
-async function brandApi<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`/api/studio${path}`, {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const payload = await res.json();
-  if (!res.ok) throw new StudioRequestError(payload.error || 'ERROR', res.status, payload.message);
-  return payload.data as T;
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 export function BrandSettings() {
-  const [profile, setProfile] = useState<BrandProfile>({ voice: {}, kit: {} });
+  const [profile, setProfile] = useState<{ voice?: { toneNotes?: string }; kit?: { logoUrl?: string; colors?: Record<string, string>; assets?: BrandAsset[] } }>({});
   const [toneNotes, setToneNotes] = useState('');
   const [samples, setSamples] = useState('');
-  const [logoUrl, setLogoUrl] = useState('');
-  const [primaryColor, setPrimaryColor] = useState('#4f46e5');
+  const [primaryColor, setPrimaryColor] = useState('#8B5CF6');
+  const [assets, setAssets] = useState<BrandAsset[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
+  const materialInputRef = useRef<HTMLInputElement>(null);
+  const contextInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     try {
-      const data = await brandApi<BrandProfile>('GET', '/brand');
+      const data = await fetchBrand();
       setProfile(data);
       setToneNotes(data.voice?.toneNotes || '');
-      setLogoUrl(data.kit?.logoUrl || '');
-      setPrimaryColor(data.kit?.colors?.primary || '#4f46e5');
+      setPrimaryColor(data.kit?.colors?.primary || '#8B5CF6');
+      setAssets(data.kit?.assets || []);
     } catch (err) {
       setError(err instanceof StudioRequestError ? err.message : 'Falha ao carregar marca');
     }
@@ -51,11 +56,15 @@ export function BrandSettings() {
     setError(null);
     setNotice(null);
     try {
-      await brandApi('PUT', '/brand', {
+      await saveBrand({
         voice: { ...(profile.voice || {}), toneNotes },
-        kit: { ...(profile.kit || {}), logoUrl, colors: { primary: primaryColor } },
+        kit: {
+          ...(profile.kit || {}),
+          colors: { ...(profile.kit?.colors || {}), primary: primaryColor },
+        },
       });
-      setNotice('Marca salva.');
+      await load(); // relê do servidor: persistência visível na hora
+      setNotice('Marca salva — os agentes já usam este tom de voz.');
     } catch (err) {
       setError(err instanceof StudioRequestError ? err.message : 'Falha ao salvar');
     } finally {
@@ -68,9 +77,13 @@ export function BrandSettings() {
     setError(null);
     setNotice(null);
     try {
-      await brandApi('POST', '/brand/learn', {
-        samples: samples.split('\n').map((s) => s.trim()).filter(Boolean),
+      const res = await fetch('/api/studio/brand/learn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ samples: samples.split('\n').map((s) => s.trim()).filter(Boolean) }),
       });
+      const body = await res.json();
+      if (!res.ok || !body.success) throw new StudioRequestError(body.error || 'LEARN_FAILED', res.status, body.message);
       await load();
       setNotice('Brand Voice atualizada a partir dos exemplos.');
     } catch (err) {
@@ -79,6 +92,44 @@ export function BrandSettings() {
       setBusy(null);
     }
   };
+
+  const handleUpload = async (file: File, kind: BrandAsset['kind']) => {
+    setBusy(`upload-${kind}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const asset = await uploadBrandAsset(file, kind);
+      await load();
+      setNotice(
+        kind === 'logo'
+          ? 'Logo atualizado.'
+          : kind === 'material'
+            ? `Material “${asset.originalName}” anexado à marca.`
+            : `Contexto “${asset.originalName}” adicionado — os agentes leem este arquivo.`
+      );
+    } catch (err) {
+      setError(err instanceof StudioRequestError ? err.message : 'Falha no upload');
+    } finally {
+      setBusy(null);
+      if (logoInputRef.current) logoInputRef.current.value = '';
+      if (materialInputRef.current) materialInputRef.current.value = '';
+      if (contextInputRef.current) contextInputRef.current.value = '';
+    }
+  };
+
+  const handleDeleteAsset = async (asset: BrandAsset) => {
+    if (!window.confirm(`Remover “${asset.originalName}”?`)) return;
+    try {
+      await deleteBrandAsset(asset.id);
+      await load();
+    } catch (err) {
+      setError(err instanceof StudioRequestError ? err.message : 'Falha ao remover arquivo');
+    }
+  };
+
+  const logo = assets.find((a) => a.kind === 'logo');
+  const materials = assets.filter((a) => a.kind === 'material');
+  const contexts = assets.filter((a) => a.kind === 'context');
 
   return (
     <div className="space-y-4">
@@ -92,6 +143,7 @@ export function BrandSettings() {
           {notice}
         </p>
       )}
+
       <div className="cockpit-glass space-y-2 rounded-2xl p-4">
         <h3 className="text-sm font-semibold">Brand Voice</h3>
         <textarea
@@ -108,41 +160,163 @@ export function BrandSettings() {
           placeholder={'Exemplos de textos da marca (um por linha) para a IA aprender o tom…'}
           className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-violet-400/50 focus-visible:ring-1 focus-visible:ring-violet-400/40"
         />
-        <button
-          type="button"
-          onClick={handleLearn}
-          disabled={busy !== null}
-          className="h-9 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
-        >
-          {busy === 'learn' ? 'Aprendendo…' : 'Aprender voz dos exemplos (premium)'}
-        </button>
-      </div>
-      <div className="cockpit-glass space-y-2 rounded-2xl p-4">
-        <h3 className="text-sm font-semibold">Brand Kit</h3>
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <input
-            value={logoUrl}
-            onChange={(e) => setLogoUrl(e.target.value)}
-            placeholder="URL do logo"
-            className="h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-violet-400/50 focus-visible:ring-1 focus-visible:ring-violet-400/40"
-          />
-          <input
-            type="color"
-            value={primaryColor}
-            onChange={(e) => setPrimaryColor(e.target.value)}
-            aria-label="Cor primária"
-            className="h-9 w-14 cursor-pointer rounded-xl border border-white/10 bg-transparent"
-          />
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={handleLearn}
+            disabled={busy !== null}
+            className="h-9 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
+          >
+            {busy === 'learn' ? 'Aprendendo…' : 'Aprender voz dos exemplos (premium)'}
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={busy !== null}
+            className="h-9 rounded-xl bg-gradient-to-r from-violet-500 to-violet-700 px-4 text-xs font-medium text-white shadow-lg shadow-violet-900/40 transition-transform hover:brightness-110 disabled:opacity-40"
+          >
+            {busy === 'save' ? 'Salvando…' : 'Salvar marca'}
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={busy !== null}
-          className="h-9 rounded-xl bg-gradient-to-r from-violet-500 to-violet-700 px-3 text-xs font-medium text-white shadow-lg shadow-violet-900/40 transition-transform hover:brightness-110 disabled:opacity-40"
-        >
-          {busy === 'save' ? 'Salvando…' : 'Salvar marca'}
-        </button>
+      </div>
+
+      <div className="cockpit-glass space-y-3 rounded-2xl p-4">
+        <h3 className="text-sm font-semibold">Logo e identidade</h3>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-white/[0.04]">
+            {logo ? (
+              <img src={logo.url} alt="Logo da marca" className="max-h-full max-w-full object-contain" />
+            ) : (
+              <ImageIcon className="h-6 w-6 text-muted-foreground/60" />
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              ref={logoInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/svg+xml"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void handleUpload(file, 'logo');
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => logoInputRef.current?.click()}
+              disabled={busy !== null}
+              className="flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
+            >
+              {busy === 'upload-logo' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+              {logo ? 'Trocar logo' : 'Subir logo'}
+            </button>
+            <input
+              type="color"
+              value={primaryColor}
+              onChange={(e) => setPrimaryColor(e.target.value)}
+              aria-label="Cor primária"
+              className="h-9 w-14 cursor-pointer rounded-xl border border-white/10 bg-transparent"
+              title="Cor primária da marca"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="cockpit-glass space-y-3 rounded-2xl p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">Materiais de marketing</h3>
+          <input
+            ref={materialInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,application/pdf"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void handleUpload(file, 'material');
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => materialInputRef.current?.click()}
+            disabled={busy !== null}
+            className="flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
+          >
+            {busy === 'upload-material' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+            Anexar material
+          </button>
+        </div>
+        {materials.length === 0 ? (
+          <p className="text-xs text-muted-foreground">Imagens e PDFs (folders, pitch, arte) que a IA usa como fonte ao criar campanhas.</p>
+        ) : (
+          <ul className="space-y-1.5">
+            {materials.map((a) => (
+              <AssetRow key={a.id} asset={a} onDelete={() => void handleDeleteAsset(a)} />
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="cockpit-glass space-y-3 rounded-2xl p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">Contexto para os agentes</h3>
+          <input
+            ref={contextInputRef}
+            type="file"
+            accept={CONTEXT_ACCEPT}
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void handleUpload(file, 'context');
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => contextInputRef.current?.click()}
+            disabled={busy !== null}
+            className="flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
+          >
+            {busy === 'upload-context' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+            Subir contexto
+          </button>
+        </div>
+        {contexts.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            Arquivos .txt/.md/.pdf com contexto do negócio (proposta, objeções comuns, diferenciais) — o assistente lê junto ao montar campanhas.
+          </p>
+        ) : (
+          <ul className="space-y-1.5">
+            {contexts.map((a) => (
+              <AssetRow key={a.id} asset={a} onDelete={() => void handleDeleteAsset(a)} />
+            ))}
+          </ul>
+        )}
       </div>
     </div>
+  );
+}
+
+function AssetRow({ asset, onDelete }: { asset: BrandAsset; onDelete: () => void }) {
+  return (
+    <li className="flex items-center gap-2.5 rounded-xl border border-white/[0.07] bg-white/[0.03] px-3 py-2">
+      <FileText className="h-4 w-4 shrink-0 text-violet-300" />
+      <a
+        href={asset.url}
+        target="_blank"
+        rel="noreferrer"
+        className="min-w-0 flex-1 truncate text-xs font-medium text-foreground hover:text-violet-200 hover:underline"
+        title={asset.originalName}
+      >
+        {asset.originalName}
+      </a>
+      <span className="shrink-0 text-[10px] text-muted-foreground">{formatSize(asset.size)}</span>
+      <button
+        type="button"
+        onClick={onDelete}
+        className="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-rose-500/15 hover:text-rose-300"
+        aria-label={`Remover ${asset.originalName}`}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </li>
   );
 }

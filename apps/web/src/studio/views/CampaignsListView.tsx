@@ -4,8 +4,10 @@
  * mesmo endpoint — toda campanha nasce `draft`, FR-002).
  */
 import { useCallback, useEffect, useState } from 'react';
+import { Trash2 } from 'lucide-react';
 import {
   createCampaign,
+  deleteCampaign,
   fetchCampaigns,
   StudioRequestError,
 } from '../api';
@@ -83,6 +85,16 @@ export function CampaignsListView({ onOpenCampaign }: CampaignsListViewProps) {
     }
   };
 
+  const handleDelete = async (c: StudioCampaignSummary) => {
+    if (!window.confirm(`Remover a campanha “${c.name}”? Isso apaga conteúdo, conversa e audiência dela.`)) return;
+    try {
+      await deleteCampaign(c.id);
+      setCampaigns((prev) => prev.filter((x) => x.id !== c.id));
+    } catch (err) {
+      setError(err instanceof StudioRequestError ? err.message : 'Falha ao remover campanha');
+    }
+  };
+
   return (
     <section aria-label="Campanhas">
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -131,32 +143,43 @@ export function CampaignsListView({ onOpenCampaign }: CampaignsListViewProps) {
         <ul className="space-y-2.5">
           {campaigns.map((c) => (
             <li key={c.id}>
-              <button
-                type="button"
-                onClick={() => onOpenCampaign(c)}
-                className="cockpit-glass flex w-full items-center justify-between gap-4 rounded-2xl px-4 py-3.5 text-left transition-colors hover:border-violet-400/30"
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-foreground">{c.name}</p>
-                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                    {originLabel(c.origin)} · {(c.channels || []).join(' + ') || 'sem canal'} ·{' '}
-                    {c.audienceCount ?? 0} leads · {c.sentCount ?? 0} disparos
-                  </p>
-                </div>
-                <span
-                  className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium ${
-                    c.status === 'running'
-                      ? 'bg-emerald-500/15 text-emerald-300'
-                      : c.status === 'in_review'
-                        ? 'bg-amber-500/15 text-amber-300'
-                        : c.status === 'completed'
-                          ? 'bg-violet-500/15 text-violet-300'
-                          : 'bg-white/[0.06] text-muted-foreground'
-                  }`}
+              <div className="cockpit-glass flex w-full items-center gap-2 rounded-2xl pr-2 transition-colors hover:border-violet-400/30">
+                <button
+                  type="button"
+                  onClick={() => onOpenCampaign(c)}
+                  className="flex min-w-0 flex-1 items-center justify-between gap-4 px-4 py-3.5 text-left"
                 >
-                  {statusLabel(c.status)}
-                </span>
-              </button>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-foreground">{c.name}</p>
+                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                      {originLabel(c.origin)} · {(c.channels || []).join(' + ') || 'sem canal'} ·{' '}
+                      {c.audienceCount ?? 0} leads · {c.sentCount ?? 0} disparos
+                    </p>
+                  </div>
+                  <span
+                    className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                      c.status === 'running'
+                        ? 'bg-emerald-500/15 text-emerald-300'
+                        : c.status === 'in_review'
+                          ? 'bg-amber-500/15 text-amber-300'
+                          : c.status === 'completed'
+                            ? 'bg-violet-500/15 text-violet-300'
+                            : 'bg-white/[0.06] text-muted-foreground'
+                    }`}
+                  >
+                    {statusLabel(c.status)}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDelete(c)}
+                  className="shrink-0 rounded-lg p-2 text-muted-foreground transition-colors hover:bg-rose-500/15 hover:text-rose-300"
+                  title={`Remover “${c.name}”`}
+                  aria-label={`Remover campanha ${c.name}`}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
             </li>
           ))}
         </ul>

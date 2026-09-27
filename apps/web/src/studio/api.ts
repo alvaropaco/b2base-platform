@@ -65,6 +65,11 @@ export async function fetchCampaign(id: string): Promise<StudioCampaignDetail> {
   return data.data;
 }
 
+/** Remove campanha (rascunho/revisão/concluída). Em voo → 409 do backend. */
+export async function deleteCampaign(id: string): Promise<void> {
+  await request(`/campaigns/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export interface CreateCampaignInput {
   name: string;
   description?: string;
@@ -659,4 +664,52 @@ export async function runCampaignAction(
     { method: 'POST', body: JSON.stringify(input) }
   );
   return data.data;
+}
+
+// ── Marca: perfil + assets (logo, materiais de marketing, contexto) ─────────
+
+export interface BrandAsset {
+  id: string;
+  kind: 'logo' | 'material' | 'context';
+  fileName: string;
+  originalName: string;
+  mime: string;
+  size: number;
+  url: string;
+  createdAt: string;
+}
+
+export interface BrandProfilePayload {
+  voice?: { toneNotes?: string; doExamples?: string[]; dontExamples?: string[] };
+  kit?: { logoUrl?: string; colors?: Record<string, string>; fonts?: string; assets?: BrandAsset[] };
+}
+
+export async function fetchBrand(): Promise<Required<Pick<BrandProfilePayload, 'voice' | 'kit'>> & { id?: string }> {
+  const data = await request<{ data: BrandProfilePayload & { id?: string } }>('/brand');
+  return { id: data.data?.id, voice: data.data?.voice || {}, kit: data.data?.kit || {} };
+}
+
+export async function saveBrand(input: BrandProfilePayload): Promise<BrandProfilePayload> {
+  const data = await request<{ data: BrandProfilePayload }>('/brand', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+  return data.data;
+}
+
+export async function uploadBrandAsset(file: File, kind: BrandAsset['kind']): Promise<BrandAsset> {
+  const form = new FormData();
+  form.append('kind', kind);
+  form.append('file', file);
+  // multipart: sem Content-Type manual (boundary é do FormData)
+  const res = await fetch('/api/studio/brand/assets', { method: 'POST', body: form });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok || !payload.success) {
+    throw new StudioRequestError(payload.error || 'UPLOAD_FAILED', res.status, payload.message);
+  }
+  return payload.asset as BrandAsset;
+}
+
+export async function deleteBrandAsset(id: string): Promise<void> {
+  await request(`/brand/assets/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

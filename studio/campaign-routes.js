@@ -424,6 +424,31 @@ function registerCampaignRoutes(router, context) {
     }
   });
 
+  // DELETE /api/studio/campaigns/:id — remove a campanha e seus derivados.
+  // Campanha em voo (running/scheduled) precisa ser cancelada/pausada antes:
+  // remover algo enviando deixaria o histórico órfão sem trilha de auditoria.
+  router.delete('/campaigns/:id', async (req, res, next) => {
+    try {
+      const { orgId } = req.studio;
+      const campaign = await loadOrgCampaign(prisma, orgId, req.params.id);
+      if (['running', 'scheduled'].includes(campaign.status)) {
+        throw httpError('CAMPAIGN_IN_FLIGHT', 409, 'Cancele ou pause a campanha antes de removê-la.');
+      }
+      await prisma.studioContent.deleteMany({ where: { campaignId: campaign.id } });
+      await prisma.studioChatMessage.deleteMany({ where: { campaignId: campaign.id } });
+      await prisma.studioAudienceSnapshot.deleteMany({ where: { campaignId: campaign.id } });
+      await prisma.studioActionRun.deleteMany({ where: { campaignId: campaign.id } });
+      await prisma.studioComplianceReview.deleteMany({ where: { campaignId: campaign.id } });
+      await prisma.studioExperiment.deleteMany({ where: { campaignId: campaign.id } });
+      await prisma.studioRecommendation.deleteMany({ where: { campaignId: campaign.id } });
+      await prisma.studioJourney.deleteMany({ where: { campaignId: campaign.id } });
+      await prisma.studioCampaign.deleteMany({ where: { id: campaign.id } });
+      res.json({ success: true, data: { id: campaign.id, deleted: true } });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // PATCH /api/studio/campaigns/:id — edita metadados (apenas estados editáveis).
   router.patch('/campaigns/:id', async (req, res, next) => {
     try {
