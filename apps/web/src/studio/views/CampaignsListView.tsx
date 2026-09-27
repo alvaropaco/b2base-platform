@@ -85,28 +85,34 @@ export function CampaignsListView({ onOpenCampaign }: CampaignsListViewProps) {
 
   return (
     <section aria-label="Campanhas">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-lg font-semibold tracking-tight">Campanhas</h2>
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2 sm:max-w-md sm:flex-none">
           <input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void handleCreate();
+              }
+            }}
             placeholder="Nome da nova campanha"
-            className="h-9 w-64 rounded-md border border-input bg-transparent px-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring"
+            className="h-10 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-violet-400/50 focus-visible:ring-1 focus-visible:ring-violet-400/40"
           />
           <button
             type="button"
             onClick={handleCreate}
             disabled={isCreating}
-            className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-50"
+            className="h-10 shrink-0 rounded-xl bg-gradient-to-r from-violet-500 to-violet-700 px-4 text-sm font-medium text-white shadow-lg shadow-violet-900/40 transition-transform hover:brightness-110 disabled:opacity-50"
           >
-            {isCreating ? 'Criando…' : 'Nova campanha'}
+            {isCreating ? 'Criando…' : 'Nova'}
           </button>
         </div>
       </div>
 
       {error && (
-        <p role="alert" className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <p role="alert" className="mb-3 rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
           {error}
         </p>
       )}
@@ -114,7 +120,7 @@ export function CampaignsListView({ onOpenCampaign }: CampaignsListViewProps) {
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Carregando campanhas…</p>
       ) : campaigns.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border p-10 text-center">
+        <div className="cockpit-glass rounded-2xl p-10 text-center">
           <p className="text-sm font-medium">Nenhuma campanha ainda</p>
           <p className="mt-1 text-sm text-muted-foreground">
             Crie sua primeira campanha acima — ela nasce em rascunho e só dispara
@@ -122,22 +128,32 @@ export function CampaignsListView({ onOpenCampaign }: CampaignsListViewProps) {
           </p>
         </div>
       ) : (
-        <ul className="divide-y divide-border rounded-lg border border-border">
+        <ul className="space-y-2.5">
           {campaigns.map((c) => (
             <li key={c.id}>
               <button
                 type="button"
                 onClick={() => onOpenCampaign(c)}
-                className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition-colors hover:bg-accent/50"
+                className="cockpit-glass flex w-full items-center justify-between gap-4 rounded-2xl px-4 py-3.5 text-left transition-colors hover:border-violet-400/30"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{c.name}</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
+                  <p className="truncate text-sm font-medium text-foreground">{c.name}</p>
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
                     {originLabel(c.origin)} · {(c.channels || []).join(' + ') || 'sem canal'} ·{' '}
-                    {c.audienceCount ?? 0} leads
+                    {c.audienceCount ?? 0} leads · {c.sentCount ?? 0} disparos
                   </p>
                 </div>
-                <span className="shrink-0 rounded-full border border-border px-2.5 py-0.5 text-xs">
+                <span
+                  className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                    c.status === 'running'
+                      ? 'bg-emerald-500/15 text-emerald-300'
+                      : c.status === 'in_review'
+                        ? 'bg-amber-500/15 text-amber-300'
+                        : c.status === 'completed'
+                          ? 'bg-violet-500/15 text-violet-300'
+                          : 'bg-white/[0.06] text-muted-foreground'
+                  }`}
+                >
                   {statusLabel(c.status)}
                 </span>
               </button>

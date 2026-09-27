@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { ArrowUp, Paperclip, Sparkles } from 'lucide-react';
 import { StudioRequestError, fetchCertificate, runCampaignAction } from '../api';
 import type { CertificateVerdict, CockpitChip } from '../types';
 
@@ -247,11 +248,13 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
   const chips = (suggestions && suggestions.length > 0 ? suggestions : stepChips).slice(0, 3);
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col">
-      {/* Thread — a conversa cresce do centro; cards vivem aqui (FR-4). */}
-      <div className="flex-1 space-y-3 overflow-y-auto p-4" style={{ minHeight: 320, maxHeight: '60vh' }}>
+    <div className="mx-auto flex h-full w-full max-w-2xl flex-col">
+      {/* Thread — a conversa cresce do centro; cards vivem aqui (FR-4).
+          Linguagem (ref. Zyricon): piloto fala em texto plano com avatar
+          violeta; usuário em bolha de gradiente. */}
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         {messages.length === 0 && (
-          <div className="cockpit-rise rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+          <div className="cockpit-rise cockpit-glass rounded-2xl p-4 text-sm text-muted-foreground">
             <p className="font-medium text-foreground">Vamos montar sua campanha juntos.</p>
             <p className="mt-1">
               Me conta o que você quer vender e para quem. Você pode colar um link, anexar um material e me dizer como
@@ -259,62 +262,75 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
             </p>
           </div>
         )}
-        {messages.map((m) => (
-          <div key={m.id} className={`cockpit-rise flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div
-              className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${
-                m.role === 'user' ? 'rounded-br-sm bg-primary text-primary-foreground' : 'rounded-bl-sm bg-muted/60'
-              }`}
-            >
-              {m.role === 'assistant' ? (
-                <div className="space-y-2 [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_li]:ml-4 [&_li]:list-disc [&_ol_li]:list-decimal [&_p]:mb-1.5 [&_p:last-child]:mb-0 [&_strong]:font-semibold">
+        {messages.map((m) =>
+          m.role === 'user' ? (
+            <div key={m.id} className="cockpit-rise flex justify-end">
+              <div className="cockpit-send max-w-[85%] rounded-2xl rounded-br-md px-4 py-2.5 text-sm text-white shadow-lg shadow-violet-900/30">
+                <p className="whitespace-pre-wrap">{m.text}</p>
+              </div>
+            </div>
+          ) : (
+            <div key={m.id} className="cockpit-rise flex justify-start gap-3">
+              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-400 to-violet-700 text-white shadow-md shadow-violet-900/40">
+                <Sparkles className="h-3.5 w-3.5" />
+              </div>
+              <div className="min-w-0 max-w-[85%] space-y-2 text-sm">
+                <div className="space-y-2 text-[15px] leading-relaxed [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_li]:ml-4 [&_li]:list-disc [&_ol_li]:list-decimal [&_p]:mb-1.5 [&_p:last-child]:mb-0 [&_strong]:font-semibold">
                   <ReactMarkdown>{m.text}</ReactMarkdown>
                 </div>
-              ) : (
-                <p className="whitespace-pre-wrap">{m.text}</p>
-              )}
-              {m.cards?.map((card, i) => (
-                <div key={i} className="mt-2 rounded-lg border border-border bg-background/80 p-2 text-xs">
-                  <p className="font-semibold">
-                    {card.label}
-                    {card.replayed && <span className="ml-1 text-muted-foreground">(já feito — nada duplicado)</span>}
-                  </p>
-                  {card.detail && <p className="mt-0.5 text-muted-foreground">{card.detail}</p>}
-                  {card.sources && card.sources.length > 0 && (
-                    <p className="mt-1 text-muted-foreground">
-                      <span className="font-medium text-foreground">Fontes dos dados:</span> {card.sources.join(' · ')}
+                {m.cards?.map((card, i) => (
+                  <div key={i} className="cockpit-glass rounded-xl p-3 text-xs">
+                    <p className="font-semibold text-foreground">
+                      {card.label}
+                      {card.replayed && <span className="ml-1 font-normal text-muted-foreground">(já feito — nada duplicado)</span>}
                     </p>
-                  )}
-                </div>
-              ))}
+                    {card.detail && <p className="mt-0.5 text-muted-foreground">{card.detail}</p>}
+                    {card.sources && card.sources.length > 0 && (
+                      <p className="mt-1.5 text-muted-foreground">
+                        <span className="font-medium text-violet-200">Fontes dos dados:</span> {card.sources.join(' · ')}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        )}
         {pending && (
-          <div className="cockpit-rise flex justify-start">
-            <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted/60 px-3 py-2 text-sm">
+          <div className="cockpit-rise flex justify-start gap-3">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-400 to-violet-700 text-white shadow-md shadow-violet-900/40">
+              <Sparkles className="h-3.5 w-3.5" />
+            </div>
+            <div className="min-w-0 max-w-[85%] space-y-2 text-sm">
+              {pending.statuses.length > 0 && (
+                <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="cockpit-typing flex items-center gap-1" aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                  {pending.statuses[pending.statuses.length - 1]}
+                </p>
+              )}
               {pending.reply ? (
-                <div className="space-y-2 [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_li]:ml-4 [&_li]:list-disc [&_ol_li]:list-decimal [&_p]:mb-1.5 [&_p:last-child]:mb-0 [&_strong]:font-semibold">
+                <div className="space-y-2 text-[15px] leading-relaxed [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_li]:ml-4 [&_li]:list-disc [&_ol_li]:list-decimal [&_p]:mb-1.5 [&_p:last-child]:mb-0 [&_strong]:font-semibold">
                   <ReactMarkdown>{pending.reply}</ReactMarkdown>
                 </div>
               ) : null}
-              {pending.statuses.length > 0 && (
-                <div className="mt-1 space-y-1">
-                  {pending.statuses.map((label, i) => (
-                    <p key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <span className={i === pending.statuses.length - 1 ? 'animate-pulse' : ''}>●</span>
-                      {label}
-                    </p>
-                  ))}
-                </div>
-              )}
               {pending.cards.map((card, i) => (
-                <div key={i} className={`mt-2 rounded-lg border p-2 text-xs ${card.type === 'error' ? 'border-destructive/40 bg-destructive/10' : 'border-border bg-background/80'}`}>
-                  <p className="font-semibold">{card.label}</p>
+                <div
+                  key={i}
+                  className={`rounded-xl border p-3 text-xs ${
+                    card.type === 'error'
+                      ? 'border-rose-400/40 bg-rose-500/10'
+                      : 'border-white/[0.09] bg-white/[0.04]'
+                  }`}
+                >
+                  <p className="font-semibold text-foreground">{card.label}</p>
                   {card.detail && <p className="mt-0.5 text-muted-foreground">{card.detail}</p>}
                   {card.sources && card.sources.length > 0 && (
-                    <p className="mt-1 text-muted-foreground">
-                      <span className="font-medium text-foreground">Fontes dos dados:</span> {card.sources.join(' · ')}
+                    <p className="mt-1.5 text-muted-foreground">
+                      <span className="font-medium text-violet-200">Fontes dos dados:</span> {card.sources.join(' · ')}
                     </p>
                   )}
                 </div>
@@ -325,12 +341,17 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
 
         {/* Certificado de Segurança renderizado como mensagem rica do thread */}
         {certificate && (
-          <div className="cockpit-rise flex justify-start">
+          <div className="cockpit-rise flex justify-start gap-3">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-400 to-violet-700 text-white shadow-md shadow-violet-900/40">
+              <Sparkles className="h-3.5 w-3.5" />
+            </div>
             <div
               role="status"
               aria-label={`Certificado de segurança: ${certificate.level === 'green' ? 'tudo certo' : 'com pendências'}`}
-              className={`max-w-[85%] rounded-2xl rounded-bl-sm border p-3 text-sm ${
-                certificate.level === 'green' ? 'border-emerald-500/40 bg-emerald-500/10' : 'border-destructive/40 bg-destructive/10'
+              className={`max-w-[85%] rounded-2xl rounded-bl-md border p-3.5 text-sm ${
+                certificate.level === 'green'
+                  ? 'border-emerald-400/40 bg-emerald-500/10 shadow-[0_0_24px_rgba(52,211,153,0.12)]'
+                  : 'border-rose-400/40 bg-rose-500/10'
               }`}
             >
               <p className="font-semibold">
@@ -339,12 +360,19 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
               <ul className="mt-2 space-y-1.5">
                 {certificate.items.map((item) => (
                   <li key={item.key} className="flex gap-2 text-xs">
-                    <span aria-hidden="true">
+                    <span
+                      aria-hidden="true"
+                      className={
+                        item.level === 'ok' ? 'text-emerald-300' : item.level === 'warning' ? 'text-amber-300' : 'text-rose-300'
+                      }
+                    >
                       {item.level === 'ok' ? '●' : item.level === 'warning' ? '▲' : '✕'}
                     </span>
                     <span>
                       <strong>{item.label}</strong>
-                      {item.level !== 'ok' && <span className="text-muted-foreground"> ({item.level === 'block' ? 'bloqueia' : 'atenção'})</span>}
+                      {item.level !== 'ok' && (
+                        <span className="text-muted-foreground"> ({item.level === 'block' ? 'bloqueia' : 'atenção'})</span>
+                      )}
                       <span className="block text-muted-foreground">{item.detail}</span>
                     </span>
                   </li>
@@ -380,14 +408,9 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
                       }
                       void send(chip.prompt || chip.label);
                     }}
-                    className="rounded-full border border-primary/40 bg-primary/10 px-3 py-1.5 text-left text-xs font-medium text-primary transition-colors hover:bg-primary/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                    className="max-w-full truncate rounded-full border border-violet-400/25 bg-violet-500/10 px-3.5 py-2 text-xs font-medium text-violet-100 transition-colors hover:bg-violet-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
                   >
                     {chip.label}
-                    {chip.motivo && (
-                      <span className="mt-0.5 block text-[11px] font-normal text-muted-foreground">
-                        {chip.motivo}
-                      </span>
-                    )}
                   </button>
                 ))
               : stepChips.map((chip) => (
@@ -395,7 +418,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
                     key={chip.key}
                     type="button"
                     onClick={() => void send(chip.prompt)}
-                    className="rounded-full border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                    className="rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
                   >
                     {chip.label}
                   </button>
@@ -406,65 +429,48 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
       </div>
 
       {error && (
-        <p role="alert" className="mx-4 mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+        <p role="alert" className="mx-4 mb-2 rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
           {error}
         </p>
       )}
 
-      {/* Ações de confiança: Certificado → Aprovar → Colocar em voo (FR-27). */}
-      {(canFly || status === 'in_review') && (
-        <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2">
-          <button
-            type="button"
-            onClick={() => void handleCertificate()}
-            disabled={certificateLoading}
-            className="rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-accent disabled:opacity-40"
-          >
-            {certificateLoading ? 'Conferindo…' : 'Ver Certificado'}
-          </button>
-          {status === 'in_review' && (
+      {/* Zona de decisão: ações de confiança agrupadas ao composer
+          (Certificado → Aprovar → Colocar em voo, FR-27). */}
+      <div className="p-3 sm:p-4">
+        {(canFly || status === 'in_review') && (
+          <div className="mb-2 flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => void handleApprove()}
-              className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
-              title="Aprova a campanha — a audiência congela aqui"
+              onClick={() => void handleCertificate()}
+              disabled={certificateLoading}
+              className="rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
             >
-              Aprovar campanha
+              {certificateLoading ? 'Conferindo…' : 'Ver Certificado'}
             </button>
-          )}
-          {status !== 'in_review' && (
-            <button
-              type="button"
-              onClick={() => void handleLaunch()}
-              disabled={launching || isRunning}
-              className={`rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40 ${isRunning ? '' : 'cockpit-glow-approve'}`}
-              title="Confere o Certificado e o saldo antes de autorizar"
-            >
-              {isRunning ? 'Em voo' : launching ? 'Autorizando…' : 'Colocar em voo'}
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Input grande no rodapé — o placeholder instrui (FR-2). */}
-      <div className="border-t border-border p-3">
-        <div className="flex items-end gap-2">
-          <label
-            className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent"
-            title="Anexar PDF, imagem ou documento"
-          >
-            {uploading ? '…' : '+'}
-            <input
-              type="file"
-              className="hidden"
-              accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void handleAttach(file);
-                e.target.value = '';
-              }}
-            />
-          </label>
+            {status === 'in_review' && (
+              <button
+                type="button"
+                onClick={() => void handleApprove()}
+                className="rounded-full bg-gradient-to-r from-violet-500 to-violet-700 px-3.5 py-2 text-xs font-medium text-white shadow-lg shadow-violet-900/40 disabled:opacity-40"
+                title="Aprova a campanha — a audiência congela aqui"
+              >
+                Aprovar campanha
+              </button>
+            )}
+            {status !== 'in_review' && (
+              <button
+                type="button"
+                onClick={() => void handleLaunch()}
+                disabled={launching || isRunning}
+                className={`rounded-full bg-gradient-to-r from-violet-500 to-violet-700 px-3.5 py-2 text-xs font-medium text-white shadow-lg shadow-violet-900/40 disabled:opacity-40 ${isRunning ? '' : 'cockpit-glow-approve'}`}
+                title="Confere o Certificado e o saldo antes de autorizar"
+              >
+                {isRunning ? 'Em voo' : launching ? 'Autorizando…' : 'Colocar em voo'}
+              </button>
+            )}
+          </div>
+        )}
+        <div className="cockpit-glass cockpit-composer rounded-2xl p-3 transition-shadow">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -477,16 +483,36 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
             rows={1}
             aria-label="Mensagem para o piloto"
             placeholder="Conte o que você quer alcançar…"
-            className="max-h-32 flex-1 resize-y rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground"
+            className="max-h-32 w-full resize-none bg-transparent px-1 text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
           />
-          <button
-            type="button"
-            onClick={() => void send(input)}
-            disabled={sending || !input.trim()}
-            className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-40"
-          >
-            Enviar
-          </button>
+          <div className="mt-2 flex items-center justify-between border-t border-white/[0.06] pt-2.5">
+            <label
+              className="flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+              title="Anexar PDF, imagem ou documento"
+            >
+              <Paperclip className="h-3.5 w-3.5" />
+              {uploading ? 'Enviando…' : 'Anexar'}
+              <input
+                type="file"
+                className="hidden"
+                accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void handleAttach(file);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => void send(input)}
+              disabled={sending || !input.trim()}
+              aria-label="Enviar mensagem"
+              className="cockpit-send flex h-9 w-9 items-center justify-center rounded-full text-white transition-transform disabled:opacity-40"
+            >
+              <ArrowUp className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       </div>
     </div>

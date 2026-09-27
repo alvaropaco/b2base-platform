@@ -107,12 +107,12 @@ export function AgentPanel() {
   return (
     <div className="space-y-4">
       {error && (
-        <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <p role="alert" className="rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
           {error}
         </p>
       )}
       {notice && (
-        <p className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
+        <p className="rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
           {notice}
         </p>
       )}
@@ -126,13 +126,13 @@ export function AgentPanel() {
           onChange={(e) => setPrompt(e.target.value)}
           rows={3}
           placeholder="Ex.: quero vender software ERP para empresas industriais de SP"
-          className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-violet-400/50 focus-visible:ring-1 focus-visible:ring-violet-400/40"
         />
         <button
           type="button"
           onClick={propose}
           disabled={busy || !prompt.trim()}
-          className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-40"
+          className="h-10 rounded-xl bg-gradient-to-r from-violet-500 to-violet-700 px-4 text-sm font-medium text-white shadow-lg shadow-violet-900/40 transition-transform hover:brightness-110 disabled:opacity-40"
         >
           {busy ? 'Planejando…' : 'Propor campanha'}
         </button>
@@ -146,9 +146,9 @@ export function AgentPanel() {
             { key: 'strategy', title: 'Estratégia', detail: `${(proposal.plan.strategy?.channels || []).join(' + ')} · ${proposal.plan.strategy?.timing || ''}` },
             { key: 'contents', title: 'Conteúdos', detail: (proposal.plan.contents || []).map((c) => c.channel).join(', ') },
           ].map((item) => (
-            <div key={item.key} className="rounded-lg border border-border p-3 text-sm">
-              <div className="flex items-center justify-between">
-                <p className="font-medium">{item.title}</p>
+            <div key={item.key} className="cockpit-glass rounded-2xl p-3.5 text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-medium text-foreground">{item.title}</p>
                 <span className="flex gap-1">
                   {(['accepted', 'rejected'] as const).map((d) => (
                     <button
@@ -156,8 +156,12 @@ export function AgentPanel() {
                       type="button"
                       aria-pressed={decisions[item.key] === d}
                       onClick={() => setDecisions({ ...decisions, [item.key]: d })}
-                      className={`rounded px-2 py-0.5 text-xs ${
-                        decisions[item.key] === d ? 'bg-primary text-primary-foreground' : 'border border-border text-muted-foreground'
+                      className={`rounded-full px-2.5 py-1 text-xs transition-colors ${
+                        decisions[item.key] === d
+                          ? d === 'accepted'
+                            ? 'bg-violet-500/25 text-violet-100'
+                            : 'bg-rose-500/20 text-rose-200'
+                          : 'border border-white/10 text-muted-foreground hover:bg-white/5'
                       }`}
                     >
                       {d === 'accepted' ? 'Aceitar' : 'Rejeitar'}
@@ -172,7 +176,7 @@ export function AgentPanel() {
             type="button"
             onClick={decide}
             disabled={busy}
-            className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-40"
+            className="h-10 rounded-xl bg-gradient-to-r from-violet-500 to-violet-700 px-4 text-sm font-medium text-white shadow-lg shadow-violet-900/40 transition-transform hover:brightness-110 disabled:opacity-40"
           >
             {busy ? 'Convertendo…' : 'Criar campanha a partir do plano'}
           </button>

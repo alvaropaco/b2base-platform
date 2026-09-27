@@ -82,55 +82,63 @@ export function BrandSettings() {
 
   return (
     <div className="space-y-4">
-      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      {notice && <p className="text-sm text-emerald-300">{notice}</p>}
-      <div className="space-y-2">
+      {error && (
+        <p role="alert" className="rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+          {error}
+        </p>
+      )}
+      {notice && (
+        <p className="rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
+          {notice}
+        </p>
+      )}
+      <div className="cockpit-glass space-y-2 rounded-2xl p-4">
         <h3 className="text-sm font-semibold">Brand Voice</h3>
         <textarea
           value={toneNotes}
           onChange={(e) => setToneNotes(e.target.value)}
           rows={2}
           placeholder="Como a empresa fala (ex.: direto, técnico, sem girias)"
-          className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-violet-400/50 focus-visible:ring-1 focus-visible:ring-violet-400/40"
         />
         <textarea
           value={samples}
           onChange={(e) => setSamples(e.target.value)}
           rows={3}
           placeholder={'Exemplos de textos da marca (um por linha) para a IA aprender o tom…'}
-          className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-violet-400/50 focus-visible:ring-1 focus-visible:ring-violet-400/40"
         />
         <button
           type="button"
           onClick={handleLearn}
           disabled={busy !== null}
-          className="h-8 rounded-md border border-border px-3 text-xs disabled:opacity-40"
+          className="h-9 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
         >
           {busy === 'learn' ? 'Aprendendo…' : 'Aprender voz dos exemplos (premium)'}
         </button>
       </div>
-      <div className="space-y-2">
+      <div className="cockpit-glass space-y-2 rounded-2xl p-4">
         <h3 className="text-sm font-semibold">Brand Kit</h3>
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <input
             value={logoUrl}
             onChange={(e) => setLogoUrl(e.target.value)}
             placeholder="URL do logo"
-            className="h-8 flex-1 rounded-md border border-input bg-transparent px-2"
+            className="h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-violet-400/50 focus-visible:ring-1 focus-visible:ring-violet-400/40"
           />
           <input
             type="color"
             value={primaryColor}
             onChange={(e) => setPrimaryColor(e.target.value)}
             aria-label="Cor primária"
-            className="h-8 w-12 rounded border border-input bg-transparent"
+            className="h-9 w-14 cursor-pointer rounded-xl border border-white/10 bg-transparent"
           />
         </div>
         <button
           type="button"
           onClick={handleSave}
           disabled={busy !== null}
-          className="h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground disabled:opacity-40"
+          className="h-9 rounded-xl bg-gradient-to-r from-violet-500 to-violet-700 px-3 text-xs font-medium text-white shadow-lg shadow-violet-900/40 transition-transform hover:brightness-110 disabled:opacity-40"
         >
           {busy === 'save' ? 'Salvando…' : 'Salvar marca'}
         </button>

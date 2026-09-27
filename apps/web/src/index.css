@@ -192,17 +192,114 @@
   }
 }
 
-/* ── Campaign Cockpit (011) — D1 · Violeta Elétrico ──────────────────────
+/* ── Campaign Cockpit (011) — D1 · Violeta Elétrico sobre noite arroxeada ──
    Escopo: apenas a subárvore .cockpit-scope (StudioApp). O resto da
-   plataforma mantém o indigo herdado. 258 90% 66% = #8B5CF6. */
+   plataforma mantém o indigo herdado. 258 90% 66% = #8B5CF6.
+   Referência de produto (2026-09-27): linguagem "Zyricon" — noite
+   arroxeada com bloom radial, superfícies glass, composer em cartão e
+   acento violeta em gradiente. */
 .cockpit-scope {
+  --background: 270 44% 5%;
+  --foreground: 260 25% 96%;
+  --card: 266 32% 9%;
+  --card-foreground: 260 25% 96%;
+  --popover: 266 36% 8%;
+  --popover-foreground: 260 25% 96%;
   --primary: 258 90% 66%;
-  --primary-foreground: 210 40% 98%;
+  --primary-foreground: 252 40% 99%;
+  --secondary: 264 24% 15%;
+  --secondary-foreground: 260 25% 96%;
+  --muted: 264 24% 14%;
+  --muted-foreground: 258 10% 66%;
+  --accent: 264 26% 17%;
+  --accent-foreground: 260 25% 96%;
+  --destructive: 350 89% 63%;
+  --destructive-foreground: 260 40% 99%;
+  --border: 265 22% 19%;
+  --input: 265 24% 18%;
   --ring: 258 90% 66%;
 }
 .cockpit-bloom {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(900px 420px at 50% -8%, rgba(139, 92, 246, 0.14), transparent 70%);
+  background:
+    radial-gradient(1100px 520px at 50% -12%, rgba(139, 92, 246, 0.28), transparent 68%),
+    radial-gradient(700px 380px at 85% 110%, rgba(217, 70, 239, 0.1), transparent 70%);
+}
+/* Superfície glass do Cockpit (cartões, composer, sidebar). */
+.cockpit-glass {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+.cockpit-glass-strong {
+  background: rgba(18, 13, 27, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+/* Orbe da abertura (dia-zero): esfera 3D em gradiente violeta + halo. */
+.cockpit-orb {
+  position: relative;
+  width: 6rem;
+  height: 6rem;
+  border-radius: 9999px;
+  background:
+    radial-gradient(circle at 32% 28%, rgba(233, 213, 255, 0.95) 0%, rgba(192, 132, 252, 0.9) 18%, rgba(124, 58, 237, 0.95) 52%, rgba(59, 29, 94, 0.98) 88%);
+  box-shadow:
+    inset -10px -14px 30px rgba(15, 7, 26, 0.55),
+    inset 8px 10px 22px rgba(233, 213, 255, 0.25),
+    0 0 44px rgba(139, 92, 246, 0.55),
+    0 0 110px rgba(139, 92, 246, 0.3);
+  animation: cockpit-float 5.6s ease-in-out infinite;
+}
+.cockpit-orb::after {
+  content: '';
+  position: absolute;
+  inset: -60%;
+  border-radius: 9999px;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.28), transparent 64%);
+}
+@keyframes cockpit-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+}
+/* Botão de envio do composer: círculo em gradiente violeta com glow. */
+.cockpit-send {
+  background: linear-gradient(135deg, #a855f7 0%, #7c3aed 100%);
+  box-shadow: 0 4px 18px rgba(139, 92, 246, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.cockpit-send:active { transform: scale(0.96); }
+/* Composer em foco: borda violeta + halo sutil (afordância de digitação). */
+.cockpit-composer:focus-within {
+  border-color: rgba(168, 85, 247, 0.55);
+  box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.35), 0 8px 34px rgba(139, 92, 246, 0.18);
+}
+/* Rail: máscara de fade na borda direita — indica scroll sem cortar seco. */
+.cockpit-rail-scroll {
+  mask-image: linear-gradient(to right, black 88%, transparent);
+  -webkit-mask-image: linear-gradient(to right, black 88%, transparent);
+}
+/* Indicador de "pensando" do piloto (turno SSE em curso). */
+.cockpit-typing > i {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: rgba(196, 181, 253, 0.9);
+  animation: cockpit-typing 1.2s ease-in-out infinite;
+}
+.cockpit-typing > i:nth-child(2) { animation-delay: 0.15s; }
+.cockpit-typing > i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes cockpit-typing {
+  0%, 100% { opacity: 0.25; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cockpit-orb,
+  .cockpit-typing > i {
+    animation: none !important;
+  }
 }
