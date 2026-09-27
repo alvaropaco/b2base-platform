@@ -52,7 +52,7 @@ function createSegmentNl({ callLlm } = {}) {
           return `critérios fora do catálogo (${err.message})`;
         }
       },
-      maxTokens: 800,
+      maxTokens: 2000,
       temperature: 0.3,
       tag: 'studio:segment-nl',
     });

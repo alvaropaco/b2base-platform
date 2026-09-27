@@ -50,7 +50,7 @@ async function hotReplies(prisma, orgId, now) {
     count: hot.length,
     label: `${hot.length} resposta${hot.length > 1 ? 's' : ''} quente${hot.length > 1 ? 's' : ''} esperando tratamento`,
     motivo: `Classificação de respostas: ${hot.length} mensagem(ns) com interesse claro nas últimas ${Math.round(HOT_MAX_AGE_HOURS / 24)} dia(s).`,
-    prompt: 'Prepare rascunhos de resposta para as mensagens quentes que ainda não tratei.',
+    prompt: 'Monte uma campanha de reengajamento para os leads que já mostraram interesse nos meus e-mails.',
   };
 }
 
