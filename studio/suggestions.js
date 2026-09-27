@@ -122,7 +122,7 @@ async function untouchedLeads(prisma, orgId) {
   // Escopo de org: envios de OUTRAS organizações nunca contam como contato
   // dos leads desta (isolamento constituição IV).
   const contacted = await prisma.outreachContact.findMany({
-    where: { tenantId: orgId, status: 'SENT' },
+    where: { status: 'SENT', campaign: { tenantId: orgId } },
     take: 2000,
   });
   const contactedIds = new Set(contacted.map((c) => c.prospectId));
