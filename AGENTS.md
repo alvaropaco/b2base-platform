@@ -59,3 +59,13 @@ ferramentas — `/bmad-help`, `/bmad-prd`, `/bmad-architecture`,
 fluxo BMad da seção acima é o caminho canônico de features; use as skills
 conforme a etapa (brainstorming e brief na descoberta, PRD/arquitetura/UX no
 plan, epics/stories e build na execução, review/retro no fechamento).
+
+## Design
+
+- Identidade do **Cockpit** (`/studio`): **D1 · Violeta Elétrico** — spine
+  canônica em
+  `_bmad-output/planning-artifacts/ux-designs/ux-b2base-platform-2026-09-26/DESIGN.md`
+  (tokens, glass, glow semântico) + `EXPERIENCE.md` (comportamento).
+- Referências de padrões — **NÃO são a paleta do produto**: `DESIGN.md` (raiz,
+  análise Mobbin: hierarquia, contenção, pills) e `framer/DESIGN.md`
+  (motion/vidro/glow do Cockpit).
