@@ -21,8 +21,37 @@ const segmentService = require('./segment-service');
 const campaignService = require('./campaign-service');
 const { createMaterialService } = require('./material-service');
 const scheduleService = require('./schedule-service');
+const manifest = require('./actions/manifest.v1');
 
 const URL_RE = /(https?:\/\/[^\s,;)"]+)/g;
+
+/** Params declarados da action (para hash de idempotência — AD-6). */
+function actionParams(action) {
+  switch (action.type) {
+    case 'set_objective':
+      return { objective: action.objective || null, offer: action.offer || null };
+    case 'set_audience':
+      return { description: action.description || null };
+    case 'attach_url':
+      return { url: action.url || null };
+    case 'confirm_material':
+      return { materialId: action.materialId || null };
+    case 'generate_content':
+      return { tones: action.tones || null };
+    case 'set_schedule':
+      return {
+        mode: action.mode || null,
+        startAt: action.startAt || null,
+        windows: action.windows || null,
+        hourlyLimit: action.hourlyLimit || null,
+        dailyLimit: action.dailyLimit || null,
+        timezone: action.timezone || null,
+        useLeadTimezone: Boolean(action.useLeadTimezone),
+      };
+    default:
+      return {};
+  }
+}
 
 async function loadCampaign(prisma, orgId, id) {
   const campaign = await prisma.studioCampaign.findUnique({ where: { id } });
@@ -57,7 +86,31 @@ function registerChatRoutes(router, context) {
   const composer = createComposer(aiDeps);
   const materialService = createMaterialService(prisma, aiDeps);
 
+  /**
+   * Executa uma action com IDEMPOTÊNCIA (specs/011, AD-6/FR-9): a primeira
+   * execução roda o handler e registra o card em StudioActionRun (unique na
+   * chave estável); re-execução (mesmo actionId/params) devolve o MESMO
+   * resultado sem tocar serviços — duplo toque não duplica segmento/conteúdo.
+   */
   async function runAction(action, { campaign, cards, orgId, userId }) {
+    if (!action || !action.type || action.type === 'none') return null;
+    if (!manifest.ACTIONS_V1[action.type]) return null;
+    const params = actionParams(action);
+    manifest.validate(action.type, params);
+    const { result, replayed } = await manifest.runIdempotent(prisma, {
+      orgId,
+      campaignId: campaign.id,
+      action: action.type,
+      params,
+      actionId: action.actionId || null,
+      run: () => executeAction(action, { campaign, cards, orgId, userId }),
+    });
+    if (replayed && result) return { ...result, replayed: true };
+    return result;
+  }
+
+  /** Handler puro de cada action (efeitos reais nos serviços). */
+  async function executeAction(action, { campaign, cards, orgId, userId }) {
     const label = { detail: '' };
     switch (action.type) {
       case 'set_objective': {
@@ -134,10 +187,22 @@ function registerChatRoutes(router, context) {
           orgId,
           orgContext: settings ? `${settings.companyName || ''} vende ${settings.productDescription || '?'}` : null,
         });
+        // FR-26: origem dos dados citada no card — o vendedor vê de onde veio
+        // cada campo antes de aprovar. Derivado da fonte usada na geração.
+        const sources = confirmed
+          ? [
+              confirmed.extraction?.product && `Produto: ${confirmed.extraction.product}`,
+              confirmed.extraction?.offer && `Oferta: ${confirmed.extraction.offer}`,
+              confirmed.extraction?.audience && `Público: ${confirmed.extraction.audience}`,
+            ].filter(Boolean)
+          : [campaign.objective && `Objetivo: ${campaign.objective}`, campaign.offer && `Oferta: ${campaign.offer}`].filter(
+              Boolean
+            );
         return {
           type: 'content',
           label: 'Conteúdo gerado (em revisão)',
           detail: `${created.length} variações criadas: ${tones.join(', ')} — revise na lista de conteúdos abaixo.`,
+          sources,
         };
       }
 
@@ -366,6 +431,53 @@ function registerChatRoutes(router, context) {
       const { orgId } = req.studio;
       const campaign = await loadCampaign(prisma, orgId, req.params.id);
       res.json({ success: true, data: { campaign, extras: await currentExtras(prisma, campaign) } });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /campaigns/:id/actions — Chip-ação (specs/011, FR-9): tocar um chip
+  // executa a action semântica de backend (idempotente por actionId). Body:
+  // { type, params?, actionId? }. Turnos só entram no histórico na 1ª
+  // execução — replay não duplica o thread (FR-4).
+  router.post('/campaigns/:id/actions', async (req, res, next) => {
+    try {
+      const { orgId, userId } = req.studio;
+      await context.requirePremiumOrg(orgId);
+      const campaign = await loadCampaign(prisma, orgId, req.params.id);
+      const body = req.body || {};
+      const action = {
+        type: String(body.type || ''),
+        actionId: body.actionId ? String(body.actionId) : undefined,
+        ...(body.params || {}),
+      };
+      const cards = [];
+      const card = await runAction(action, { campaign, cards, orgId, userId });
+      if (!card) throw httpError('UNKNOWN_ACTION', 400, `Ação desconhecida: ${action.type}`);
+      if (!card.replayed) {
+        // O turno fica no histórico: o Cockpit é o diário da campanha (FR-4).
+        await prisma.studioChatMessage.create({
+          data: {
+            orgId,
+            campaignId: campaign.id,
+            role: 'user',
+            text: card.label || action.type,
+            attachments: [],
+          },
+        });
+        await prisma.studioChatMessage.create({
+          data: {
+            orgId,
+            campaignId: campaign.id,
+            role: 'assistant',
+            text: card.label || 'Feito.',
+            cards: [{ ...card, detail: card.detail || '' }],
+          },
+        });
+      }
+      // Status pós-ação (re-lê a campanha — o objeto em memória está pré-ação).
+      const updated = await prisma.studioCampaign.findUnique({ where: { id: campaign.id } });
+      res.json({ success: true, data: { card, campaignStatus: updated ? updated.status : campaign.status } });
     } catch (err) {
       next(err);
     }

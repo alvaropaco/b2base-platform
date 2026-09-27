@@ -52,6 +52,16 @@ async function approveFirstBatch(prisma, campaign) {
   if (!isAutomation(campaign)) {
     throw httpError('NOT_AUTOMATION', 400, 'Campanha não é automação opt-in.');
   }
+  // Despertar do 1º lote (lista fechada FR-31) — aditivo, à prova de falha.
+  try {
+    const autonomy = require('./autonomy');
+    await autonomy.report(prisma, {
+      orgId: campaign.orgId,
+      type: 'studio.campaign.first_batch',
+      campaignId: campaign.id,
+      details: { reason: 'primeiro lote aguardando aprovação humana' },
+    });
+  } catch (_) { /* despertar nunca quebra o guard-rail */ }
   const execs = await channelExecutions(prisma, campaign);
   const approvedAt = new Date();
   const sample = [];
@@ -104,6 +114,16 @@ async function evaluateAnomaly(prisma, campaign) {
   if (reasons.length === 0) return { paused: false };
 
   const reason = `anomalia detectada: ${reasons.join('; ')}`;
+  // Despertar do Contrato de Autonomia (FR-31) — aditivo, nunca quebra.
+  try {
+    const autonomy = require('./autonomy');
+    await autonomy.report(prisma, {
+      orgId: campaign.orgId,
+      type: 'studio.anomaly.detected',
+      campaignId: campaign.id,
+      details: { reason },
+    });
+  } catch (_) { /* despertar nunca quebra o guard-rail */ }
   for (const { kind, row } of await channelExecutions(prisma, campaign)) {
     const guardrailsData = {
       ...(row.guardrails || {}),

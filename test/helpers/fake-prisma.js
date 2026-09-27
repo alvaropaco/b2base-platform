@@ -73,23 +73,39 @@ function applyData(record, data) {
 }
 
 /** Cria um model fake com as operações usadas pelo motor. */
-function makeModel(name, uniqueFields = []) {
+function makeModel(name, uniqueFields = [], compositeUniques = []) {
   const rows = [];
+  function assertUniques(data) {
+    // Impõe @unique (006): duplicata → P2002, como no Prisma real.
+    for (const field of uniqueFields) {
+      const v = data[field];
+      if (v != null && rows.some((r) => r[field] === v)) {
+        const err = new Error(`fake-prisma: ${name}.${field} único violado (${v})`);
+        err.code = 'P2002';
+        throw err;
+      }
+    }
+    // Impõe @@unique([...]) compostos (specs/011): (type, refId) do ledger,
+    // actionKey de StudioActionRun, orgId+channel do saldo, consentimento.
+    for (const composite of compositeUniques) {
+      if (composite.some((f) => data[f] == null)) continue; // NULL não conflita (Postgres)
+      const key = composite.map((f) => data[f]).join('\u0000');
+      const dup = rows.some((r) => composite.every((f) => r[f] === data[f]));
+      if (dup) {
+        const err = new Error(`fake-prisma: ${name}.@@unique(${composite.join(', ')}) violado (${key.slice(0, 40)})`);
+        err.code = 'P2002';
+        throw err;
+      }
+    }
+  }
   const model = {
     rows,
     async create({ data }) {
-      // Impõe @unique (006): duplicata → P2002, como no Prisma real.
-      for (const field of uniqueFields) {
-        const v = data[field];
-        if (v != null && rows.some((r) => r[field] === v)) {
-          const err = new Error(`fake-prisma: ${name}.${field} único violado (${v})`);
-          err.code = 'P2002';
-          throw err;
-        }
-      }
+      assertUniques(data);
       const row = { id: data.id || makeId(name.slice(0, 3)) };
       rows.push(row);
-      return applyData(row, data);
+      // Defaults do Prisma real: createdAt/updatedAt existem em toda linha.
+      return applyData(row, { createdAt: new Date(), ...data });
     },
     async findUnique({ where }) {
       const key = Object.values(where)[0];
@@ -169,6 +185,12 @@ function createFakePrisma() {
     studioRecommendation: makeModel('studioRecommendation'),
     studioTemplate: makeModel('studioTemplate'),
     studioChatMessage: makeModel('studioChatMessage'),
+    // Campaign Studio Cockpit (specs/011) — orçamento de reputação, actions
+    // idempotentes e consentimento WhatsApp (unique composto no ledger).
+    studioReputationAccount: makeModel('studioReputationAccount', [], [['orgId', 'channel']]),
+    studioReputationEvent: makeModel('studioReputationEvent', [], [['type', 'refId']]),
+    studioActionRun: makeModel('studioActionRun', ['actionKey']),
+    studioLeadConsent: makeModel('studioLeadConsent', [], [['orgId', 'prospectId', 'channel']]),
     outreachCampaign: makeModel('outreachCampaign'),
     outreachContact: makeModel('outreachContact'),
     outreachMessage: makeModel('outreachMessage'),

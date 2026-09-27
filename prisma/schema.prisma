@@ -22,6 +22,13 @@ model Organization {
   stripeCustomerId     String?  @unique
   stripeSubscriptionId String?  @unique
   stripePlanStatus     String?  // active, trialing, past_due, canceled…
+  // ── Studio Cockpit (011): pausa global de emergência (FR-19, AD-4) ──────
+  // Estado PERSISTIDO checado no gate a montante de todo envio — nunca só
+  // em memória; retomada exige ação explícita.
+  studioSendPaused     Boolean  @default(false)
+  studioPausedAt       DateTime?
+  studioPausedById     String?
+  studioPauseReason    String?
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
   
@@ -322,6 +329,11 @@ model EmailAccount {
   scopes                  Json      @default("[]")        // ["gmail.send", "gmail.metadata"] (provider gmail)
   status                  String    @default("connected") // connected, revoked, expired, error
   lastHistoryId           String?                         // token da última consulta do history (provider gmail)
+  // ── Studio Cockpit (011): autenticação de domínio verificada (AD-8, FR-16)
+  sendingDomain           String?                         // domínio de envio (parte após @ de `email`)
+  domainAuthStatus        String?                         // unverified | verified | failed (DNS real, nunca checkbox)
+  domainAuthDetail        Json?                           // {spf, dkim, dmarc} — última verificação
+  domainAuthVerifiedAt    DateTime?
   createdAt               DateTime  @default(now())
   updatedAt               DateTime  @updatedAt
 
@@ -353,6 +365,10 @@ model OutreachCampaign {
   emailAccountId         String?                      // conta de envio do disparo automático
   emailTemplateSubject   String?                      // placeholders {{companyName}}, {{firstName}}, {{city}}, {{industry}}
   emailTemplateBody      String?                      // texto plano (email single-shot quando template custom)
+  // ── Studio Cockpit (011, FR-37/AD-2): headers de descadastro one-click ──
+  // Definidos no compile do bridge (nunca nos workers): List-Unsubscribe e
+  // List-Unsubscribe-Post (RFC 8058) da execução de e-mail compilada.
+  emailHeaders           Json?
   whatsappAccountId      String?                      // conta WAHA do disparo automático
   whatsappTemplate       String?                      // mensagem WhatsApp (mesmos placeholders)
   autoWhatsAppCampaignId String?                      // WhatsAppCampaign criada p/ automação (reusada)
@@ -1411,4 +1427,84 @@ model StudioChatMessage {
   createdAt   DateTime @default(now())
 
   @@index([campaignId, createdAt])
+}
+
+// ============================================================================
+// CAMPAIGN STUDIO COCKPIT (specs/011) — Orçamento de Reputação, actions
+// idempotentes, consentimento WhatsApp. Ledger transacional com writer único
+// (studio/reputation.js) e gate fail-closed (studio/reputation-gate.js) —
+// AD-3/AD-4 da spine de arquitetura.
+// ============================================================================
+
+// Conta de saldo por Canal (orgId+channel unique). `balance` só muta na MESMA
+// transação que insere o StudioReputationEvent correspondente (AD-3).
+model StudioReputationAccount {
+  id                String    @id @default(cuid())
+  orgId             String
+  channel           String    // email | whatsapp
+  balance           Int       @default(0)   // unidades disponíveis (1 unidade = 1 envio)
+  floor             Int       @default(0)   // reserva mínima; efetivo só com domínio verificado (FR-16)
+  ceiling           Int       @default(0)   // teto da rampa atual (warm-up contínuo — FR-17/FR-18)
+  rampStage         Int       @default(0)   // estágio da rampa de warm-up
+  // unverified | verified | failed — verificado por DNS (AD-8), nunca declarado
+  domainAuthStatus  String    @default("unverified")
+  domainAuthCheckedAt DateTime?
+  domainAuthDetail  Json      @default("{}") // {spf, dkim, dmarc} + detalhes da última checagem
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([orgId, channel])
+  @@index([orgId])
+}
+
+// Ledger append-only (AD-3/AD-13). Estorno idempotente: unique (type, refId)
+// impede duplo crédito sob qualquer retry/requeue do worker.
+model StudioReputationEvent {
+  id           String   @id @default(cuid())
+  orgId        String
+  channel      String   // email | whatsapp
+  type         String   // debit | credit | block
+  amount       Int      // unidades movidas (sempre > 0; a direção está no type)
+  balanceAfter Int      // saldo resultante (auditoria FR-20)
+  reason       String?  // explicação legível (bloqueio, reposição, estorno)
+  refType      String?  // batch | send | ramp | grant | complaint | pause
+  refId        String?  // batchId | messageId | dia | ...
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now())
+
+  @@unique([type, refId])
+  @@index([orgId, channel, createdAt])
+}
+
+// Execução idempotente de actions semânticas v1 (AD-6, FR-9): chave estável
+// (campaignId+action+hash(params) ou actionId do cliente) — duplo toque não
+// duplica segmento/conteúdo; a 2ª chamada devolve o resultado da 1ª.
+model StudioActionRun {
+  id         String   @id @default(cuid())
+  orgId      String
+  campaignId String
+  action     String   // set_objective | set_audience | attach_url | confirm_material | generate_content | set_schedule | …
+  actionKey  String   // chave de idempotência (unique)
+  status     String   @default("succeeded") // succeeded | failed
+  result     Json     @default("{}")  // card devolvido na 1ª execução (replay idempotente)
+  createdAt  DateTime @default(now())
+
+  @@unique([actionKey])
+  @@index([orgId, campaignId])
+}
+
+// Consentimento WhatsApp persistido e auditável por lead (AD-11, FR-35) —
+// nunca inferido em memória; consultado pelo Certificado (FR-27/FR-36).
+model StudioLeadConsent {
+  id          String   @id @default(cuid())
+  orgId       String
+  prospectId  String
+  channel     String   @default("whatsapp")
+  source      String   // email_reply | opt_in | manual
+  grantedById String?  // user.id quando manual
+  evidence    Json     @default("{}") // {classificationId?, messageId?, note?}
+  createdAt   DateTime @default(now())
+
+  @@unique([orgId, prospectId, channel])
+  @@index([orgId])
 }

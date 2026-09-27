@@ -16,7 +16,7 @@ const crypto = require('crypto');
 const { PrismaClient } = require('@prisma/client');
 const { createWorker, registerWorker } = require('./outreach-queues');
 const { listHistory } = require('./gmail-api');
-const { sendEmailForAccount } = require('./email-provider');
+const emailProvider = require('./email-provider');
 const { checkLimit, calculateDelay, getConfig: getRateConfig } = require('./outreach-rate-limiter');
 const { renderTemplate } = require('./whatsapp-utils');
 const orgContext = require('./org-context');
@@ -34,7 +34,10 @@ function getPrisma() {
 // Injeção para testes (node --test sem Prisma/Redis real) — sufixo _ForTests.
 function _setPrismaForTests(client) { _prisma = client; }
 let _queueFactory = null;
-function _setQueueFactoryForTests(fn) { _queueFactory = fn; }
+function _setQueueFactoryForTests(fn) {
+  _queueFactory = fn;
+  _pauseQueue = null; // fila em cache pertence à factory anterior
+}
 function makeQueue(name, opts) {
   return _queueFactory ? _queueFactory(name, opts) : require('./outreach-queues').createQueue(name, opts);
 }
@@ -486,6 +489,35 @@ async function requeueStuckScheduledMessages() {
   }
 }
 
+// Fila de re-agendamento module-level: makeQueue uma única vez (não por
+// chamada de pausa). Resetado quando a factory muda (testes).
+let _pauseQueue = null;
+function getSendQueue() {
+  if (!_pauseQueue) {
+    _pauseQueue = makeQueue('outreach:message-send', {
+      redis: process.env.REDIS_URL?.replace('redis://', '') || 'localhost:6379',
+    });
+  }
+  return _pauseQueue;
+}
+
+/**
+ * specs/011 (AD-13): estorno idempotente do débito do gate quando uma
+ * mensagem definivamente NÃO sai (unique (type, refId) no ledger impede
+ * duplo estorno sob qualquer retry/requeue). Nunca quebra o worker.
+ */
+async function _refundForMessage(prisma, message, reason) {
+  try {
+    const orgId = message?.contact?.campaign?.tenantId;
+    if (!orgId || !message?.id) return null;
+    const reputation = require('./studio/reputation');
+    return await reputation.refundSend(prisma, { orgId, channel: 'email', messageId: message.id, reason });
+  } catch (err) {
+    console.error('[send] estorno de saldo falhou (ignorado):', err.message);
+    return null;
+  }
+}
+
 async function processSend(job) {
   const { messageId } = job.data;
 
@@ -509,15 +541,50 @@ async function processSend(job) {
     throw new Error(`Message ${messageId} not found`);
   }
 
+  // Idempotência PRIMEIRO: evita reenvio duplicado se o job for entregue mais
+  // de uma vez — e impede estornar um envio que de fato ocorreu (AD-13).
+  if (message.status === 'SENT') {
+    return { already_sent: true };
+  }
+
   // Check for terminal states on the contact
   if (message.contact.status === 'REPLIED' || message.contact.status === 'UNSUBSCRIBED' || message.contact.status === 'CANCELLED') {
     console.log(`[send] ✗ contact ${message.contactId} in terminal state ${message.contact.status}, cancelling`);
+    // specs/011 (AD-13): falha definitiva antes do envio → estorno idempotente.
+    await _refundForMessage(prisma, message, `contato em estado terminal (${message.contact.status})`);
     return { cancelled: true, reason: message.contact.status };
   }
 
-  // Idempotência: evita reenvio duplicado se o job for entregue mais de uma vez.
-  if (message.status === 'SENT') {
-    return { already_sent: true };
+  // specs/011 (AD-4/FR-19): pausa global da org e pausa da campanha checadas
+  // ANTES de cada envio — nada envia até retomada explícita. Re-agenda com
+  // delay (paridade com whatsapp-workers) em vez de queimar tentativas.
+  // Sem o model `organization` (fakes legados) a flag não existe → sem pausa.
+  // orgId AUSENTE → fail-closed: re-agenda em vez de enviar sem checar.
+  const orgId = message.contact?.campaign?.tenantId;
+  if (typeof prisma.organization?.findUnique === 'function') {
+    if (!orgId) {
+      console.warn('[send] ⊘ orgId indisponível — fail-closed, re-agendando em 60s');
+      await _enqueueSend(getSendQueue(), messageId, 60 * 1000, { dedupe: false });
+      return { paused: 'pause_check_failed' };
+    }
+    try {
+      const org = await prisma.organization.findUnique({ where: { id: orgId } });
+      if (org && org.studioSendPaused) {
+        console.log(`[send] ⊘ pausa global da org ${orgId} — re-agendando em 60s`);
+        await _enqueueSend(getSendQueue(), messageId, 60 * 1000, { dedupe: false });
+        return { paused: 'org_paused' };
+      }
+    } catch (pauseErr) {
+      // Fail-closed: erro ao checar pausa NÃO libera o envio — re-agenda.
+      console.error('[send] checagem de pausa falhou (fail-closed):', pauseErr.message);
+      await _enqueueSend(getSendQueue(), messageId, 60 * 1000, { dedupe: false });
+      return { paused: 'pause_check_failed' };
+    }
+  }
+  if (message.contact?.campaign && message.contact.campaign.status === 'paused') {
+    console.log(`[send] ⊘ campanha pausada ${message.contact.campaignId} — re-agendando em 60s`);
+    await _enqueueSend(getSendQueue(), messageId, 60 * 1000, { dedupe: false });
+    return { paused: 'campaign_paused' };
   }
 
   // Check rate limit
@@ -563,6 +630,8 @@ async function processSend(job) {
     });
     // Falha PERMANENTE (lead sem e-mail): termina sem re-tentar — o throw
     // anterior gastava 3 retries do Bull para o mesmo erro determinístico.
+    // specs/011 (AD-13): falha definitiva → estorno idempotente do débito.
+    await _refundForMessage(prisma, message, 'lead sem e-mail de destino');
     return { failed: 'no_recipient_email', messageId };
   }
 
@@ -570,7 +639,7 @@ async function processSend(job) {
   const messageIdHeader = crypto.randomUUID();
   let result;
   try {
-    result = await sendEmailForAccount(prisma, message.contact.emailAccount_id, {
+    result = await emailProvider.sendEmailForAccount(prisma, message.contact.emailAccount_id, {
       to: recipientEmail,
       subject: message.subject,
       body: message.body,
@@ -600,6 +669,12 @@ async function processSend(job) {
         details: { error: errorMsg },
       },
     }).catch(() => {});
+    // specs/011 (AD-13): falha DEFINITIVA (última tentativa do Bull) →
+    // estorno idempotente. Falha transitória re-tenta sem estornar.
+    const attempts = Number(job.opts?.attempts) || 3;
+    if (job.attemptsMade >= attempts - 1) {
+      await _refundForMessage(prisma, message, `falha definitiva do provider: ${errorMsg}`);
+    }
     throw err;
   }
 

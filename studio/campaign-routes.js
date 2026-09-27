@@ -200,6 +200,10 @@ function registerCampaignRoutes(router, context) {
       });
 
       if (action === 'cancel') {
+        // specs/011 (AD-13): lote não enviado é estornado em bloco (ledger).
+        try {
+          await require('./campaign-service').flow.refundUnsentOnCancel(prisma, campaign);
+        } catch (_) { /* estorno nunca quebra o cancelamento */ }
         // Leads na fila saem com status cancelado; enviados mantêm status real.
         if (campaign.emailExecutionId) {
           await prisma.outreachContact.updateMany({
@@ -253,6 +257,11 @@ function registerCampaignRoutes(router, context) {
         where: { id: campaign.id },
         data: { status: 'in_review', statusReason: String((req.body || {}).reason || 'revisão exigida pelo usuário') },
       });
+      // specs/011 (AD-13): saída do voo (retida/em revisão) estorna o lote
+      // restante em bloco — saldo fantasma nunca fica no ledger.
+      try {
+        await require('./campaign-service').flow.refundUnsentOnCancel(prisma, campaign);
+      } catch (_) { /* estorno nunca quebra a transição */ }
       res.json({ success: true, data: updated });
     } catch (err) {
       next(err);

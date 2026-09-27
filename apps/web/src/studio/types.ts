@@ -69,3 +69,81 @@ export interface StudioApiError {
   error: string;
   message?: string;
 }
+
+// ── Cockpit (specs/011) ─────────────────────────────────────────────────────
+
+/** Saldo de um Canal do Orçamento de Reputação (FR-14/FR-20). */
+export interface ReputationBalance {
+  channel: 'email' | 'whatsapp';
+  balance: number;
+  available: number;
+  floor: number;
+  ceiling: number;
+  rampStage: number;
+  domainAuthStatus: 'unverified' | 'verified' | 'failed';
+  domainAuthCheckedAt?: string | null;
+  updatedAt?: string;
+}
+
+/** Evento do ledger — toda variação de saldo é atribuível (FR-20). */
+export interface ReputationEvent {
+  id: string;
+  channel: string;
+  type: 'debit' | 'credit' | 'block';
+  amount: number;
+  balanceAfter: number;
+  reason?: string | null;
+  refType?: string | null;
+  refId?: string | null;
+  createdAt: string;
+}
+
+/** Chip do Briefing do Mordomo — carrega o dado que o motivou (FR-21). */
+export interface CockpitChip {
+  kind: string;
+  label: string;
+  motivo: string;
+  prompt?: string;
+  campaignId?: string;
+  createCampaign?: boolean;
+  demo?: boolean;
+  count?: number;
+  /** Ação semântica real (FR-9) — dispara POST /campaigns/:id/actions. */
+  action?: { type: string; params?: Record<string, unknown> };
+}
+
+/** Despertar do Contrato de Autonomia (FR-31). */
+export interface CockpitWake {
+  dedupKey: string;
+  kind: string;
+  severity: string;
+  title: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+}
+
+/** Home do Cockpit: estado único de abertura. */
+export interface CockpitHome {
+  diaZero: boolean;
+  chips: CockpitChip[];
+  balances: ReputationBalance[];
+  paused: boolean;
+  activeCampaignId: string | null;
+  activeCampaignName: string | null;
+  wakes: CockpitWake[];
+}
+
+/** Item do Certificado de Segurança (FR-27) — estado + explicação. */
+export interface CertificateItem {
+  key: string;
+  label: string;
+  level: 'ok' | 'warning' | 'block';
+  detail: string;
+}
+
+export interface CertificateVerdict {
+  level: 'green' | 'blocked';
+  items: CertificateItem[];
+  requiredUnits: number;
+  evaluatedAt: string;
+}

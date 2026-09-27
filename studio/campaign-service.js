@@ -320,9 +320,54 @@ async function runImmediateDispatch(prisma, { campaign, userId, overrides = {} }
   return { campaign: updated, dispatch: dispatchResult };
 }
 
+/**
+ * specs/011 (AD-13): cancelamento/retenção com lote não enviado → estorno do
+ * restante EM BLOCO por canal (credit único, refId determinístico — nunca
+ * duplo estorno). Falha ao estornar não quebra o cancelamento.
+ */
+async function refundUnsentOnCancel(prisma, campaign) {
+  const reputation = require('./reputation');
+  const out = {};
+  try {
+    if (campaign.emailExecutionId) {
+      const pending = await prisma.outreachContact.count({
+        where: { campaignId: campaign.emailExecutionId, status: 'QUEUED' },
+      });
+      if (pending > 0) {
+        out.email = await reputation.refundBatch(prisma, {
+          orgId: campaign.orgId,
+          channel: 'email',
+          batchId: `cancel:${campaign.id}:email`,
+          units: pending,
+          reason: 'lote restante estornado no cancelamento',
+        });
+      }
+    }
+    if (campaign.whatsappExecutionId) {
+      const waContacts = bridge.waContactModel(prisma);
+      const pendingWa = await waContacts.count({
+        where: { campaignId: campaign.whatsappExecutionId, status: 'QUEUED' },
+      });
+      if (pendingWa > 0) {
+        out.whatsapp = await reputation.refundBatch(prisma, {
+          orgId: campaign.orgId,
+          channel: 'whatsapp',
+          batchId: `cancel:${campaign.id}:whatsapp`,
+          units: pendingWa,
+          reason: 'lote restante estornado no cancelamento',
+        });
+      }
+    }
+  } catch (err) {
+    console.error('[studio:cancel] estorno do lote restante falhou (ignorado):', err.message);
+  }
+  return out;
+}
+
 module.exports.flow = {
   materializeAudience,
   activeSnapshot,
   approveCampaign,
   runImmediateDispatch,
+  refundUnsentOnCancel,
 };

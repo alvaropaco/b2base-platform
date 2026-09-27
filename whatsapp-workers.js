@@ -205,6 +205,29 @@ async function processSequence(job) {
     );
     return { paused: true };
   }
+  // specs/011 (FR-19/AD-4): pausa GLOBAL da org (persistida) — paridade com
+  // a pausa de campanha: re-agenda e aguarda retomada explícita. Sem o model
+  // `organization` (fakes legados) a flag não existe → não há pausa.
+  if (typeof prisma.organization?.findUnique === 'function') {
+    try {
+      const org = await prisma.organization.findUnique({ where: { id: campaign.orgId } });
+      if (org && org.studioSendPaused) {
+        await queues().sequence.add(
+          { contactId, stepIndex, prospectId, campaignId: campaign.id },
+          { delay: 60 * 1000, attempts: 1000 }
+        );
+        return { paused: 'org_paused' };
+      }
+    } catch (pauseErr) {
+      // Fail-closed: sem confirmação de que a org não está pausada, re-agenda.
+      console.error('[whatsapp] checagem de pausa global falhou (fail-closed):', pauseErr.message);
+      await queues().sequence.add(
+        { contactId, stepIndex, prospectId, campaignId: campaign.id },
+        { delay: 60 * 1000, attempts: 1000 }
+      );
+      return { paused: 'pause_check_failed' };
+    }
+  }
   if (campaign.status !== CAMPAIGN_STATUS.RUNNING) {
     return { skipped: `campaign_${campaign.status}` };
   }
@@ -354,7 +377,26 @@ async function processSend(job) {
         where: { id: message.id },
         data: { status: 'FAILED', error: 'contact_terminal_state', failedAt: new Date() },
       });
+      // specs/011 (AD-13): falha definitiva antes do envio → estorno.
+      await _refundForMessage(prisma, message, `contato em estado terminal (${contact.status})`);
       return { cancelled: true, reason: contact.status };
+    }
+  }
+
+  // specs/011 (FR-19/AD-4): pausa global da org checada antes de CADA envio.
+  if (typeof prisma.organization?.findUnique === 'function') {
+    try {
+      const org = await prisma.organization.findUnique({ where: { id: message.orgId } });
+      if (org && org.studioSendPaused) {
+        console.log(`[whatsapp] ⊘ pausa global da org ${message.orgId} — re-agendando em 60s`);
+        await queues().send.add({ messageId: message.id }, { delay: 60 * 1000, attempts: 5, backoff: { type: 'exponential', delay: 5000 } });
+        return { paused: 'org_paused' };
+      }
+    } catch (pauseErr) {
+      // Fail-closed: sem confirmação de que a org não está pausada, re-agenda.
+      console.error('[whatsapp] checagem de pausa global falhou (fail-closed):', pauseErr.message);
+      await queues().send.add({ messageId: message.id }, { delay: 60 * 1000, attempts: 5, backoff: { type: 'exponential', delay: 5000 } });
+      return { paused: 'pause_check_failed' };
     }
   }
 
@@ -416,7 +458,59 @@ async function processSend(job) {
       messageId: message.id,
       error: err.message,
     });
+    // specs/011 (AD-13/FR-18): falha DEFINITIVA (última tentativa) → estorno
+    // idempotente + penalização do saldo + Despertar (rejeição WhatsApp é
+    // prioridade 1 na lista fechada). Falha transitória re-tenta sem estornar.
+    const attempts = Number(job.opts?.attempts) || 5;
+    if (job.attemptsMade >= attempts - 1) {
+      await _refundForMessage(prisma, message, `falha definitiva do provider: ${err.message}`);
+      await _penalizeForMessage(prisma, message, `mensagem rejeitada/bloqueada: ${err.message}`);
+    }
     throw err; // Bull re-tenta com backoff
+  }
+}
+
+/**
+ * specs/011 (FR-18): rejeição/bloqueio de WhatsApp reduz o saldo
+ * automaticamente e desperta (lista fechada FR-31). Nunca quebra o worker.
+ */
+async function _penalizeForMessage(prisma, message, reason) {
+  try {
+    if (!message?.orgId || !message?.id) return null;
+    const reputation = require('./studio/reputation');
+    const autonomy = require('./studio/autonomy');
+    const result = await reputation.penalize(prisma, {
+      orgId: message.orgId,
+      channel: 'whatsapp',
+      amount: 1,
+      reason,
+      refId: message.id,
+    });
+    await autonomy.report(prisma, {
+      orgId: message.orgId,
+      type: 'studio.whatsapp.rejected',
+      campaignId: message.campaignContactId || null,
+      details: { reason, messageId: message.id },
+    });
+    return result;
+  } catch (err) {
+    console.error('[whatsapp] penalização de saldo falhou (ignorado):', err.message);
+    return null;
+  }
+}
+
+/**
+ * specs/011 (AD-13): estorno idempotente do débito do gate (unique
+ * (type, refId) no ledger impede duplo estorno). Nunca quebra o worker.
+ */
+async function _refundForMessage(prisma, message, reason) {
+  try {
+    if (!message?.orgId || !message?.id) return null;
+    const reputation = require('./studio/reputation');
+    return await reputation.refundSend(prisma, { orgId: message.orgId, channel: 'whatsapp', messageId: message.id, reason });
+  } catch (err) {
+    console.error('[whatsapp] estorno de saldo falhou (ignorado):', err.message);
+    return null;
   }
 }
 

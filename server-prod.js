@@ -5603,6 +5603,34 @@ async function start() {
       require('./studio/scheduler-worker').registerStudioScheduler(prisma);
       require('./studio/analytics-service').registerStudioMetrics(prisma);
       require('./studio/analytics-service').registerSnapshotPurge(prisma);
+      // specs/011 (AD-8): revalidação DNS diária do domínio de envio —
+      // falha → floor do saldo efetivo zero (o gate bloqueia com instrução).
+      require('./studio/dns-verify').registerDailyJob(prisma);
+      // specs/011 (FR-17): reposição diária do saldo (rampa de warm-up +
+      // engajamento positivo sobe o estágio) para toda account existente.
+      try {
+        const reputation = require('./studio/reputation');
+        const { createQueue } = require('./outreach-queues');
+        const reputationQueue = createQueue('studio:reputation:daily');
+        reputationQueue
+          .add('daily', {}, { repeat: { cron: '3 7 * * *' }, jobId: 'studio-reputation-daily' })
+          .then(() => console.log('[studio:reputation] ✓ reposição diária registrada (07:03)'))
+          .catch((err) => console.error('[studio:reputation] falha ao registrar repeat job:', err.message));
+        reputationQueue.process(async () => {
+          const accounts = await prisma.studioReputationAccount.findMany();
+          for (const account of accounts) {
+            try {
+              await reputation.applyDailyReplenishment(prisma, account.orgId, account.channel);
+              await reputation.promoteRamp(prisma, account.orgId, account.channel);
+            } catch (err) {
+              console.error('[studio:reputation] reposição falhou para', account.orgId, account.channel, err.message);
+            }
+          }
+          return { accounts: accounts.length };
+        });
+      } catch (err) {
+        console.error('[studio:reputation] registro indisponível:', err.message);
+      }
     } catch (err) {
       console.error('[studio] failed to initialize workers:', err.message);
     }

@@ -9,17 +9,32 @@
  * automação opt-in (clarify Q1). Contas de envio: rate limiters globais
  * existentes continuam como última barreira (FR-019, pesquisa D5).
  *
+ * specs/011 (AD-5): `tickAll` inclui campanhas `scheduled` com startAt
+ * vencido, transitando para `running` VIA GATE (pausa/canal/certificado);
+ * toda liberação de lote passa pela primitiva `enqueueBatch` do bridge
+ * (AD-14) — pausa global e saldo vigem a montante de todo envio.
+ *
  * `tickCampaign` é injetável (enqueue capturado) — a suíte roda sem Redis.
  */
 
 const scheduleService = require('./schedule-service');
 const guardrails = require('./guardrails');
+const bridge = require('./channel-bridge');
+const reputationGate = require('./reputation-gate');
 const { autoSelectEmailAccount } = require('./dispatch');
 const metrics = require('../metrics');
 
+function primaryChannel(campaign) {
+  const channels = campaign.channels || [];
+  if (channels.includes('email')) return 'email';
+  if (channels.includes('whatsapp')) return 'whatsapp';
+  return null;
+}
+
 /**
  * Um tick de uma campanha. Retorna `{ released, skipped?, reason? }`.
- * `enqueue(channel, prospectIds)` é injetado (prod: enfileira nos motores).
+ * `enqueue(channel, prospectIds, batchId)` é injetado (prod: enfileira nos
+ * motores via bridge; testes: captura).
  */
 async function tickCampaign(prisma, campaign, { now = new Date(), enqueue, overrides = {} } = {}) {
   const schedule = campaign.schedule || {};
@@ -34,6 +49,43 @@ async function tickCampaign(prisma, campaign, { now = new Date(), enqueue, overr
     return { released: 0, skipped: 'first_batch_pending' };
   }
 
+  // 2.5) specs/011 (AD-5): campanha `scheduled` com startAt vencido transita
+  // para `running` VIA GATE — pausa, canal, certificado e saldo decidem.
+  if (campaign.status === 'scheduled') {
+    const channel = primaryChannel(campaign);
+    if (!channel) {
+      return { released: 0, skipped: 'no_channel' };
+    }
+    const verdict = await reputationGate.evaluate(prisma, {
+      orgId: campaign.orgId,
+      channel,
+      units: 1,
+      campaign,
+      now,
+    });
+    if (!verdict.allow) {
+      metrics.incGateEvaluation('block', verdict.code || 'GATE');
+      // Bloqueios despertam com o tipo PRÓPRIO do motivo (lista fechada FR-31).
+      if (verdict.code === reputationGate.BLOCK_CODES.BALANCE || verdict.code === reputationGate.BLOCK_CODES.ORG_PAUSED) {
+        const autonomy = require('./autonomy');
+        await autonomy.report(prisma, {
+          orgId: campaign.orgId,
+          type: verdict.code === reputationGate.BLOCK_CODES.ORG_PAUSED ? 'studio.org.paused' : 'studio.schedule.blocked_balance',
+          campaignId: campaign.id,
+          details: { reason: verdict.reason },
+          now,
+        }).catch(() => {});
+      }
+      return { released: 0, skipped: 'gate_blocked', reason: verdict.reason, code: verdict.code };
+    }
+    await prisma.studioCampaign.update({
+      where: { id: campaign.id },
+      data: { status: 'running' },
+    });
+    campaign.status = 'running';
+    metrics.incStudioSchedulerTick('scheduled_running');
+  }
+
   // 3) Janela de envio (fuso da org ou do lead — FR-017/FR-022).
   if (!scheduleService.inWindow(schedule, now)) {
     return { released: 0, skipped: 'outside_window' };
@@ -42,6 +94,7 @@ async function tickCampaign(prisma, campaign, { now = new Date(), enqueue, overr
   // 4) Ritmo: cotas por hora/dia (FR-018). Contagens a partir dos envios
   // reais registrados nas execuções de canal.
   const hourStart = new Date(Math.floor(now.getTime() / 3600_000) * 3600_000);
+  void hourStart;
   const dayStart = scheduleService.startOfDayInTz(now, schedule.timezone || scheduleService.DEFAULT_TZ);
   let quota = schedule.hourlyLimit != null ? schedule.hourlyLimit : null;
   if (schedule.dailyLimit != null && campaign.emailExecutionId) {
@@ -75,6 +128,16 @@ async function tickCampaign(prisma, campaign, { now = new Date(), enqueue, overr
     });
   }
 
+  // Libera um lote pela primitiva única do bridge (gate + fila — AD-14).
+  const release = (channel, candidates) =>
+    bridge.enqueueBatch(prisma, {
+      campaign,
+      channel,
+      prospectIds: candidates.map((c) => c.prospectId),
+      now,
+      enqueue,
+    });
+
   // 5) E-mail: libera lote da fila (QUEUED e ainda não liberado).
   if (campaign.emailExecutionId) {
     const pendingRaw = await prisma.outreachContact.findMany({
@@ -83,45 +146,23 @@ async function tickCampaign(prisma, campaign, { now = new Date(), enqueue, overr
     const pending = await applyFatigueFilter(pendingRaw);
     const batch = quota == null ? pending.slice(0, 50) : pending.slice(0, quota);
     if (batch.length > 0) {
-      for (const contact of batch) {
-        await prisma.outreachContact.update({
-          where: { id: contact.id },
-          data: { scheduledAt: now },
-        });
-      }
-      const ids = batch.map((c) => c.prospectId);
-      if (overrides.enqueue) {
-        await overrides.enqueue('email', ids);
-      } else {
-        await enqueue('email', ids);
-      }
-      released += batch.length;
-      metrics.incStudioSendsEnqueued('email', batch.length);
-      if (quota != null) quota -= batch.length;
+      const result = await release('email', batch);
+      released += result.enqueued.length;
+      if (quota != null) quota -= result.enqueued.length;
     }
   }
 
-  // 6) WhatsApp: mesma lógica, marcador `nextSendAt`.
+  // 6) WhatsApp: mesma lógica, marcador `nextSendAt`. (fake-prisma expõe
+  // `whatsappCampaignContact`; o client real Prisma, `whatsAppCampaignContact`.)
+  const waContacts = bridge.waContactModel(prisma);
   if (campaign.whatsappExecutionId && (quota == null || quota > 0)) {
-    const pending = await prisma.whatsappCampaignContact.findMany({
+    const pending = await waContacts.findMany({
       where: { campaignId: campaign.whatsappExecutionId, status: 'QUEUED', nextSendAt: null },
     });
     const batch = quota == null ? pending.slice(0, 50) : pending.slice(0, quota);
     if (batch.length > 0) {
-      for (const contact of batch) {
-        await prisma.whatsappCampaignContact.update({
-          where: { id: contact.id },
-          data: { nextSendAt: now },
-        });
-      }
-      const ids = batch.map((c) => c.prospectId);
-      if (overrides.enqueue) {
-        await overrides.enqueue('whatsapp', ids);
-      } else {
-        await enqueue('whatsapp', ids);
-      }
-      released += batch.length;
-      metrics.incStudioSendsEnqueued('whatsapp', batch.length);
+      const result = await release('whatsapp', batch);
+      released += result.enqueued.length;
     }
   }
 
@@ -140,7 +181,8 @@ async function tickCampaign(prisma, campaign, { now = new Date(), enqueue, overr
  * auto-selecionada da org (padrão v1 — ver studio/dispatch.js).
  */
 function makeProdEnqueue(prisma, campaign, userId) {
-  return async function enqueue(channel, prospectIds) {
+  return async function enqueue(channel, prospectIds, batchId) {
+    void batchId;
     if (channel === 'email' && campaign.emailExecutionId) {
       const account = await autoSelectEmailAccount(prisma, campaign.orgId);
       const workers = require('../outreach-workers');
@@ -158,18 +200,22 @@ function makeProdEnqueue(prisma, campaign, userId) {
   };
 }
 
-/** Tick global: varre campanhas elegíveis (usado pelo repeat job de 60s). */
-async function tickAll(prisma, { now = new Date(), userId } = {}) {
+/**
+ * Tick global: varre campanhas elegíveis (usado pelo repeat job de 60s).
+ * specs/011 (AD-5): inclui `scheduled` (transição gated no tickCampaign).
+ * `overrides.enqueueFactory(campaign)` injeta a liberação (testes).
+ */
+async function tickAll(prisma, { now = new Date(), userId, overrides = {} } = {}) {
   const campaigns = await prisma.studioCampaign.findMany({
-    where: { status: 'running' },
+    where: { status: { in: ['running', 'scheduled'] } },
   });
   const results = [];
   for (const campaign of campaigns) {
     try {
-      const result = await tickCampaign(prisma, campaign, {
-        now,
-        enqueue: makeProdEnqueue(prisma, campaign, userId),
-      });
+      const enqueue = overrides.enqueueFactory
+        ? overrides.enqueueFactory(campaign)
+        : makeProdEnqueue(prisma, campaign, userId);
+      const result = await tickCampaign(prisma, campaign, { now, enqueue });
       results.push({ campaignId: campaign.id, ...result });
     } catch (err) {
       console.error('[studio:scheduler] falha no tick da campanha', campaign.id, err.message);

@@ -579,3 +579,84 @@ export async function askAnalyst(
   );
   return data.data;
 }
+
+// ── Cockpit (specs/011) ─────────────────────────────────────────────────────
+import type {
+  CockpitHome,
+  CockpitWake,
+  CertificateVerdict,
+  ReputationBalance,
+  ReputationEvent,
+} from './types';
+
+/** Home do mordomo: sugestões, saldo, pausa global e campanha ativa. */
+export async function fetchCockpitHome(): Promise<CockpitHome> {
+  const data = await request<{ data: CockpitHome }>('/cockpit/home');
+  return data.data;
+}
+
+/** Despertares do Contrato de Autonomia. */
+export async function fetchCockpitWakes(): Promise<CockpitWake[]> {
+  const data = await request<{ data: CockpitWake[] }>('/cockpit/wakes');
+  return data.data ?? [];
+}
+
+export async function ackCockpitWake(id: string): Promise<void> {
+  await request(`/cockpit/wakes/${encodeURIComponent(id)}/ack`, { method: 'POST', body: JSON.stringify({}) });
+}
+
+/** Painel de Saldo: valor corrente por canal + eventos explicados (FR-20). */
+export async function fetchReputation(): Promise<{ balances: ReputationBalance[]; events: ReputationEvent[]; paused: boolean }> {
+  const data = await request<{ data: { balances: ReputationBalance[]; events: ReputationEvent[]; paused: boolean } }>('/reputation');
+  return data.data;
+}
+
+/** Pausa global de emergência 1-clique (FR-19); retomada exige ação explícita. */
+export async function setSendPause(paused: boolean, reason?: string): Promise<{ paused: boolean }> {
+  const data = await request<{ data: { paused: boolean } }>('/reputation/pause', {
+    method: 'POST',
+    body: JSON.stringify({ paused, ...(reason ? { reason } : {}) }),
+  });
+  return data.data;
+}
+
+/** Verificação DNS do domínio de envio (AD-8) — sob demanda. */
+export async function verifySendingDomain(): Promise<{ status: string; domain?: string }> {
+  const data = await request<{ data: { status: string; domain?: string } }>('/reputation/verify-domain', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  return data.data;
+}
+
+/** Certificado de Segurança da campanha (FR-27). */
+export async function fetchCertificate(id: string): Promise<CertificateVerdict> {
+  const data = await request<{ data: CertificateVerdict }>(
+    `/campaigns/${encodeURIComponent(id)}/certificate`
+  );
+  return data.data;
+}
+
+/** Consentimento WhatsApp do lead (FR-35) — caminho para consentir. */
+export async function grantLeadConsent(
+  prospectId: string,
+  input: { source?: 'email_reply' | 'opt_in' | 'manual'; confirm?: boolean; note?: string }
+): Promise<{ replayed: boolean }> {
+  const data = await request<{ data: { replayed: boolean } }>(
+    `/leads/${encodeURIComponent(prospectId)}/consent`,
+    { method: 'POST', body: JSON.stringify(input) }
+  );
+  return data.data;
+}
+
+/** Chip-ação: executa uma action semântica idempotente (FR-9). */
+export async function runCampaignAction(
+  id: string,
+  input: { type: string; actionId: string; params?: Record<string, unknown> }
+): Promise<{ card: { type: string; label: string; detail?: string }; campaignStatus: string }> {
+  const data = await request<{ data: { card: { type: string; label: string; detail?: string }; campaignStatus: string } }>(
+    `/campaigns/${encodeURIComponent(id)}/actions`,
+    { method: 'POST', body: JSON.stringify(input) }
+  );
+  return data.data;
+}

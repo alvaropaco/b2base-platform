@@ -23,6 +23,7 @@ function registerStudioRoutes(router, context) {
   const { registerBrandRoutes } = require('./brand-routes');
   const { registerAdvancedRoutes } = require('./advanced-routes');
   const { registerChatRoutes } = require('./chat-routes');
+  const { registerCockpitRoutes } = require('./cockpit-routes');
   registerCampaignRoutes(router, context);
   registerAudienceRoutes(router, context);
   registerSegmentRoutes(router, context);
@@ -37,6 +38,8 @@ function registerStudioRoutes(router, context) {
   registerBrandRoutes(router, context);
   registerAdvancedRoutes(router, context);
   registerChatRoutes(router, context);
+  // specs/011 — Cockpit: sugestões, saldo, pausa global, certificado, wakes.
+  registerCockpitRoutes(router, context);
 }
 
 module.exports = { registerStudioRoutes };

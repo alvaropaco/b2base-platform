@@ -739,3 +739,86 @@ function setStudioJourneyLeads(journeyId, blockId, status, count) {
   if (studioJourneyLeadsGauge) studioJourneyLeadsGauge.set({ journeyId, blockId, status }, count || 0);
 }
 module.exports.setStudioJourneyLeads = setStudioJourneyLeads;
+
+// ─── Campaign Studio Cockpit (specs/011) — gate, ledger e sugestões ─────────
+
+const studioGateEvaluations = enabled
+  ? new client.Counter({
+      name: 'studio_gate_evaluations_total',
+      help: 'Avaliações do gate de reputação por resultado (allow/block) e motivo',
+      labelNames: ['result', 'reason'],
+      registers: [registry],
+    })
+  : null;
+const studioGateConsumed = enabled
+  ? new client.Counter({
+      name: 'studio_gate_units_consumed_total',
+      help: 'Unidades de saldo consumidas pelo gate por canal',
+      labelNames: ['channel'],
+      registers: [registry],
+    })
+  : null;
+const studioLedgerEvents = enabled
+  ? new client.Counter({
+      name: 'studio_ledger_events_total',
+      help: 'Eventos do ledger de reputação por tipo e canal',
+      labelNames: ['type', 'channel'],
+      registers: [registry],
+    })
+  : null;
+const studioLedgerRefunds = enabled
+  ? new client.Counter({
+      name: 'studio_ledger_refunds_total',
+      help: 'Estornos idempotentes de envio por canal (AD-13)',
+      labelNames: ['channel'],
+      registers: [registry],
+    })
+  : null;
+const studioSuggestionsShown = enabled
+  ? new client.Counter({
+      name: 'studio_suggestions_shown_total',
+      help: 'Sugestões contextuais exibidas no Cockpit por tipo',
+      labelNames: ['kind'],
+      registers: [registry],
+    })
+  : null;
+const studioAutonomyWake = enabled
+  ? new client.Counter({
+      name: 'studio_autonomy_wake_total',
+      help: 'Decisões do Contrato de Autonomia por evento e resultado (wake/silent/aggregated)',
+      labelNames: ['type', 'result'],
+      registers: [registry],
+    })
+  : null;
+
+function incGateEvaluation(result, reason) {
+  if (studioGateEvaluations) {
+    studioGateEvaluations.inc({ result: result || 'allow', reason: result === 'block' ? String(reason || 'unknown') : 'none' });
+  }
+}
+function incGateBlock(reason) {
+  incGateEvaluation('block', reason);
+}
+function incGateConsumed(channel, count) {
+  if (studioGateConsumed) studioGateConsumed.inc({ channel: channel || 'unknown' }, count || 1);
+}
+function incLedgerEvent(type, channel) {
+  if (studioLedgerEvents) studioLedgerEvents.inc({ type: type || 'unknown', channel: channel || 'unknown' });
+}
+function incLedgerRefund(channel) {
+  if (studioLedgerRefunds) studioLedgerRefunds.inc({ channel: channel || 'unknown' });
+}
+function incSuggestionsShown(kind) {
+  if (studioSuggestionsShown) studioSuggestionsShown.inc({ kind: kind || 'unknown' });
+}
+function incAutonomyWake(type, result) {
+  if (studioAutonomyWake) studioAutonomyWake.inc({ type: type || 'unknown', result: result || 'silent' });
+}
+
+module.exports.incGateEvaluation = incGateEvaluation;
+module.exports.incGateBlock = incGateBlock;
+module.exports.incGateConsumed = incGateConsumed;
+module.exports.incLedgerEvent = incLedgerEvent;
+module.exports.incLedgerRefund = incLedgerRefund;
+module.exports.incSuggestionsShown = incSuggestionsShown;
+module.exports.incAutonomyWake = incAutonomyWake;

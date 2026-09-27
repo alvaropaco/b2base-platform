@@ -128,6 +128,9 @@ test('tick: fora da janela não libera nenhum lead (pausa fora da janela)', asyn
 
 test('tick: dentro da janela libera até o limite por hora; demais ficam para o próximo tick', async () => {
   const prisma = createFakePrisma();
+  // specs/011: o gate exige canal configurado e domínio verificado (FR-16).
+  prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'email', balance: 100, floor: 10, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
   const schedule = { ...WINDOW_WEEKDAYS_9_12, hourlyLimit: 2 };
   prisma.studioCampaign.rows.push(campaignFixture({ status: 'running', schedule }));
   for (let i = 1; i <= 3; i++) prisma.outreachContact.rows.push(queuedContact(`oc-${i}`, `lead-${i}`));
