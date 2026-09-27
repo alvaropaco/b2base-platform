@@ -11,6 +11,7 @@
  * Rotas antigas do Studio (`/studio/campaigns`, `/studio/agent`, …)
  * redirecionam para `/studio` (FR-1).
  */
+import { Bell } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   StudioRequestError,
@@ -228,7 +229,8 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
   }, [onExit]);
 
   return (
-    <div className="dark min-h-screen bg-background text-foreground">
+    <div className="cockpit-scope dark min-h-screen bg-background text-foreground">
+      <div className="cockpit-bloom" aria-hidden />
       <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col">
         {/* Header mínimo — zero chrome, identidade + pausa + despertares */}
         <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
@@ -275,7 +277,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
               className="relative rounded-full border border-border px-2.5 py-1 hover:bg-accent"
               title="Despertares"
             >
-              sino
+              <Bell className="h-4 w-4" />
               {(home?.wakes?.length ?? 0) > 0 && (
                 <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-[10px] font-bold text-white">
                   {home?.wakes.length}

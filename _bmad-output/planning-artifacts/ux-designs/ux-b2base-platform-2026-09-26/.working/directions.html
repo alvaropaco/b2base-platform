@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Campaign Cockpit — Direções Visuais</title>
+<style>
+  :root { --accent:#8B5CF6; --accent-2:#A78BFA; --glow:rgba(139,92,246,.35); --bloom:rgba(139,92,246,.14); }
+  html[data-dir="ciano"] { --accent:#22D3EE; --accent-2:#67E8F9; --glow:rgba(34,211,238,.32); --bloom:rgba(34,211,238,.12); }
+  html[data-dir="ambar"] { --accent:#F59E0B; --accent-2:#FCD34D; --glow:rgba(245,158,11,.30); --bloom:rgba(245,158,11,.10); }
+  * { margin:0; box-sizing:border-box; font-family:Inter,-apple-system,'Segoe UI',sans-serif; }
+  body { background:#06070A; color:#F2F4F8; min-height:100vh; }
+  .bloom { position:fixed; inset:0; pointer-events:none;
+    background: radial-gradient(900px 420px at 50% -8%, var(--bloom), transparent 70%); transition:background .6s; }
+  header { position:sticky; top:0; z-index:10; display:flex; gap:10px; align-items:center; justify-content:space-between;
+    padding:14px 22px; background:rgba(6,7,10,.82); backdrop-filter:blur(14px); border-bottom:1px solid rgba(255,255,255,.07); }
+  header h1 { font-size:15px; font-weight:600; }
+  header h1 span { color:var(--accent-2); }
+  .switch { display:flex; gap:8px; }
+  .switch button { padding:8px 16px; border-radius:999px; border:1px solid rgba(255,255,255,.14); background:transparent;
+    color:#9AA3B2; font-size:13px; font-weight:600; cursor:pointer; transition:all .25s; }
+  .switch button.on { border-color:var(--accent); color:#fff; box-shadow:0 0 18px var(--glow); }
+  .wrap { max-width:860px; margin:36px auto 80px; padding:0 20px; }
+  .rail { display:flex; gap:6px; align-items:center; font-size:12.5px; margin:6px 0 26px; }
+  .step { display:flex; align-items:center; gap:7px; padding:7px 14px; border-radius:999px; color:#5B6472; }
+  .step.on { color:#fff; background:color-mix(in srgb, var(--accent) 14%, transparent); border:1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    box-shadow:0 0 16px var(--glow); }
+  .dot { width:7px; height:7px; border-radius:50%; background:#2A3140; }
+  .step.on .dot { background:var(--accent); box-shadow:0 0 10px var(--glow), 0 0 3px var(--accent); }
+  .arrow { color:#2A3140; }
+  .card { border:1px solid rgba(255,255,255,.08); border-radius:16px; padding:20px 22px; margin-bottom:14px;
+    background:rgba(255,255,255,.03); backdrop-filter:blur(10px); animation:rise .5s ease both; }
+  .card b { display:block; margin-bottom:6px; font-size:14.5px; }
+  .card p { font-size:13.5px; color:#9AA3B2; line-height:1.55; }
+  .chip { display:inline-block; padding:9px 16px; border-radius:999px; font-size:13px; font-weight:600; margin:4px 6px 4px 0;
+    border:1px solid color-mix(in srgb, var(--accent) 40%, rgba(255,255,255,.14)); color:var(--accent-2); cursor:pointer;
+    transition:all .25s; background:color-mix(in srgb, var(--accent) 7%, transparent); }
+  .chip:hover { box-shadow:0 0 22px var(--glow); border-color:var(--accent); transform:translateY(-1px); }
+  .chip small { display:block; font-weight:400; font-size:11px; color:#8A93A6; margin-top:3px; }
+  .saldo { display:flex; justify-content:space-between; font-size:12.5px; color:#9AA3B2; border-top:1px solid rgba(255,255,255,.07); padding-top:12px; }
+  .saldo b { color:#34D399; text-shadow:0 0 12px rgba(52,211,153,.4); }
+  .inputbar { display:flex; gap:10px; margin-top:22px; }
+  .inputbar input { flex:1; padding:15px 18px; border-radius:14px; border:1px solid rgba(255,255,255,.1);
+    background:rgba(255,255,255,.035); color:#F2F4F8; font-size:14px; outline:none; }
+  .inputbar input:focus { border-color:color-mix(in srgb, var(--accent) 55%, transparent); box-shadow:0 0 0 3px var(--glow); }
+  .inputbar button { padding:0 24px; border-radius:14px; border:none; font-weight:700; color:#fff; cursor:pointer;
+    background:linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow:0 4px 22px var(--glow); transition:transform .2s; }
+  .inputbar button:hover { transform:translateY(-1px); }
+  @keyframes rise { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+  .tokens { font-size:11.5px; color:#5B6472; margin-top:10px; }
+  .tokens code { color:var(--accent-2); }
+  .nota { font-size:12.5px; color:#8A93A6; margin-top:26px; line-height:1.6; }
+</style>
+</head>
+<body data-dir="">
+<div class="bloom"></div>
+<header>
+  <h1>Campaign Cockpit — <span>escolha a direção</span></h1>
+  <div class="switch">
+    <button class="on" onclick="setDir('',this)">D1 · Violeta Elétrico</button>
+    <button onclick="setDir('ciano',this)">D2 · Ciano-Elétrico</button>
+    <button onclick="setDir('ambar',this)">D3 · Âmbar Premium</button>
+  </div>
+</header>
+<div class="wrap">
+  <div class="rail">
+    <div class="step on"><span class="dot"></span>Objetivo</div><div class="arrow">→</div>
+    <div class="step"><span class="dot"></span>Audiência</div><div class="arrow">→</div>
+    <div class="step"><span class="dot"></span>Mensagem</div><div class="arrow">→</div>
+    <div class="step"><span class="dot"></span>Agenda</div><div class="arrow">→</div>
+    <div class="step"><span class="dot"></span>Saldo</div>
+  </div>
+  <div class="card" style="animation-delay:.05s"><b>Vamos montar sua campanha juntos.</b>
+    <p>Me conta o que você quer vender e para quem. Você pode colar um link, anexar um material e me dizer como quer o disparo.</p></div>
+  <div class="card" style="animation-delay:.15s">
+    <div class="chip">1 resposta quente esperando tratamento<small>Classificação: interesse claro nas últimas 72h</small></div>
+    <div class="chip">Campanha QA em rascunho há 4 dias — finalizo?<small>Rascunho parado desde terça-feira</small></div>
+    <div class="chip">3 leads enriquecidos sem contato<small>Base enriquecida com CNPJ válido</small></div>
+  </div>
+  <div class="card" style="animation-delay:.25s">
+    <div class="saldo"><span>Saldo de e-mail (warm-up)</span><b>82% · saudável</b></div>
+  </div>
+  <div class="inputbar"><input placeholder="Conte o que você quer alcançar…"><button>Enviar</button></div>
+  <p class="nota" id="desc"></p>
+  <p class="tokens" id="tokens"></p>
+</div>
+<script>
+const D = {
+  "": { desc:"<b>D1 · Violeta Elétrico</b> — o mais próximo da linguagem Framer (blooms roxos sobre quase-preto). Famliliar o suficiente para não brigar com o indigo herdado do resto da plataforma, mas claramente 'um lugar próprio'.", tok:"accent #8B5CF6 · accent-2 #A78BFA · glow rgba(139,92,246,.35)" },
+  ciano: { desc:"<b>D2 · Ciano-Elétrico</b> — frio, técnico, 'terminal premium'. Má distinção do indigo herdado (ninguém confunde), glow forte no Rail. Risco: mais distante da marca B2Base atual.", tok:"accent #22D3EE · accent-2 #67E8F9 · glow rgba(34,211,238,.32)" },
+  ambar: { desc:"<b>D3 · Âmbar Premium</b> — quente, 'dinheiro/no-funil', conversa com a métrica de respostas. O mais incomum em SaaS B2B (diferenciação máxima); risco de cansar em telas longas.", tok:"accent #F59E0B · accent-2 #FCD34D · glow rgba(245,158,11,.30)" },
+};
+function setDir(d, btn) {
+  document.documentElement.dataset.dir = d;
+  document.querySelectorAll('.switch button').forEach(b => b.classList.remove('on'));
+  btn.classList.add('on');
+  document.getElementById('desc').innerHTML = D[d].desc;
+  document.getElementById('tokens').innerHTML = 'Tokens: <code>' + D[d].tok + '</code>';
+  document.querySelectorAll('.card').forEach(c => { c.style.animation='none'; void c.offsetWidth; c.style.animation=''; });
+}
+setDir('', document.querySelector('.switch button'));
+</script>
+</body>
+</html>

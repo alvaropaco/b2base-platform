@@ -1,3 +1,4 @@
+import ReactMarkdown from 'react-markdown';
 import { Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ChatMessage } from '@/types/onboarding';
@@ -14,13 +15,16 @@ export function ChatBubble({ message }: { message: ChatMessage }) {
       )}
       <div
         className={cn(
-          'max-w-[78%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm',
+          'max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm [&_p]:my-1.5 [&_p]:leading-6',
           isAva
             ? 'rounded-tl-sm border border-white/10 bg-white/[0.06] text-slate-100'
-            : 'rounded-tr-sm bg-indigo-500 font-medium text-white shadow-indigo-500/20'
+            : 'rounded-tr-sm bg-indigo-500 font-medium text-white shadow-indigo-500/20 [&_strong]:font-bold'
         )}
       >
-        {message.text}
+        {/* Respostas da Ava usam markdown (**negrito**, listas); \n vira bloco. */}
+        {(message.text ?? '').split('\n').map((line, i) => (
+          <ReactMarkdown key={i}>{line}</ReactMarkdown>
+        ))}
       </div>
     </div>
   );

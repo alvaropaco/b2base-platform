@@ -380,9 +380,14 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
                       }
                       void send(chip.prompt || chip.label);
                     }}
-                    className="rounded-full border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                    className="rounded-full border border-primary/40 bg-primary/10 px-3 py-1.5 text-left text-xs font-medium text-primary transition-colors hover:bg-primary/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
                   >
                     {chip.label}
+                    {chip.motivo && (
+                      <span className="mt-0.5 block text-[11px] font-normal text-muted-foreground">
+                        {chip.motivo}
+                      </span>
+                    )}
                   </button>
                 ))
               : stepChips.map((chip) => (

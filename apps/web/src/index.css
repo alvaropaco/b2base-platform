@@ -191,3 +191,18 @@
     box-shadow: 0 0 12px 1px rgba(139, 92, 246, 0.6);
   }
 }
+
+/* ── Campaign Cockpit (011) — D1 · Violeta Elétrico ──────────────────────
+   Escopo: apenas a subárvore .cockpit-scope (StudioApp). O resto da
+   plataforma mantém o indigo herdado. 258 90% 66% = #8B5CF6. */
+.cockpit-scope {
+  --primary: 258 90% 66%;
+  --primary-foreground: 210 40% 98%;
+  --ring: 258 90% 66%;
+}
+.cockpit-bloom {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(900px 420px at 50% -8%, rgba(139, 92, 246, 0.14), transparent 70%);
+}
