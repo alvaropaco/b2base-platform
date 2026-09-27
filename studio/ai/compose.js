@@ -59,7 +59,7 @@ function createComposer({ callLlm } = {}) {
       system: 'Você é redator de campanhas B2B em português, respondendo apenas com JSON válido e completo.',
       buildUser,
       validate: (p) => (p.email || p.whatsapp || p.linkedinText ? null : 'pacote sem nenhum canal preenchido'),
-      maxTokens: 2400,
+      maxTokens: 4000,
       temperature: 0.7,
       tag: 'studio:compose',
     });

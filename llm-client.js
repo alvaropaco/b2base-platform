@@ -90,10 +90,17 @@ async function callLlm({
   if (usage) {
     console.log(
       `[llm-client] usage tag=${tag} model=${result.model} ` +
-      `prompt=${usage.prompt_tokens || 0} completion=${usage.completion_tokens || 0}`
+      `prompt=${usage.prompt_tokens || 0} completion=${usage.completion_tokens || 0}` +
+      (result.truncated ? ' TRUNCATED (finish_reason=length — aumente maxTokens)' : '')
     );
   }
-  return { content: result.content, usage, model: result.model, fallbackUsed: Boolean(result.fallbackUsed) };
+  return {
+    content: result.content,
+    usage,
+    model: result.model,
+    truncated: Boolean(result.truncated),
+    fallbackUsed: Boolean(result.fallbackUsed),
+  };
 }
 
 async function _chatCompletion({ system, user, temperature, maxTokens, jsonMode, timeoutMs, model }) {
@@ -139,8 +146,14 @@ async function _chatCompletion({ system, user, temperature, maxTokens, jsonMode,
   }
 
   const json = await res.json();
-  const content = (json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content) || '';
-  return { content, usage: json.usage || null, model };
+  const choice = (json.choices && json.choices[0]) || {};
+  const content = (choice.message && choice.message.content) || '';
+  return {
+    content,
+    usage: json.usage || null,
+    model,
+    truncated: choice.finish_reason === 'length',
+  };
 }
 
 /**

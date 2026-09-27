@@ -71,14 +71,21 @@ module.exports = { parseModelJson, balancedObjectSlice };
  * Chamada LLM com expectativa de JSON + reparo (US chat/compose/segment-nl).
  * `buildUser(previousRaw)` recebe null na 1ª tentativa e a resposta inválida
  * nas seguintes (prompt de reparo). `validate` decide se o JSON serve.
+ * Resposta truncada (finish_reason=length) vira pedido explícito de concisão
+ * no retry — truncado nunca parseia, então o reparo precisa encurtar.
  */
 async function callLlmJson(llm, { system, buildUser, validate, maxTokens = 1200, temperature = 0.4, model, tag, attempts = 2 }) {
   let lastRaw = null;
   let lastProblem = null;
+  let lastTruncated = false;
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    let user = buildUser(attempt === 1 ? null : lastRaw);
+    if (attempt > 1 && lastTruncated) {
+      user += '\n\nIMPORTANTE: sua resposta anterior foi CORTADA por limite de tamanho e ficou um JSON inválido. Responda de forma muito mais concisa (texts curtos, rationale em até 2 frases) garantindo que o JSON feche.';
+    }
     const result = await llm({
       system,
-      user: buildUser(attempt === 1 ? null : lastRaw),
+      user,
       jsonMode: true,
       temperature: attempt === 1 ? temperature : 0,
       maxTokens,
@@ -86,12 +93,15 @@ async function callLlmJson(llm, { system, buildUser, validate, maxTokens = 1200,
       tag,
     });
     lastRaw = result.content;
+    lastTruncated = Boolean(result.truncated);
     const parsed = parseModelJson(result.content);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       if (!validate) return parsed;
       const problem = validate(parsed);
       if (!problem) return parsed;
       lastProblem = problem;
+    } else if (lastTruncated) {
+      lastProblem = 'resposta truncada por limite de tokens';
     } else {
       lastProblem = 'resposta não é JSON';
     }

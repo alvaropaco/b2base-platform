@@ -26,7 +26,7 @@ function createSegmentNl({ callLlm } = {}) {
         fields,
         'Regiões do Brasil válidas para o campo "region": Norte, Nordeste, Centro-Oeste, Sudeste, Sul.',
         'Responda SOMENTE com JSON:',
-        '{"criteria":{"version":1,"groups":[{"op":"AND","conditions":[{"field":"...","op":"...","value":"..."}]}]},"rationale":"por que estes critérios representam o pedido"}',
+        '{"criteria":{"version":1,"groups":[{"op":"AND","conditions":[{"field":"...","op":"...","value":"..."}]}]},"rationale":"em NO MÁXIMO 2 frases, por que estes critérios representam o pedido"}',
         'Pedido:',
         String(prompt || '').slice(0, 4000),
       ].join('\n');
@@ -52,7 +52,7 @@ function createSegmentNl({ callLlm } = {}) {
           return `critérios fora do catálogo (${err.message})`;
         }
       },
-      maxTokens: 2000,
+      maxTokens: 4000,
       temperature: 0.3,
       tag: 'studio:segment-nl',
     });
