@@ -133,17 +133,18 @@ async function evaluate(prisma, campaign, { now = new Date(), skipPersist = fals
       items.push(item('domain_auth', 'Domínio autenticado (SPF/DKIM)', 'ok', 'SPF e DKIM verificados por DNS.'));
     }
 
-    // 3b) Descadastro configurado (FR-37) — todo e-mail tem que poder sair.
-    if (!hasUnsubscribeConfigured(contents)) {
-      items.push(item(
-        'unsubscribe',
-        'Descadastro acessível',
-        'block',
-        'O conteúdo de e-mail não tem link de descadastro. Todo envio precisa permitir sair da lista (com headers List-Unsubscribe).'
-      ));
-    } else {
-      items.push(item('unsubscribe', 'Descadastro acessível', 'ok', 'Link de descadastro presente no conteúdo.'));
-    }
+    // 3b) Descadastro configurado (FR-37) — a garantia vive no COMPILE (AD-2):
+    // o bridge injeta headers List-Unsubscribe (one-click) + rodapé em TODOS
+    // os e-mails. O conteúdo gerado não precisa trazer o link — este item
+    // nunca bloqueia (bloquear aqui seria condição impossível).
+    items.push(item(
+      'unsubscribe',
+      'Descadastro acessível',
+      'ok',
+      hasUnsubscribeConfigured(contents)
+        ? 'Link de descadastro presente no conteúdo + headers List-Unsubscribe injetados no compile.'
+        : 'Headers List-Unsubscribe (one-click) e rodapé de descadastro injetados no compile para todo e-mail.'
+    ));
   }
 
   // 3) Opt-outs honrados (FR-27): exclusões por opt-out são mantidas fora.
