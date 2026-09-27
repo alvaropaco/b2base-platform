@@ -256,7 +256,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
   const renderCard = (card: ChatCard, i: number) => {
     if (card.type === 'whatsapp_qr') {
       return (
-        <div key={i} className="cockpit-glass rounded-xl border-emerald-400/20 p-3 text-xs">
+        <div key={i} className="cockpit-glass rounded-xl p-3 text-xs">
           <p className="font-semibold text-foreground">{card.label}</p>
           {card.detail && <p className="mt-0.5 leading-relaxed text-muted-foreground">{card.detail}</p>}
           {card.qrCode ? (
@@ -267,7 +267,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
               <span className="text-[11px] text-muted-foreground">Escaneie pelo WhatsApp → Aparelhos conectados</span>
             </div>
           ) : (
-            <p className="mt-2 rounded-lg bg-emerald-500/10 px-2 py-1.5 text-emerald-300">
+            <p className="mt-2 rounded-lg bg-emerald-50 px-2 py-1.5 text-emerald-800">
               {card.status === 'connected' ? '✓ Sessão ativa — nada a fazer.' : 'Aguardando a sessão…'}
             </p>
           )}
@@ -276,7 +276,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
     }
     if (card.type === 'balance') {
       return (
-        <div key={i} className="cockpit-glass rounded-xl border-violet-400/25 p-3 text-xs">
+        <div key={i} className="cockpit-glass rounded-xl border-[#160211]/10 p-3 text-xs">
           <p className="font-semibold text-foreground">{card.label}</p>
           {card.detail && (
             <div className="mt-1.5 space-y-2">
@@ -306,7 +306,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
         {card.detail && <p className="mt-0.5 text-muted-foreground">{card.detail}</p>}
         {card.sources && card.sources.length > 0 && (
           <p className="mt-1.5 text-muted-foreground">
-            <span className="font-medium text-violet-200">Fontes dos dados:</span> {card.sources.join(' · ')}
+            <span className="font-medium text-foreground/70">Fontes dos dados:</span> {card.sources.join(' · ')}
           </p>
         )}
       </div>
@@ -331,13 +331,13 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
         {messages.map((m) =>
           m.role === 'user' ? (
             <div key={m.id} className="cockpit-rise flex justify-end">
-              <div className="cockpit-send max-w-[85%] rounded-2xl rounded-br-md px-4 py-2.5 text-sm text-white shadow-lg shadow-violet-900/30">
+              <div className="max-w-[85%] rounded-2xl rounded-br-md border border-[#160211]/10 bg-white px-4 py-2.5 text-sm text-foreground shadow-sm">
                 <p className="whitespace-pre-wrap">{m.text}</p>
               </div>
             </div>
           ) : (
             <div key={m.id} className="cockpit-rise flex justify-start gap-3">
-              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-400 to-violet-700 text-white shadow-md shadow-violet-900/40">
+              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/80 text-foreground shadow-[inset_0_0_0_1px_rgba(22,2,17,0.12)]">
                 <Sparkles className="h-3.5 w-3.5" />
               </div>
               <div className="min-w-0 max-w-[85%] space-y-2 text-sm">
@@ -351,7 +351,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
         )}
         {pending && (
           <div className="cockpit-rise flex justify-start gap-3">
-            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-400 to-violet-700 text-white shadow-md shadow-violet-900/40">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/80 text-foreground shadow-[inset_0_0_0_1px_rgba(22,2,17,0.12)]">
               <Sparkles className="h-3.5 w-3.5" />
             </div>
             <div className="min-w-0 max-w-[85%] space-y-2 text-sm">
@@ -387,7 +387,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
         {/* Certificado de Segurança renderizado como mensagem rica do thread */}
         {certificate && (
           <div className="cockpit-rise flex justify-start gap-3">
-            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-400 to-violet-700 text-white shadow-md shadow-violet-900/40">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/80 text-foreground shadow-[inset_0_0_0_1px_rgba(22,2,17,0.12)]">
               <Sparkles className="h-3.5 w-3.5" />
             </div>
             <div
@@ -395,8 +395,8 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
               aria-label={`Certificado de segurança: ${certificate.level === 'green' ? 'tudo certo' : 'com pendências'}`}
               className={`max-w-[85%] rounded-2xl rounded-bl-md border p-3.5 text-sm ${
                 certificate.level === 'green'
-                  ? 'border-emerald-400/40 bg-emerald-500/10 shadow-[0_0_24px_rgba(52,211,153,0.12)]'
-                  : 'border-rose-400/40 bg-rose-500/10'
+                  ? 'border-emerald-300 bg-emerald-50'
+                  : 'border-rose-300 bg-rose-50'
               }`}
             >
               <p className="font-semibold">
@@ -408,7 +408,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
                     <span
                       aria-hidden="true"
                       className={
-                        item.level === 'ok' ? 'text-emerald-300' : item.level === 'warning' ? 'text-amber-300' : 'text-rose-300'
+                        item.level === 'ok' ? 'text-emerald-600' : item.level === 'warning' ? 'text-amber-600' : 'text-rose-600'
                       }
                     >
                       {item.level === 'ok' ? '●' : item.level === 'warning' ? '▲' : '✕'}
@@ -453,7 +453,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
                       }
                       void send(chip.prompt || chip.label);
                     }}
-                    className="max-w-full truncate rounded-full border border-violet-400/25 bg-violet-500/10 px-3.5 py-2 text-xs font-medium text-violet-100 transition-colors hover:bg-violet-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                    className="max-w-full truncate rounded-full border border-[#160211]/10 bg-white/60 px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
                   >
                     {chip.label}
                   </button>
@@ -474,7 +474,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
       </div>
 
       {error && (
-        <p role="alert" className="mx-4 mb-2 rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+        <p role="alert" className="mx-4 mb-2 rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-800">
           {error}
         </p>
       )}
@@ -497,7 +497,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
             <button
               type="button"
               onClick={() => void handleApprove()}
-              className="rounded-full bg-gradient-to-r from-violet-500 to-violet-700 px-3.5 py-2 text-xs font-medium text-white shadow-lg shadow-violet-900/40 disabled:opacity-40"
+              className="rounded-full bg-[#160211] px-3.5 py-2 text-xs font-medium text-white shadow-md disabled:opacity-40"
               title="Aprova a campanha — a audiência congela aqui"
             >
               Aprovar campanha
@@ -508,7 +508,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
               type="button"
               onClick={() => void handleLaunch()}
               disabled={launching || isRunning}
-              className={`rounded-full bg-gradient-to-r from-violet-500 to-violet-700 px-3.5 py-2 text-xs font-medium text-white shadow-lg shadow-violet-900/40 disabled:opacity-40 ${isRunning ? '' : 'cockpit-glow-approve'}`}
+              className={`rounded-full bg-[#160211] px-3.5 py-2 text-xs font-medium text-white shadow-md disabled:opacity-40 ${isRunning ? '' : 'cockpit-glow-approve'}`}
               title="Confere o Certificado e o saldo antes de autorizar"
             >
               {isRunning ? 'Em voo' : launching ? 'Autorizando…' : 'Colocar em voo'}
@@ -540,7 +540,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
             placeholder="Conte o que você quer alcançar…"
             className="max-h-32 w-full resize-none bg-transparent px-1 text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
           />
-          <div className="mt-2 flex items-center justify-between border-t border-white/[0.06] pt-2.5">
+          <div className="mt-2 flex items-center justify-between border-t border-[#160211]/10 pt-2.5">
             <label
               className="flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
               title="Anexar PDF, imagem ou documento"

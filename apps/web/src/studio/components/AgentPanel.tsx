@@ -107,12 +107,12 @@ export function AgentPanel() {
   return (
     <div className="space-y-4">
       {error && (
-        <p role="alert" className="rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+        <p role="alert" className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-800">
           {error}
         </p>
       )}
       {notice && (
-        <p className="rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
+        <p className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           {notice}
         </p>
       )}
@@ -126,13 +126,13 @@ export function AgentPanel() {
           onChange={(e) => setPrompt(e.target.value)}
           rows={3}
           placeholder="Ex.: quero vender software ERP para empresas industriais de SP"
-          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-violet-400/50 focus-visible:ring-1 focus-visible:ring-violet-400/40"
+          className="w-full rounded-xl border border-[#160211]/10 bg-white/70 px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-[#160211]/40 focus-visible:ring-1 focus-visible:ring-[#160211]/30"
         />
         <button
           type="button"
           onClick={propose}
           disabled={busy || !prompt.trim()}
-          className="h-10 rounded-xl bg-gradient-to-r from-violet-500 to-violet-700 px-4 text-sm font-medium text-white shadow-lg shadow-violet-900/40 transition-transform hover:brightness-110 disabled:opacity-40"
+          className="h-10 rounded-xl bg-[#160211] px-4 text-sm font-medium text-white shadow-md transition-transform hover:brightness-110 disabled:opacity-40"
         >
           {busy ? 'Planejando…' : 'Propor campanha'}
         </button>
@@ -159,9 +159,9 @@ export function AgentPanel() {
                       className={`rounded-full px-2.5 py-1 text-xs transition-colors ${
                         decisions[item.key] === d
                           ? d === 'accepted'
-                            ? 'bg-violet-500/25 text-violet-100'
-                            : 'bg-rose-500/20 text-rose-200'
-                          : 'border border-white/10 text-muted-foreground hover:bg-white/5'
+                            ? 'bg-[#160211] text-white'
+                            : 'bg-rose-100 text-rose-800'
+                          : 'border border-[#160211]/15 text-muted-foreground hover:bg-white'
                       }`}
                     >
                       {d === 'accepted' ? 'Aceitar' : 'Rejeitar'}
@@ -176,7 +176,7 @@ export function AgentPanel() {
             type="button"
             onClick={decide}
             disabled={busy}
-            className="h-10 rounded-xl bg-gradient-to-r from-violet-500 to-violet-700 px-4 text-sm font-medium text-white shadow-lg shadow-violet-900/40 transition-transform hover:brightness-110 disabled:opacity-40"
+            className="h-10 rounded-xl bg-[#160211] px-4 text-sm font-medium text-white shadow-md transition-transform hover:brightness-110 disabled:opacity-40"
           >
             {busy ? 'Convertendo…' : 'Criar campanha a partir do plano'}
           </button>

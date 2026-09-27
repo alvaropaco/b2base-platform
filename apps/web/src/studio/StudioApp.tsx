@@ -298,7 +298,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
     <>
       {/* Identidade + ação primária (ref: logo row + New Chat). */}
       <div className="flex items-center gap-2.5 px-3 pb-4">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-violet-400 to-violet-700 text-white shadow-lg shadow-violet-900/40">
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#160211] text-white shadow-md">
           <Sparkles className="h-[18px] w-[18px]" />
         </div>
         <div className="leading-tight">
@@ -321,7 +321,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
           void startCampaign();
         }}
         disabled={creating}
-        className="mx-3 mb-5 flex items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-gradient-to-r from-violet-500 to-violet-700 px-3 py-2.5 text-sm font-medium text-white shadow-lg shadow-violet-900/40 transition-transform hover:brightness-110 disabled:opacity-40"
+        className="mx-3 mb-5 flex items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-[#160211] px-3 py-2.5 text-sm font-medium text-white shadow-md transition-transform hover:brightness-110 disabled:opacity-40"
       >
         <Plus className="h-4 w-4" />
         {creating ? 'Abrindo…' : 'Nova campanha'}
@@ -344,14 +344,14 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                     aria-current={active ? 'page' : undefined}
                     className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors ${
                       active
-                        ? 'bg-violet-500/15 text-violet-100 shadow-[inset_0_0_0_1px_rgba(168,85,247,0.3)]'
-                        : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'
+                        ? 'bg-white/70 text-foreground shadow-[inset_0_0_0_1px_rgba(22,2,17,0.12)]'
+                        : 'text-muted-foreground hover:bg-white/60 hover:text-foreground'
                     }`}
                   >
-                    <Icon className={`h-4 w-4 ${active ? 'text-violet-300' : ''}`} />
+                    <Icon className={`h-4 w-4 ${active ? 'text-foreground' : ''}`} />
                     {item.label}
                     {item.key === 'home' && wakes.length > 0 && (
-                      <span className="ml-auto rounded-full bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-rose-300">
+                      <span className="ml-auto rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700">
                         {wakes.length}
                       </span>
                     )}
@@ -393,7 +393,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                         <span
                           aria-hidden="true"
                           className={`inline-block h-2 w-2 rounded-full ${
-                            healthy ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]' : 'bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.7)]'
+                            healthy ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]' : 'bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.5)]'
                           }`}
                         />
                       </span>
@@ -412,7 +412,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
           <p className="text-xs font-semibold text-foreground">Orçamento de Reputação</p>
           <p
             className={`mt-1 text-[11px] leading-relaxed ${
-              balances.every(channelHealthy) ? 'text-muted-foreground' : 'text-rose-200/90'
+              balances.every(channelHealthy) ? 'text-muted-foreground' : 'text-rose-700'
             }`}
           >
             {balances.every(channelHealthy)
@@ -422,7 +422,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
           <button
             type="button"
             onClick={() => void openSaldo()}
-            className="mt-2 w-full rounded-lg border border-violet-400/30 bg-violet-500/10 px-2 py-1.5 text-xs font-medium text-violet-200 transition-colors hover:bg-violet-500/20"
+            className="mt-2 w-full rounded-lg border border-[#160211]/15 bg-white/60 px-2 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-white"
           >
             Ver movimentos
           </button>
@@ -432,11 +432,11 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
   );
 
   return (
-    <div className="cockpit-scope dark relative flex h-dvh overflow-hidden bg-background text-foreground">
+    <div className="cockpit-scope relative flex h-dvh overflow-hidden bg-background text-foreground">
       <div className="cockpit-bloom" aria-hidden />
 
       {/* Sidebar (desktop permanente; mobile: overlay). */}
-      <aside className="hidden w-[264px] shrink-0 flex-col border-r border-white/[0.07] bg-[#0a0610]/80 backdrop-blur-xl lg:flex">
+      <aside className="hidden w-[264px] shrink-0 flex-col border-r border-[#160211]/10 bg-white/60 backdrop-blur-xl lg:flex">
         {sidebar}
       </aside>
       {navOpen && (
@@ -455,7 +455,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
 
       <div className="relative flex min-w-0 flex-1 flex-col">
         {/* Topbar mínima — identidade da campanha + controles de confiança. */}
-        <header className="flex items-center gap-2 border-b border-white/[0.07] px-4 py-3">
+        <header className="flex items-center gap-2 border-b border-[#160211]/10 px-4 py-3">
           <button
             type="button"
             onClick={() => setNavOpen(true)}
@@ -468,15 +468,15 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
             <button
               type="button"
               onClick={exitToBriefing}
-              className="cockpit-glass flex min-w-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs transition-colors hover:border-violet-400/30"
+              className="cockpit-glass flex min-w-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs transition-colors hover:border-[#160211]/25"
               title="Voltar ao briefing — a campanha fica salva como rascunho"
             >
-              <ChevronLeft className="h-3.5 w-3.5 shrink-0 text-violet-300" />
+              <ChevronLeft className="h-3.5 w-3.5 shrink-0 text-foreground" />
               <span className="truncate font-medium text-foreground">{home?.activeCampaignName || 'Campanha'}</span>
             </button>
           ) : (
             <div className="cockpit-glass flex min-w-0 items-center gap-2 rounded-full px-3 py-1.5 text-xs">
-              <Sparkles className="h-3.5 w-3.5 shrink-0 text-violet-300" />
+              <Sparkles className="h-3.5 w-3.5 shrink-0 text-foreground" />
               <span className="truncate font-medium text-foreground">
                 {pane === 'home' ? 'Briefing do Mordomo' : navItems.find((n) => n.key === pane)?.label}
               </span>
@@ -509,7 +509,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
               aria-live="polite"
               className={`rounded-full px-3.5 py-2.5 font-medium transition-colors disabled:opacity-40 ${
                 paused
-                  ? 'border border-rose-400/40 bg-rose-500/15 text-rose-200'
+                  ? 'border border-rose-300 bg-rose-100 text-rose-800'
                   : 'border border-border text-muted-foreground hover:bg-accent hover:text-foreground'
               }`}
               title={paused ? 'Envios pausados — toque para retomar' : 'Pausar todos os envios agora'}
@@ -528,19 +528,19 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
         </header>
 
         {paused && (
-          <p role="alert" className="bg-rose-500/10 px-4 py-1.5 text-center text-xs text-rose-200">
+          <p role="alert" className="bg-rose-100/80 px-4 py-1.5 text-center text-xs text-rose-800">
             Envios pausados nesta organização — nada sai até você retomar.
           </p>
         )}
         {error && (
-          <p role="alert" className="bg-rose-500/10 px-4 py-1.5 text-center text-xs text-rose-200">
+          <p role="alert" className="bg-rose-100/80 px-4 py-1.5 text-center text-xs text-rose-800">
             {error}
           </p>
         )}
 
         {/* FR-3: o Rail existe só quando há campanha; luz acesa = etapa corrente. */}
         {hasCampaign && pane === 'home' && (
-          <nav aria-label="Etapas da campanha" className="border-b border-white/[0.07] px-4 py-2.5">
+          <nav aria-label="Etapas da campanha" className="border-b border-[#160211]/10 px-4 py-2.5">
             <ol ref={railRef} className="cockpit-rail-scroll flex items-center gap-1 overflow-x-auto pb-0.5 text-[11px]">
               {RAIL_STEPS.map((step, i) => {
                 const lit = railCurrent === step.key;
@@ -552,7 +552,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                       data-current={lit ? 'true' : undefined}
                       className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 transition-colors ${
                         lit
-                          ? 'cockpit-glow-on border border-violet-400/40 bg-gradient-to-r from-violet-500/25 to-fuchsia-500/15 font-semibold text-violet-100'
+                          ? 'bg-[#160211] font-semibold text-white'
                           : done
                             ? 'text-muted-foreground'
                             : 'text-muted-foreground/90'
@@ -561,7 +561,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                       <span
                         aria-hidden="true"
                         className={`inline-block h-1.5 w-1.5 rounded-full ${
-                          lit ? 'bg-violet-300' : done ? 'bg-violet-400/50' : 'bg-muted-foreground/50'
+                          lit ? 'bg-white' : done ? 'bg-[#160211]/40' : 'bg-muted-foreground/40'
                         } ${sweeping && lit ? 'cockpit-rail-sweep' : ''}`}
                       />
                       {step.label}
@@ -577,7 +577,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
             Saldo em linguagem clara: status por canal + PASSO A PASSO para
             liberar disparos (o box críptico "unidades" morreu). */}
         {saldoOpen && (
-          <aside id="cockpit-saldo" className="cockpit-rise border-b border-white/[0.07] bg-black/20 px-4 py-3 text-xs">
+          <aside id="cockpit-saldo" className="cockpit-rise border-b border-[#160211]/10 bg-white/50 px-4 py-3 text-xs">
             <h2 className="mb-2 font-semibold">Limites de envio — como liberar seus disparos</h2>
             <div className="space-y-3">
               {balances.map((b) => {
@@ -601,12 +601,12 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                     <p className="flex items-center gap-2">
                       <span
                         aria-hidden="true"
-                        className={`inline-block h-2 w-2 rounded-full ${blocked ? 'bg-rose-400' : pendingDomain ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                        className={`inline-block h-2 w-2 rounded-full ${blocked ? 'bg-rose-500' : pendingDomain ? 'bg-amber-500' : 'bg-emerald-500'}`}
                       />
                       <strong className="text-foreground">{label}</strong>
                       <span
                         className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
-                          blocked ? 'bg-rose-500/15 text-rose-300' : pendingDomain ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/15 text-emerald-300'
+                          blocked ? 'bg-rose-100 text-rose-800' : pendingDomain ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
                         }`}
                       >
                         {state}
@@ -615,7 +615,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                         {b.available} envios disponíveis de {b.ceiling}
                       </span>
                     </p>
-                    <ol className="mt-1.5 list-decimal space-y-1 pl-9 text-muted-foreground [&_li::marker]:text-violet-300">
+                    <ol className="mt-1.5 list-decimal space-y-1 pl-9 text-muted-foreground [&_li::marker]:text-[#160211]/40">
                       {steps.map((s, i) => (
                         <li key={i} className="leading-relaxed">{s}</li>
                       ))}
@@ -641,7 +641,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
         )}
 
         {wakesOpen && (
-          <aside id="cockpit-wakes" className="cockpit-rise border-b border-white/[0.07] bg-black/20 px-4 py-3 text-xs">
+          <aside id="cockpit-wakes" className="cockpit-rise border-b border-[#160211]/10 bg-white/50 px-4 py-3 text-xs">
             <h2 className="mb-2 font-semibold">Despertares</h2>
             <ul className="space-y-2">
               {wakes.map((wake) => (
@@ -650,7 +650,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                     <span
                       aria-hidden="true"
                       className={`mt-1 inline-block h-2 w-2 shrink-0 rounded-full ${
-                        wake.severity === 'critical' ? 'bg-rose-400' : 'bg-amber-400'
+                        wake.severity === 'critical' ? 'bg-rose-500' : 'bg-amber-500'
                       }`}
                     />
                     <span>
@@ -684,7 +684,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
               disabled={busyPause}
               className={`mt-3 w-full rounded-lg px-3 py-2 text-sm font-medium disabled:opacity-40 ${
                 paused
-                  ? 'border border-rose-400/40 bg-rose-500/10 text-rose-200'
+                  ? 'border border-rose-300 bg-rose-50 text-rose-800'
                   : 'bg-gradient-to-r from-rose-500 to-rose-600 text-white shadow-lg shadow-rose-900/30'
               }`}
             >
@@ -762,7 +762,12 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                 <p className="text-sm text-muted-foreground">Abrindo o Cockpit…</p>
               ) : (
                 <>
-                  <div className="cockpit-orb" aria-hidden />
+                  <div className="cockpit-orb" aria-hidden>
+                    <svg viewBox="0 0 24 24" fill="currentColor" role="img" aria-label="Sparkles">
+                      <path d="M9.5 2.6c.14-.4.7-.4.84 0l1.02 2.9a4.9 4.9 0 0 0 3.03 3.02l2.9 1.02c.4.14.4.7 0 .84l-2.9 1.02a4.9 4.9 0 0 0-3.03 3.02l-1.02 2.9c-.14.4-.7.4-.84 0l-1.02-2.9a4.9 4.9 0 0 0-3.02-3.02l-2.9-1.02c-.4-.14-.4-.7 0-.84l2.9-1.02a4.9 4.9 0 0 0 3.02-3.02l1.02-2.9Z" />
+                      <path d="M17.6 14.9c.1-.27.47-.27.57 0l.53 1.5c.16.47.53.84 1 1l1.5.53c.27.1.27.47 0 .57l-1.5.53c-.47.16-.84.53-1 1l-.53 1.5c-.1.27-.47.27-.57 0l-.53-1.5a1.6 1.6 0 0 0-1-1l-1.5-.53c-.27-.1-.27-.47 0-.57l1.5-.53c.47-.16.84-.53 1-1l.53-1.5Z" />
+                    </svg>
+                  </div>
                   <div className="space-y-2">
                     <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
                       {home.diaZero ? 'O que você quer conquistar hoje?' : 'As coisas mais importantes da sua operação hoje'}
@@ -777,9 +782,9 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                     <button
                       type="button"
                       onClick={() => resumeCampaign(lastCampaign.id, lastCampaign.name)}
-                      className="cockpit-glass flex items-center gap-2 rounded-full px-4 py-2.5 text-sm text-foreground transition-colors hover:border-violet-400/30"
+                      className="cockpit-glass flex items-center gap-2 rounded-full px-4 py-2.5 text-sm text-foreground transition-colors hover:border-[#160211]/25"
                     >
-                      <Play className="h-4 w-4 text-violet-300" />
+                      <Play className="h-4 w-4 text-foreground" />
                       Continuar “{lastCampaign.name}”
                     </button>
                   )}
@@ -793,7 +798,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                     className="cockpit-glass cockpit-composer w-full max-w-2xl rounded-2xl p-3 transition-shadow"
                   >
                     <div className="flex items-center gap-2.5">
-                      <Sparkles className="h-4 w-4 shrink-0 text-violet-300" aria-hidden />
+                      <Sparkles className="h-4 w-4 shrink-0 text-foreground" aria-hidden />
                       <input
                         value={draft}
                         onChange={(e) => setDraft(e.target.value)}
@@ -802,7 +807,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                         className="h-9 flex-1 bg-transparent text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
                       />
                     </div>
-                    <div className="mt-2.5 flex items-center justify-between border-t border-white/[0.06] pt-2.5">
+                    <div className="mt-2.5 flex items-center justify-between border-t border-[#160211]/10 pt-2.5">
                       <span className="pl-1 text-[11px] text-muted-foreground/80">Piloto B2 · dados da sua organização</span>
                       <button
                         type="submit"
@@ -854,7 +859,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                             }
                             void startCampaign();
                           }}
-                          className="rounded-full border border-violet-400/25 bg-violet-500/10 px-4 py-2 text-xs font-medium text-violet-100 transition-colors hover:bg-violet-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                          className="rounded-full border border-[#160211]/10 bg-white/60 px-4 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
                         >
                           {chip.label}
                         </button>
@@ -886,9 +891,9 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                               }
                               void startCampaign();
                             }}
-                            className="cockpit-glass group rounded-xl p-4 text-left transition-colors hover:border-violet-400/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                            className="cockpit-glass group rounded-xl p-4 text-left transition-colors hover:border-[#160211]/25 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
                           >
-                            <div className="mb-2.5 flex h-8 w-8 items-center justify-center rounded-lg bg-violet-500/15 text-violet-300">
+                            <div className="mb-2.5 flex h-8 w-8 items-center justify-center rounded-lg bg-[#160211]/5 text-foreground">
                               <Icon className="h-4 w-4" />
                             </div>
                             <p className="text-sm font-medium text-foreground">{chip.label}</p>

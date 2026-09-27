@@ -15,31 +15,33 @@ sources:
 
 ## Brand & Style
 
-Referência de linguagem: **Zyricon — AI Chatbot Web App**
-(dribbble.com/shots/26578109, pivô aprovado pelo dono do produto em
-2026-09-27; substitui a referência anterior framer.com). Postura mantida:
+Referência de linguagem: **AI Chatbot UI (Community)**
+(figma.com/design/J0Y29T0mXxmbqXNjl0HQzx, nó 0:6 — pivô aprovado pelo dono do
+produto em 2026-09-27; substitui Zyricon/framer). Postura mantida:
 **premium contido** — "cassino" continua a anti-referência. O Cockpit usa o
 design system shadcn/Tailwind da plataforma com uma camada de marca: os tokens
 abaixo valem **apenas dentro de `.cockpit-scope`** (a subárvore `/studio`); o
-resto da plataforma mantém o indigo herdado. Direção: **D1 · Violeta Elétrico
-sobre noite arroxeada**.
+resto da plataforma mantém o indigo herdado. Direção: **D1 · tema claro
+pastel**.
 
-Assinaturas da linguagem: sidebar esquerda permanente (desktop) com botão
-primário em gradiente e card de rodapé; bloom radial violeta no topo do fundo;
-orbe 3D na abertura; composer em cartão de vidro com envio circular em
-gradiente; superfícies glass com hairline `rgba(255,255,255,.09)`.
+Assinaturas da linguagem (tokens medidos do Figma): fundo branco com **blobs
+pastel** rosa `#FF86E1` (blur ~500) e azul `#89BCFF` (blur ~300); texto
+`#160211` e muted `#56637E`; **Manrope** como fonte do escopo; cards brancos a
+50% com borda hairline branca e radius 8; composer branco com stroke
+`#160211`/30; sparkles de 4 pontas `#160211` como marca do AI; botão primário
+sólido `#160211`. Sidebar permanente (desktop) mantida, agora clara.
 
 ## Colors
 
-- `{colors.surface-0}` `#0D0715` — fundo base (noite arroxeada), com bloom radial `rgba(139,92,246,.28)` no topo. Nunca em texto.
-- `{colors.surface-1}` `#120D1B` — cartões elevados, sidebar `#0A0610`.
-- `{colors.surface-2}` `#1C1927` — elevação, vidro (`bg-white/[0.04]`).
-- `{colors.accent}` `#8B5CF6` — A ÚNICA cor de acento. Luz acesa do Rail, chip em hover, foco de input. Gradiente do envio/primário: 135° `#A855F7`→`#7C3AED` com sombra `{colors.glow}`.
-- `{colors.accent-2}` `#A78BFA` — texto sobre acento escuro, detalhes (`violet-300`).
-- `{colors.success}` `#34D399` — saldo saudável (acima do piso), certificado verde. Com glow próprio suave.
-- `{colors.warning}` `#FBBF24` — atenção (despertar warning, Teste da Maria).
-- `{colors.danger}` `#FDA4AF` (texto) / `#F43F5E` (sólido) — bloqueio, pausa ativa, certificado reprovado, saldo abaixo do piso.
-- `{colors.text}` `#F5F4F9` · `{colors.text-2}` `#A79FAD` · `{colors.text-3}` `#6B6377` — hierarquia em três níveis, nada mais claro que `{colors.text}`.
+- `{colors.surface-0}` `#FFFFFF` — fundo base, com blobs pastel atrás (rosa/azul borrados). Nunca em texto.
+- `{colors.surface-1}` `rgba(255,255,255,0.5)` — cartões de vidro (`.cockpit-glass`).
+- `{colors.surface-2}` `#FFFFFF` — cartões sólidos e composer.
+- `{colors.ink}` `#160211` — A cor de acento (quase-preto arroxeado): botão primário, rail aceso, texto forte, sparkles.
+- `{colors.text-2}` `#56637E` — texto secundário (o "muted" da referência).
+- `{colors.success}` emerald-600/50 — saldo saudável (acima do piso), certificado verde.
+- `{colors.warning}` amber-600/100 — atenção (despertar warning, Teste da Maria).
+- `{colors.danger}` rose-700/rose-50 — bloqueio, pausa ativa, certificado reprovado, saldo abaixo do piso.
+- `{colors.text}` `#160211` · `{colors.text-2}` `#56637E` — hierarquia de texto; Manrope 400/700 (headline 24px, corpo 14px).
 
 ## Typography
 
@@ -60,17 +62,16 @@ indicador estático).
 
 ## Elevation & Depth
 
-Profundidade por **tom em camadas** (`surface-0` → `surface-2`) + vidro
-(`bg-white/[0.04]`, borda `rgba(255,255,255,.09)`, `backdrop-blur` 18px —
-`.cockpit-glass`). Glow (`{colors.glow}`) permitido SOMENTE onde há
-significado: luz acesa do Rail, saldo saudável, CTA primário/envio, chip em
-hover, momento de envio autorizado, halo do orbe. **Glow decorativo é
-proibido.**
+Profundidade por **translucidez sobre o gradiente pastel**: vidro
+(`rgba(255,255,255,.5)`, borda branca hairline, `backdrop-blur` —
+`.cockpit-glass`) e cartões sólidos brancos. Glow permitido SOMENTE onde há
+significado: saldo saudável e envio autorizado (suave). **Glow decorativo é
+proibido.** Profundidade NÃO vem mais de sombra escura — vem do blur dos blobs
+e do contraste com o branco.
 
 ## Shapes
 
-Cards/composer 16px · feature cards 12px · inputs 12–16px · chips e pills
-(`9999px`) · orbe, avatar e envio círculos.
+Frame raiz 32px · cards/composer 8–12px · chips e pills (`9999px`) · sparkles e luzes círculos.
 
 ## Components
 

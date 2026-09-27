@@ -62,9 +62,10 @@ plan, epics/stories e build na execução, review/retro no fechamento).
 
 ## Design
 
-- Identidade do **Cockpit** (`/studio`): **D1 · Violeta Elétrico sobre noite
-  arroxeada** — linguagem **Zyricon** (pivô aprovado pelo dono em 2026-09-27:
-  sidebar, orbe, composer em vidro, envio circular em gradiente). Spine canônica
+- Identidade do **Cockpit** (`/studio`): **D1 · tema claro pastel** — linguagem
+  **AI Chatbot UI** (pivô aprovado pelo dono em 2026-09-27: fundo branco com
+  blobs rosa/azul borrados, Manrope, sparkles, cards brancos translúcidos,
+  botão primário `#160211`). Spine canônica
   em
   `_bmad-output/planning-artifacts/ux-designs/ux-b2base-platform-2026-09-26/DESIGN.md`
   (tokens, glass, glow semântico) + `EXPERIENCE.md` (comportamento). Os painéis

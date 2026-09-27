@@ -18,7 +18,7 @@ companions:
 ## Foundation
 
 Web SPA desktop-first (`/studio`, rota única, shadcn/Tailwind com escopo de
-marca `.cockpit-scope` — ver `DESIGN.md`). Casca Zyricon (2026-09-27): sidebar
+marca `.cockpit-scope` — ver `DESIGN.md`). Casca clara "AI Chatbot UI" (2026-09-27): sidebar
 permanente ≥1024px e overlay com hambúrguer abaixo disso (Esc + scrim).
 Mobile 375px: leitura de Despertares, aprovações e pausa global (sem edição
 rica de conteúdo).

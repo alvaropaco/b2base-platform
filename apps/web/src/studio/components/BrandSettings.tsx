@@ -134,12 +134,12 @@ export function BrandSettings() {
   return (
     <div className="space-y-4">
       {error && (
-        <p role="alert" className="rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+        <p role="alert" className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-800">
           {error}
         </p>
       )}
       {notice && (
-        <p className="rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
+        <p className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           {notice}
         </p>
       )}
@@ -151,21 +151,21 @@ export function BrandSettings() {
           onChange={(e) => setToneNotes(e.target.value)}
           rows={2}
           placeholder="Como a empresa fala (ex.: direto, técnico, sem girias)"
-          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-violet-400/50 focus-visible:ring-1 focus-visible:ring-violet-400/40"
+          className="w-full rounded-xl border border-[#160211]/10 bg-white/70 px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-[#160211]/40 focus-visible:ring-1 focus-visible:ring-[#160211]/30"
         />
         <textarea
           value={samples}
           onChange={(e) => setSamples(e.target.value)}
           rows={3}
           placeholder={'Exemplos de textos da marca (um por linha) para a IA aprender o tom…'}
-          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-violet-400/50 focus-visible:ring-1 focus-visible:ring-violet-400/40"
+          className="w-full rounded-xl border border-[#160211]/10 bg-white/70 px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-[#160211]/40 focus-visible:ring-1 focus-visible:ring-[#160211]/30"
         />
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={handleLearn}
             disabled={busy !== null}
-            className="h-9 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
+            className="h-9 rounded-xl border border-[#160211]/10 bg-white/70 px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
           >
             {busy === 'learn' ? 'Aprendendo…' : 'Aprender voz dos exemplos (premium)'}
           </button>
@@ -173,7 +173,7 @@ export function BrandSettings() {
             type="button"
             onClick={handleSave}
             disabled={busy !== null}
-            className="h-9 rounded-xl bg-gradient-to-r from-violet-500 to-violet-700 px-4 text-xs font-medium text-white shadow-lg shadow-violet-900/40 transition-transform hover:brightness-110 disabled:opacity-40"
+            className="h-9 rounded-xl bg-[#160211] px-4 text-xs font-medium text-white shadow-md transition-transform hover:brightness-110 disabled:opacity-40"
           >
             {busy === 'save' ? 'Salvando…' : 'Salvar marca'}
           </button>
@@ -183,7 +183,7 @@ export function BrandSettings() {
       <div className="cockpit-glass space-y-3 rounded-2xl p-4">
         <h3 className="text-sm font-semibold">Logo e identidade</h3>
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-white/[0.04]">
+          <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-xl border border-[#160211]/10 bg-white/70">
             {logo ? (
               <img src={logo.url} alt="Logo da marca" className="max-h-full max-w-full object-contain" />
             ) : (
@@ -205,7 +205,7 @@ export function BrandSettings() {
               type="button"
               onClick={() => logoInputRef.current?.click()}
               disabled={busy !== null}
-              className="flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
+              className="flex h-9 items-center gap-1.5 rounded-xl border border-[#160211]/10 bg-white/70 px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
             >
               {busy === 'upload-logo' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
               {logo ? 'Trocar logo' : 'Subir logo'}
@@ -215,7 +215,7 @@ export function BrandSettings() {
               value={primaryColor}
               onChange={(e) => setPrimaryColor(e.target.value)}
               aria-label="Cor primária"
-              className="h-9 w-14 cursor-pointer rounded-xl border border-white/10 bg-transparent"
+              className="h-9 w-14 cursor-pointer rounded-xl border border-[#160211]/10 bg-transparent"
               title="Cor primária da marca"
             />
           </div>
@@ -239,7 +239,7 @@ export function BrandSettings() {
             type="button"
             onClick={() => materialInputRef.current?.click()}
             disabled={busy !== null}
-            className="flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
+            className="flex h-9 items-center gap-1.5 rounded-xl border border-[#160211]/10 bg-white/70 px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
           >
             {busy === 'upload-material' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
             Anexar material
@@ -273,7 +273,7 @@ export function BrandSettings() {
             type="button"
             onClick={() => contextInputRef.current?.click()}
             disabled={busy !== null}
-            className="flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
+            className="flex h-9 items-center gap-1.5 rounded-xl border border-[#160211]/10 bg-white/70 px-3 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
           >
             {busy === 'upload-context' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
             Subir contexto
@@ -297,13 +297,13 @@ export function BrandSettings() {
 
 function AssetRow({ asset, onDelete }: { asset: BrandAsset; onDelete: () => void }) {
   return (
-    <li className="flex items-center gap-2.5 rounded-xl border border-white/[0.07] bg-white/[0.03] px-3 py-2">
-      <FileText className="h-4 w-4 shrink-0 text-violet-300" />
+    <li className="flex items-center gap-2.5 rounded-xl border border-[#160211]/10 bg-white/50 px-3 py-2">
+      <FileText className="h-4 w-4 shrink-0 text-foreground" />
       <a
         href={asset.url}
         target="_blank"
         rel="noreferrer"
-        className="min-w-0 flex-1 truncate text-xs font-medium text-foreground hover:text-violet-200 hover:underline"
+        className="min-w-0 flex-1 truncate text-xs font-medium text-foreground hover:underline"
         title={asset.originalName}
       >
         {asset.originalName}
@@ -312,7 +312,7 @@ function AssetRow({ asset, onDelete }: { asset: BrandAsset; onDelete: () => void
       <button
         type="button"
         onClick={onDelete}
-        className="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-rose-500/15 hover:text-rose-300"
+        className="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-rose-50 hover:text-rose-700"
         aria-label={`Remover ${asset.originalName}`}
       >
         <Trash2 className="h-3.5 w-3.5" />

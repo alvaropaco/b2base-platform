@@ -110,13 +110,13 @@ export function CampaignsListView({ onOpenCampaign }: CampaignsListViewProps) {
               }
             }}
             placeholder="Nome da nova campanha"
-            className="h-10 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-violet-400/50 focus-visible:ring-1 focus-visible:ring-violet-400/40"
+            className="h-10 min-w-0 flex-1 rounded-xl border border-[#160211]/10 bg-white/70 px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-[#160211]/40 focus-visible:ring-1 focus-visible:ring-[#160211]/30"
           />
           <button
             type="button"
             onClick={handleCreate}
             disabled={isCreating}
-            className="h-10 shrink-0 rounded-xl bg-gradient-to-r from-violet-500 to-violet-700 px-4 text-sm font-medium text-white shadow-lg shadow-violet-900/40 transition-transform hover:brightness-110 disabled:opacity-50"
+            className="h-10 shrink-0 rounded-xl bg-[#160211] px-4 text-sm font-medium text-white shadow-md transition-transform hover:brightness-110 disabled:opacity-50"
           >
             {isCreating ? 'Criando…' : 'Nova'}
           </button>
@@ -124,7 +124,7 @@ export function CampaignsListView({ onOpenCampaign }: CampaignsListViewProps) {
       </div>
 
       {error && (
-        <p role="alert" className="mb-3 rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+        <p role="alert" className="mb-3 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-800">
           {error}
         </p>
       )}
@@ -143,7 +143,7 @@ export function CampaignsListView({ onOpenCampaign }: CampaignsListViewProps) {
         <ul className="space-y-2.5">
           {campaigns.map((c) => (
             <li key={c.id}>
-              <div className="cockpit-glass flex w-full items-center gap-2 rounded-2xl pr-2 transition-colors hover:border-violet-400/30">
+              <div className="cockpit-glass flex w-full items-center gap-2 rounded-2xl pr-2 transition-colors hover:border-[#160211]/25">
                 <button
                   type="button"
                   onClick={() => onOpenCampaign(c)}
@@ -159,12 +159,12 @@ export function CampaignsListView({ onOpenCampaign }: CampaignsListViewProps) {
                   <span
                     className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium ${
                       c.status === 'running'
-                        ? 'bg-emerald-500/15 text-emerald-300'
+                        ? 'bg-emerald-100 text-emerald-800'
                         : c.status === 'in_review'
-                          ? 'bg-amber-500/15 text-amber-300'
+                          ? 'bg-amber-100 text-amber-800'
                           : c.status === 'completed'
-                            ? 'bg-violet-500/15 text-violet-300'
-                            : 'bg-white/[0.06] text-muted-foreground'
+                            ? 'bg-[#160211]/5 text-foreground'
+                            : 'bg-[#160211]/5 text-muted-foreground'
                     }`}
                   >
                     {statusLabel(c.status)}
@@ -173,7 +173,7 @@ export function CampaignsListView({ onOpenCampaign }: CampaignsListViewProps) {
                 <button
                   type="button"
                   onClick={() => void handleDelete(c)}
-                  className="shrink-0 rounded-lg p-2 text-muted-foreground transition-colors hover:bg-rose-500/15 hover:text-rose-300"
+                  className="shrink-0 rounded-lg p-2 text-muted-foreground transition-colors hover:bg-rose-50 hover:text-rose-700"
                   title={`Remover “${c.name}”`}
                   aria-label={`Remover campanha ${c.name}`}
                 >
