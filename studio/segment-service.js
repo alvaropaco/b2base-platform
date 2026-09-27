@@ -80,6 +80,11 @@ function translateCondition({ field, op, value }) {
   if (field === 'lastContact' || field === 'createdAt') {
     return { [field]: { [op]: new Date(value) } };
   }
+  // Contains é insensível a caixa: o LLM e o usuário escrevem "tecnologia",
+  // a base tem "Tecnologia" — casar sempre (Postgres default é sensível).
+  if (op === 'contains') {
+    return { [field]: { contains: value, mode: 'insensitive' } };
+  }
   return { [field]: { [op]: value } };
 }
 
