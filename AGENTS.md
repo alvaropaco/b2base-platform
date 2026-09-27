@@ -62,10 +62,13 @@ plan, epics/stories e build na execução, review/retro no fechamento).
 
 ## Design
 
-- Identidade do **Cockpit** (`/studio`): **D1 · Violeta Elétrico** — spine
-  canônica em
+- Identidade do **Cockpit** (`/studio`): **D1 · Violeta Elétrico sobre noite
+  arroxeada** — linguagem **Zyricon** (pivô aprovado pelo dono em 2026-09-27:
+  sidebar, orbe, composer em vidro, envio circular em gradiente). Spine canônica
+  em
   `_bmad-output/planning-artifacts/ux-designs/ux-b2base-platform-2026-09-26/DESIGN.md`
-  (tokens, glass, glow semântico) + `EXPERIENCE.md` (comportamento).
+  (tokens, glass, glow semântico) + `EXPERIENCE.md` (comportamento). Os painéis
+  "Avançado" são navegação da sidebar — não reverta para gaveta de rodapé.
 - Referências de padrões — **NÃO são a paleta do produto**: `DESIGN.md` (raiz,
   análise Mobbin: hierarquia, contenção, pills) e `framer/DESIGN.md`
-  (motion/vidro/glow do Cockpit).
+  (motion/vidro/glow).

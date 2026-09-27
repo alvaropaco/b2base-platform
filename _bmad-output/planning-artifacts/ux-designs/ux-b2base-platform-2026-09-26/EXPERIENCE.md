@@ -18,18 +18,20 @@ companions:
 ## Foundation
 
 Web SPA desktop-first (`/studio`, rota única, shadcn/Tailwind com escopo de
-marca `.cockpit-scope` — ver `DESIGN.md`). Mobile 375px: leitura de
-Despertares, aprovações e pausa global (sem edição rica de conteúdo).
+marca `.cockpit-scope` — ver `DESIGN.md`). Casca Zyricon (2026-09-27): sidebar
+permanente ≥1024px e overlay com hambúrguer abaixo disso (Esc + scrim).
+Mobile 375px: leitura de Despertares, aprovações e pausa global (sem edição
+rica de conteúdo).
 
 ## Information Architecture
 
 | Superfície | Alcance | Propósito |
 |---|---|---|
-| Home (briefing do mordomo) | `/studio` | ≤3 chips contextuais com motivo; Rail quando existe campanha |
-| Thread de conversa | mesma rota | Diálogo de briefing; cards = mensagens ricas |
-| Gaveta Avançado | rodapé | Journeys, experimentos, templates, campanhas |
-| Painel de Saldo | header | Saldo por canal, tendência, eventos |
-| Despertares | sino (header) | lista fechada FR-31, ack por item, teto diário |
+| Home (briefing do mordomo) | `/studio` | Orbe + composer em cartão, ≤3 chips contextuais e feature cards; Rail quando existe campanha |
+| Thread de conversa | mesma rota | Diálogo de briefing; piloto em texto plano com avatar, usuário em bolha gradiente; cards = mensagens ricas |
+| Sidebar / overlay | casca esquerda | Cockpit, Campanhas, Agente IA, Marca (painéis "Avançado" agora são navegação, não gaveta de rodapé); card do Orçamento de Reputação no rodapé |
+| Painel de Saldo | sidebar (Canais/card) | Saldo por canal com luz de saúde (verde acima do piso, rosa bloqueado), movimentos do ledger |
+| Despertares | sino (topbar) | lista fechada FR-31, ack por item, teto diário; pausa global junto no mobile (FR-7) |
 
 ## Voice and Tone
 
@@ -46,8 +48,10 @@ Mordomo atento: PT-BR, segunda pessoa, dado concreto + pergunta de ação
 
 ## Accessibility Floor
 
-`prefers-reduced-motion` honrado (sweep → estático); contraste AA no dark;
-navegação por teclado; `aria-current` no Rail; Gaveta com Esc + focus-trap.
+`prefers-reduced-motion` honrado (sweep, flutuação do orbe e typing dots →
+estático); contraste AA no dark; navegação por teclado; `aria-current` no Rail
+com o passo corrente centralizado na faixa scrollável; overlay de navegação
+mobile com Esc, scrim e foco inicial no primeiro botão.
 
 ## Key Flows
 
