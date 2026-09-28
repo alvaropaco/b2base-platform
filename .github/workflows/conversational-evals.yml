@@ -1,0 +1,35 @@
+name: conversational-evals
+
+on:
+  workflow_dispatch:
+    inputs:
+      eval_url:
+        description: "Base URL for a deployed test/staging environment"
+        required: true
+        type: string
+      threshold:
+        description: "Minimum overall score"
+        required: false
+        default: "85"
+        type: string
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Run conversational evaluation
+        env:
+          B2BASE_EVAL_URL: ${{ inputs.eval_url }}
+          B2BASE_EVAL_THRESHOLD: ${{ inputs.threshold }}
+          B2BASE_EVAL_ORG_ID: eval-org
+        run: pnpm run eval:chat
