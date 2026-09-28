@@ -1,0 +1,71 @@
+[
+  {
+    "id": "chat-campaign-create-simple",
+    "name": "Criação de campanha simples",
+    "turns": [
+      {
+        "user": "Quero vender ERP para empresas de logística",
+        "assert": {
+          "reply": {"nonEmpty": true},
+          "cardsContain": ["objective", "audience"]
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-campaign-correction",
+    "name": "Correção de requisito em multi-turno",
+    "turns": [
+      {
+        "user": "Quero vender ERP para empresas de tecnologia",
+        "assert": {"reply": {"nonEmpty": true}}
+      },
+      {
+        "user": "Na verdade, quero focar em empresas de logística",
+        "assert": {
+          "reply": {"nonEmpty": true},
+          "campaign": {"objectiveContains": "ERP"}
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-material-url",
+    "name": "Material como contexto da conversa",
+    "turns": [
+      {
+        "user": "Use https://example.com/produto como referência",
+        "assert": {
+          "reply": {"nonEmpty": true},
+          "cardsContain": ["material"]
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-schedule",
+    "name": "Configuração de agenda",
+    "turns": [
+      {
+        "user": "dispara 20 por hora em horário comercial",
+        "assert": {
+          "reply": {"nonEmpty": true},
+          "cardsContain": ["schedule"]
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-ambiguous",
+    "name": "Pedido incompleto pede interação",
+    "turns": [
+      {
+        "user": "Quero criar uma campanha",
+        "assert": {
+          "reply": {"nonEmpty": true},
+          "replyAny": ["objetivo", "público", "campanha"]
+        }
+      }
+    ]
+  }
+]
