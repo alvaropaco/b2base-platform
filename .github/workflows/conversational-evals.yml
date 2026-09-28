@@ -47,3 +47,6 @@ jobs:
           LITELLM_URL: ${{ secrets.B2BASE_LITELLM_URL }}
           LITELLM_API_KEY: ${{ secrets.B2BASE_LITELLM_API_KEY }}
           LITELLM_MODEL: ${{ secrets.B2BASE_LITELLM_MODEL }}
+          B2BASE_EVAL_EMAIL: ${{ secrets.B2BASE_EVAL_EMAIL }}
+          B2BASE_EVAL_PASSWORD: ${{ secrets.B2BASE_EVAL_PASSWORD }}
+        run: pnpm run eval:chat
