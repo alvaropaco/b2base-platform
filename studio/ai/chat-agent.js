@@ -102,7 +102,7 @@ function buildHistoryBlock(history) {
 function createChatAgent({ callLlm } = {}) {
   const llm = callLlm || require('../../llm-client').callLlm;
 
-  async function orchestrate({ campaign, history, userMessage, extras }) {
+  async function orchestrate({ campaign, history, userMessage, extras, onLlmCall = () => {} }) {
     const user = [
       buildStateBlock(campaign, extras),
       buildOrgBlock(extras),
@@ -114,14 +114,37 @@ function createChatAgent({ callLlm } = {}) {
       .filter(Boolean)
       .join('\n\n');
 
-    const result = await llm({
-      system: SYSTEM_PROMPT,
-      user,
-      jsonMode: true,
-      temperature: 0.4,
-      maxTokens: 900,
-      tag: 'studio:chat',
-    });
+    const startedAt = Date.now();
+    let result;
+    try {
+      result = await llm({
+        system: SYSTEM_PROMPT,
+        user,
+        jsonMode: true,
+        temperature: 0.4,
+        maxTokens: 900,
+        tag: 'studio:chat',
+      });
+      onLlmCall({
+        durationMs: Date.now() - startedAt,
+        model: result.model || null,
+        usage: result.usage || null,
+        truncated: Boolean(result.truncated),
+        fallbackUsed: Boolean(result.fallbackUsed),
+        status: 'succeeded',
+      });
+    } catch (error) {
+      onLlmCall({
+        durationMs: Date.now() - startedAt,
+        model: null,
+        usage: null,
+        truncated: false,
+        fallbackUsed: false,
+        status: 'failed',
+        errorCode: error.code || null,
+      });
+      throw error;
+    }
     const parsed = parseModelJson(result.content);
     if (!parsed || typeof parsed.reply !== 'string') {
       // Fallback honesto: sem ação, pede para reformular.
