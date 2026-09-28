@@ -20,7 +20,8 @@
     "worker:discovery": "node workers/discovery.js",
     "test": "node --test test/*.test.js",
     "test:integration": "node --test test/integration/*.int.test.js",
-    "docker:build": "docker build -t b2base ."
+    "docker:build": "docker build -t b2base .",
+    "eval:chat": "node eval/run-conversations.js"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
