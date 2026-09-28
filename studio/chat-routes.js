@@ -460,6 +460,38 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     start_whatsapp_pairing: 'Preparando o pareamento do WhatsApp…',
   };
 
+  async function persistChatTrace({ campaignId, orgId, turnIndex, startedAt, llmTelemetry, actionTypes, actionDurationsMs, status = 'succeeded', errorCode = null }) {
+    const llm = llmTelemetry[llmTelemetry.length - 1] || {};
+    const usage = llm.usage || {};
+    const trace = {
+      orgId,
+      campaignId,
+      turnIndex,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      llmDurationMs: llmTelemetry.reduce((sum, item) => sum + Number(item.durationMs || 0), 0),
+      llmModel: llm.model || null,
+      llmPromptTokens: usage.prompt_tokens ?? null,
+      llmCompletionTokens: usage.completion_tokens ?? null,
+      llmTotalTokens: usage.total_tokens ?? (
+        usage.prompt_tokens != null || usage.completion_tokens != null
+          ? Number(usage.prompt_tokens || 0) + Number(usage.completion_tokens || 0)
+          : null
+      ),
+      llmFallbackUsed: Boolean(llm.fallbackUsed),
+      llmTruncated: Boolean(llm.truncated),
+      status,
+      errorCode,
+      actionTypes,
+      actionDurationsMs,
+    };
+    try {
+      return await prisma.studioChatTrace.create({ data: trace });
+    } catch (error) {
+      console.warn('[studio/chat] trace persist failed:', error.message);
+      return null;
+    }
+  }
+
   /**
    * Um turno completo da conversa. `onEvent(event)` transmite o progresso ao
    * vivo (usado pelo SSE; o POST síncrono ignora). Eventos:
@@ -471,23 +503,38 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
    */
   async function runChatTurn(prismaClient, { campaign, message, orgId, userId, onEvent = () => {} }) {
     const emit = (event) => onEvent(event);
+    const startedAt = Date.now();
+    const llmTelemetry = [];
+    const actionTypes = [];
+    const actionDurationsMs = {};
+    const history = await prismaClient.studioChatMessage.findMany({
+      where: { campaignId: campaign.id },
+    });
+    const turnIndex = history.filter((item) => item.role === 'user').length + 1;
 
     // URLs coladas viram materiais automaticamente (contexto dos agentes).
     const urls = [...message.matchAll(URL_RE)].map((m) => m[1]).slice(0, 3);
     const autoAttachCards = [];
     for (const url of urls) {
       emit({ type: 'status', label: ACTION_LABELS.attach_url });
-      const result = await runAction({ type: 'attach_url', url }, { campaign, cards: autoAttachCards, orgId, userId });
-      if (result) {
-        autoAttachCards.push(result);
-        emit({ type: 'card', card: result });
+      actionTypes.push('attach_url');
+      const actionStartedAt = Date.now();
+      try {
+        const result = await runAction({ type: 'attach_url', url }, { campaign, cards: autoAttachCards, orgId, userId });
+        if (result) {
+          autoAttachCards.push(result);
+          emit({ type: 'card', card: result });
+        }
+      } catch (err) {
+        const errorCard = { type: 'error', label: 'Ação "attach_url" falhou', detail: err.message };
+        autoAttachCards.push(errorCard);
+        emit({ type: 'card_error', card: errorCard });
+      } finally {
+        actionDurationsMs.attach_url = (actionDurationsMs.attach_url || 0) + (Date.now() - actionStartedAt);
       }
     }
 
     emit({ type: 'status', phase: 'thinking' });
-    const history = await prismaClient.studioChatMessage.findMany({
-      where: { campaignId: campaign.id },
-    });
     const userMessage = await prismaClient.studioChatMessage.create({
       data: {
         orgId,
@@ -499,18 +546,38 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     });
 
     const extras = await currentExtras(prismaClient, campaign);
-    const { reply, actions } = await chatAgent.orchestrate({
-      campaign,
-      history: [...history, userMessage],
-      userMessage: message,
-      extras,
-    });
+    let reply;
+    let actions;
+    try {
+      ({ reply, actions } = await chatAgent.orchestrate({
+        campaign,
+        history: [...history, userMessage],
+        userMessage: message,
+        extras,
+        onLlmCall: (telemetry) => llmTelemetry.push(telemetry),
+      }));
+    } catch (error) {
+      await persistChatTrace({
+        campaignId: campaign.id,
+        orgId,
+        turnIndex,
+        startedAt,
+        llmTelemetry,
+        actionTypes,
+        actionDurationsMs,
+        status: 'failed',
+        errorCode: error.code || null,
+      });
+      throw error;
+    }
     emit({ type: 'reply', text: reply });
 
     const cards = [...autoAttachCards];
     for (const action of actions) {
       const label = ACTION_LABELS[action.type];
       if (label) emit({ type: 'status', label });
+      if (action && action.type && action.type !== 'none') actionTypes.push(action.type);
+      const actionStartedAt = Date.now();
       try {
         const card = await runAction(action, { campaign, cards, orgId, userId });
         if (card) {
@@ -522,11 +589,24 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
         const errorCard = { type: 'error', label: `Ação "${action.type}" falhou`, detail: err.message };
         cards.push(errorCard);
         emit({ type: 'card_error', card: errorCard });
+      } finally {
+        if (action && action.type && action.type !== 'none') {
+          actionDurationsMs[action.type] = (actionDurationsMs[action.type] || 0) + (Date.now() - actionStartedAt);
+        }
       }
     }
 
     await prismaClient.studioChatMessage.create({
       data: { orgId, campaignId: campaign.id, role: 'assistant', text: reply, cards },
+    });
+    await persistChatTrace({
+      campaignId: campaign.id,
+      orgId,
+      turnIndex,
+      startedAt,
+      llmTelemetry,
+      actionTypes,
+      actionDurationsMs,
     });
     emit({ type: 'done', cards, campaignStatus: campaign.status });
     return { reply, cards, campaignStatus: campaign.status };
@@ -610,6 +690,38 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
       });
       data.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
       res.json({ success: true, data });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /campaigns/:id/traces — telemetria operacional do chat, sem prompts/respostas.
+  router.get('/campaigns/:id/traces', async (req, res, next) => {
+    try {
+      const { orgId } = req.studio;
+      const campaign = await loadCampaign(prisma, orgId, req.params.id);
+      const traces = await prisma.studioChatTrace.findMany({ where: { campaignId: campaign.id } });
+      traces.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+      res.json({
+        success: true,
+        data: traces.map((trace) => ({
+          id: trace.id,
+          turnIndex: trace.turnIndex,
+          durationMs: trace.durationMs,
+          llmDurationMs: trace.llmDurationMs,
+          llmModel: trace.llmModel,
+          llmPromptTokens: trace.llmPromptTokens,
+          llmCompletionTokens: trace.llmCompletionTokens,
+          llmTotalTokens: trace.llmTotalTokens,
+          llmFallbackUsed: trace.llmFallbackUsed,
+          llmTruncated: trace.llmTruncated,
+          status: trace.status,
+          errorCode: trace.errorCode,
+          actionTypes: trace.actionTypes,
+          actionDurationsMs: trace.actionDurationsMs,
+          createdAt: trace.createdAt,
+        })),
+      });
     } catch (err) {
       next(err);
     }

@@ -8,9 +8,19 @@ on:
         required: true
         type: string
       threshold:
-        description: "Minimum overall score"
+        description: "Minimum deterministic overall score"
         required: false
         default: "85"
+        type: string
+      judge:
+        description: "Run LLM-as-a-Judge"
+        required: false
+        default: false
+        type: boolean
+      judge_threshold:
+        description: "Minimum LLM-as-a-Judge score (0-10)"
+        required: false
+        default: "7"
         type: string
 
 jobs:
@@ -18,18 +28,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
       - uses: pnpm/action-setup@v4
         with:
           version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Run conversational evaluation
         env:
           B2BASE_EVAL_URL: ${{ inputs.eval_url }}
           B2BASE_EVAL_THRESHOLD: ${{ inputs.threshold }}
+          B2BASE_EVAL_JUDGE: ${{ inputs.judge }}
+          B2BASE_EVAL_JUDGE_THRESHOLD: ${{ inputs.judge_threshold }}
           B2BASE_EVAL_ORG_ID: eval-org
-        run: pnpm run eval:chat
+          LITELLM_URL: ${{ secrets.B2BASE_LITELLM_URL }}
+          LITELLM_API_KEY: ${{ secrets.B2BASE_LITELLM_API_KEY }}
+          LITELLM_MODEL: ${{ secrets.B2BASE_LITELLM_MODEL }}

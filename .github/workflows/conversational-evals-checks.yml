@@ -1,0 +1,37 @@
+name: conversational-evals-checks
+
+on:
+  pull_request:
+    paths:
+      - 'studio/**'
+      - 'eval/**'
+      - 'prisma/schema.prisma'
+      - 'prisma/migrations/**'
+      - 'test/studio-chat.test.js'
+      - 'test/helpers/fake-prisma.js'
+      - 'package.json'
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Syntax
+        run: |
+          node --check eval/run-conversations.js
+          node --check eval/llm-judge.js
+          node --check eval/replay-conversation.js
+          node --check studio/ai/chat-agent.js
+          node --check studio/chat-routes.js
+      - name: Prisma validate
+        run: pnpm exec prisma validate
+      - name: Studio chat tests
+        run: node --test test/studio-chat.test.js

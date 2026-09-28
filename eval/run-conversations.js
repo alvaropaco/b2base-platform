@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { judgeConversation } = require('./llm-judge');
 
 function loadCases(file) { return JSON.parse(fs.readFileSync(file, 'utf8')); }
 function includesAny(value, needles) {
@@ -61,7 +62,34 @@ async function runCase(baseUrl, orgId, conversation) {
     turns.push(result);
     failures.push(...evaluateTurn(result, turn.assert));
   }
-  return { id: conversation.id, name: conversation.name, failures, score: scoreConversation(conversation, failures, turns) };
+  let traces = [];
+  try {
+    const traceResponse = await fetch(baseUrl + '/api/studio/campaigns/' + encodeURIComponent(campaignId) + '/traces', {
+      headers: { 'x-test-org-id': orgId }
+    });
+    if (traceResponse.ok) {
+      const traceBody = await traceResponse.json();
+      traces = Array.isArray(traceBody?.data) ? traceBody.data : [];
+    }
+  } catch (_) {}
+
+  const result = {
+    id: conversation.id,
+    name: conversation.name,
+    failures,
+    turnOutputs: turns,
+    traces,
+    score: scoreConversation(conversation, failures, turns)
+  };
+
+  if (process.env.B2BASE_EVAL_JUDGE === 'true') {
+    try {
+      result.judge = await judgeConversation(conversation, result);
+    } catch (error) {
+      result.judge = { error: error.code || error.message };
+    }
+  }
+  return result;
 }
 async function main() {
   const baseUrl = process.env.B2BASE_EVAL_URL || 'http://127.0.0.1:3001';
@@ -72,7 +100,42 @@ async function main() {
   const results = [];
   for (const conversation of cases) results.push(await runCase(baseUrl, orgId, conversation));
   const overall = results.length ? Number((results.reduce((sum, r) => sum + r.score.overall, 0) / results.length).toFixed(1)) : 100;
-  const report = { generatedAt: new Date().toISOString(), baseUrl, overall, threshold, passed: overall >= threshold && results.every((r) => r.failures.length === 0), cases: results };
+  const allTraces = results.flatMap((r) => r.traces || []);
+  const traceSummary = allTraces.length ? {
+    turns: allTraces.length,
+    avgTurnMs: Math.round(allTraces.reduce((s, t) => s + Number(t.durationMs || 0), 0) / allTraces.length),
+    avgLlmMs: Math.round(allTraces.reduce((s, t) => s + Number(t.llmDurationMs || 0), 0) / allTraces.length),
+    totalPromptTokens: allTraces.reduce((s, t) => s + Number(t.llmPromptTokens || 0), 0),
+    totalCompletionTokens: allTraces.reduce((s, t) => s + Number(t.llmCompletionTokens || 0), 0),
+    totalTokens: allTraces.reduce((s, t) => s + Number(t.llmTotalTokens || 0), 0),
+    fallbackCount: allTraces.filter((t) => t.llmFallbackUsed).length,
+    truncationCount: allTraces.filter((t) => t.llmTruncated).length,
+    failedTurns: allTraces.filter((t) => t.status === 'failed').length,
+    actionCounts: allTraces.flatMap((t) => Array.isArray(t.actionTypes) ? t.actionTypes : []).reduce((acc, type) => {
+      acc[type] = (acc[type] || 0) + 1;
+      return acc;
+    }, {})
+  } : null;
+
+  const judgeScores = results.map((r) => r.judge?.overall).filter((v) => typeof v === 'number');
+  const judgeOverall = judgeScores.length
+    ? Number((judgeScores.reduce((a, b) => a + b, 0) / judgeScores.length).toFixed(2))
+    : null;
+  const judgeThreshold = Number(process.env.B2BASE_EVAL_JUDGE_THRESHOLD || 7);
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    baseUrl,
+    overall,
+    judgeOverall,
+    judgeThreshold,
+    threshold,
+    passed: overall >= threshold &&
+      results.every((r) => r.failures.length === 0) &&
+      (!process.env.B2BASE_EVAL_JUDGE || process.env.B2BASE_EVAL_JUDGE !== 'true' || (judgeOverall != null && judgeOverall >= judgeThreshold)),
+    traceSummary,
+    cases: results
+  };
   console.log(JSON.stringify(report, null, 2));
   if (!report.passed) process.exitCode = 1;
 }
