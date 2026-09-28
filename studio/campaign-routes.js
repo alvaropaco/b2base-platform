@@ -325,6 +325,10 @@ function registerCampaignRoutes(router, context) {
       const guardrails = require('./guardrails');
       if (campaign.status === 'paused') {
         flowStatus = campaign.statusReason?.includes('anomalia') ? 'paused_anomaly' : 'paused';
+      } else if (!campaign.emailExecutionId && !campaign.whatsappExecutionId) {
+        // Sem execução criada não há fila: "fluindo" num rascunho era
+        // semântica falsa (QA E2E 2026-09-28, U3).
+        flowStatus = 'not_started';
       } else if (await guardrails.hasPendingFirstBatch(prisma, campaign)) {
         flowStatus = 'first_batch_pending';
       } else if (!scheduleService.inWindow(campaign.schedule || {}, new Date())) {

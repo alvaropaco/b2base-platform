@@ -46,6 +46,7 @@ const QUEUE_STATUS_LABEL: Record<string, string> = {
 
 const FLOW_LABEL: Record<string, string> = {
   flowing: 'Fila fluindo',
+  not_started: 'Não iniciada',
   outside_window: 'Fora da janela de envio',
   first_batch_pending: '1º lote aguardando sua aprovação',
   paused: 'Pausada',
@@ -197,7 +198,11 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
               {queue && (
                 <span
                   className={`ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                    queue.flowStatus === 'flowing' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                    queue.flowStatus === 'flowing'
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : queue.flowStatus === 'not_started'
+                        ? 'bg-[#160211]/5 text-muted-foreground'
+                        : 'bg-amber-100 text-amber-800'
                   }`}
                   title="Estado global da fila de disparo"
                 >

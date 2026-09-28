@@ -701,10 +701,14 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     // como uma luva") justamente quando a audiência fecha em 0 leads (QA
     // 2026-09-28, F3). O aviso determinístico corrige o turno no fim — e o
     // reemit via SSE substitui o texto no frontend.
-    const emptyAudienceCard = cards.find((c) => c && c.type === 'audience' && c.emptyMatch);
-    if (emptyAudienceCard) {
+    // Usa o ÚLTIMO card de audiência: quando o turno tem set_audience (0
+    // matches) seguido de select_leads (C1, QA E2E 2026-09-28), o aviso de
+    // "0 leads" contradizia o resultado final do mesmo turno.
+    const audienceCards = cards.filter((c) => c && c.type === 'audience');
+    const finalAudienceCard = audienceCards[audienceCards.length - 1];
+    if (finalAudienceCard && finalAudienceCard.emptyMatch) {
       reply +=
-        `\n\n⚠️ **Atenção:** a audiência ficou com **0 leads** — sua base tem ${emptyAudienceCard.baseCount} lead(s) ` +
+        `\n\n⚠️ **Atenção:** a audiência ficou com **0 leads** — sua base tem ${finalAudienceCard.baseCount} lead(s) ` +
         'e nenhum casou com o filtro. Quer que eu ajuste o segmento (ampliar setor, região ou porte) ou prefere importar leads?';
       emit({ type: 'reply', text: reply });
     }

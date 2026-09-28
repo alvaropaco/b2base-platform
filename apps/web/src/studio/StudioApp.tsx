@@ -125,7 +125,10 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
     try {
       const data = await fetchCockpitHome();
       if (!data) return; // home vazia/indisponível: mantém estado, sem setHome(null-data)
-      setHome(data);
+      // A escolha LOCAL de campanha ativa vence o default do servidor: refetches
+      // de estado (apply da gaveta de leads, actions do chat) não podem trocar
+      // de campanha e desviar mensagens para outro thread (bug QA E2E 2026-09-28).
+      setHome((prev) => (prev ? { ...data, activeCampaignId: prev.activeCampaignId ?? data.activeCampaignId } : data));
       setPaused(data.paused);
       setBalances(data.balances || []);
     } catch (err) {
@@ -218,7 +221,9 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
     setError(null);
     try {
       const campaign = await createCampaign({
-        name: `Campanha ${new Date().toLocaleDateString('pt-BR')}`,
+        // Hora no nome: "Campanha 28/09/2026" colidia no mesmo dia e deixava a
+        // lista e o seletor do Monitor ambíguos (QA E2E 2026-09-28, U2).
+        name: `Campanha ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
         description: description?.trim() || undefined,
         channels: ['email'],
         origin: 'manual',

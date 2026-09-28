@@ -586,3 +586,89 @@ test('chat telemetry: persiste duração, turno e actions sem persistir conteúd
     server.close();
   }
 });
+
+test('chat: set_audience 0-match + select_leads no MESMO turno não avisa "0 leads" (C1)', async () => {
+  const llmImpl = async ({ user }) => {
+    if (user.includes('critérios de segmento')) {
+      return {
+        content: JSON.stringify({
+          criteria: { version: 1, groups: [{ op: 'AND', conditions: [{ field: 'industry', op: 'contains', value: 'náutica' }] }] },
+          rationale: 'empresas de náutica',
+        }),
+      };
+    }
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Montei a audiência e já adicionei o lead que você pediu.',
+          actions: [
+            { type: 'set_audience', description: 'empresas de náutica' },
+            { type: 'select_leads', add: ['l1'] },
+          ],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl });
+  try {
+    prisma.prospect.rows.push(
+      { id: 'l1', orgId: 'org-1', companyName: 'Tech A', industry: 'tecnologia', opportunityScore: 90, status: 'qualified', state: 'SP', cnpjEmail: 'a@a.com' }
+    );
+    const { body: c } = await api('POST', '/campaigns', { name: 'C1 mesmo turno', channels: ['email'] });
+    const r = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'MONTE E ADICIONE O LEAD Tech A' });
+    assert.equal(r.res.status, 200);
+    assert.ok(!/ficou com \*\*0 leads\*\*/.test(r.body.data.reply), 'aviso de 0 leads não pode contradizer o resultado final do turno');
+    const audCards = r.body.data.cards.filter((card) => card.type === 'audience');
+    assert.equal(audCards[audCards.length - 1].label, 'Seleção de leads atualizada', 'card final reflete a seleção');
+    assert.equal((await api('GET', `/campaigns/${c.data.id}/state`)).body.data.extras.audienceCount, 1);
+  } finally {
+    server.close();
+  }
+});
+
+test('chat: aviso de 0 leads continua quando o turno TERMINA vazio (F3 preservado)', async () => {
+  const llmImpl = async ({ user }) => {
+    if (user.includes('critérios de segmento')) {
+      return {
+        content: JSON.stringify({
+          criteria: { version: 1, groups: [{ op: 'AND', conditions: [{ field: 'industry', op: 'contains', value: 'náutica' }] }] },
+          rationale: 'empresas de náutica',
+        }),
+      };
+    }
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Montei a audiência de náutica!',
+          actions: [{ type: 'set_audience', description: 'empresas de náutica' }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl });
+  try {
+    prisma.prospect.rows.push(
+      { id: 'l1', orgId: 'org-1', companyName: 'Tech A', industry: 'tecnologia', opportunityScore: 90, status: 'qualified', state: 'SP', cnpjEmail: 'a@a.com' }
+    );
+    const { body: c } = await api('POST', '/campaigns', { name: 'F3 vazio', channels: ['email'] });
+    const r = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'MONTE A AUDIÊNCIA' });
+    assert.equal(r.res.status, 200);
+    assert.ok(/ficou com \*\*0 leads\*\*/.test(r.body.data.reply), 'turno que termina em 0 leads mantém o aviso');
+  } finally {
+    server.close();
+  }
+});
+
+test('queue: campanha sem execução reporta flowStatus "not_started" (U3)', async () => {
+  const { server, api } = await startServer();
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Sem execução', channels: ['email'] });
+    const q = await api('GET', `/campaigns/${c.data.id}/queue`);
+    assert.equal(q.res.status, 200);
+    assert.equal(q.body.flowStatus, 'not_started', 'rascunho sem execução não pode parecer "fluindo"');
+  } finally {
+    server.close();
+  }
+});
