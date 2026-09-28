@@ -102,7 +102,7 @@ async function judgeConversation({ callLlm, conversation, caseDef }) {
     user,
     jsonMode: true,
     temperature: 0,
-    maxTokens: 900,
+    maxTokens: 1600,
     tag: 'eval:judge',
   });
   const latencyMs = Date.now() - t0;
