@@ -330,6 +330,16 @@ function registerCampaignRoutes(router, context) {
       } else if (!scheduleService.inWindow(campaign.schedule || {}, new Date())) {
         flowStatus = 'outside_window';
       }
+      // Nome da empresa em uma query só — o monitor mostra QUEM, não só ids.
+      const prospectIds = [...new Set(rows.map((r) => r.prospectId))].slice(0, 500);
+      if (prospectIds.length) {
+        const prospects = await prisma.prospect.findMany({
+          where: { id: { in: prospectIds } },
+          select: { id: true, companyName: true },
+        });
+        const byId = new Map(prospects.map((p) => [p.id, p.companyName]));
+        for (const r of rows) r.companyName = byId.get(r.prospectId) || null;
+      }
       for (const row of rows) {
         if (row.status === 'QUEUED' || row.status === 'SELECTED') {
           row.retainedReason = flowStatus === 'flowing' ? null : flowStatus;

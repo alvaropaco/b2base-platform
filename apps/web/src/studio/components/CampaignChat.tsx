@@ -6,13 +6,19 @@
  * thread (FR-4) — nunca em painel lateral. Chips-ação disparam ações reais e
  * idempotentes do orquestrador (FR-9); texto livre segue o fluxo normal
  * (FR-10). Progresso ao vivo reusa o transporte SSE do 010 (FR-13).
+ *
+ * 2026-09-28 (feedback do dono): os chips genéricos de sugestão saíram do
+ * rodapé (poluíam cada resposta — restam só os chips CONTEXTUAIS de próximo
+ * passo); o painel de leads virou GAVETA lateral acessível em qualquer fase
+ * (não nasce mais dentro do thread); e "Colocar em voo" termina com um
+ * RESUMO da campanha + atalho chamativo para o Monitor.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { ArrowUp, Paperclip, Sparkles } from 'lucide-react';
+import { ArrowUp, Paperclip, Rocket, Sparkles, Users, X } from 'lucide-react';
 import { AudiencePanel } from './AudiencePanel';
 import { StudioRequestError, fetchCertificate, runCampaignAction } from '../api';
-import type { CertificateVerdict, CockpitChip } from '../types';
+import type { CertificateVerdict } from '../types';
 
 interface ChatCard {
   type: string;
@@ -59,14 +65,14 @@ interface CampaignState {
 
 export interface CampaignChatProps {
   campaignId: string;
-  /** Chips do mordomo (home) que iniciam o diálogo correspondente (FR-25). */
-  suggestions?: CockpitChip[];
   onStateChange?: () => void;
   onApproved?: () => void;
   /** "Salvar rascunho e sair": volta ao briefing mantendo a campanha em draft. */
   onExitToHome?: () => void;
   /** Etapa corrente do Rail (ex.: 'audience') — liga painéis contextuais. */
   step?: string | null;
+  /** Pós-lançamento: abre o Monitor desta campanha (fix 5, 2026-09-28). */
+  onOpenMonitor?: () => void;
 }
 
 /** Próximas ações válidas da máquina de estados (FR-3/FR-8) → chips. */
@@ -82,7 +88,7 @@ function nextStepChips(state: CampaignState | null): Array<{ key: string; label:
   return chips.slice(0, 3);
 }
 
-export function CampaignChat({ campaignId, suggestions, onStateChange, onApproved, onExitToHome, step }: CampaignChatProps) {
+export function CampaignChat({ campaignId, onStateChange, onApproved, onExitToHome, step, onOpenMonitor }: CampaignChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [state, setState] = useState<CampaignState | null>(null);
   const [input, setInput] = useState('');
@@ -93,7 +99,9 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
   const [certificate, setCertificate] = useState<CertificateVerdict | null>(null);
   const [certificateLoading, setCertificateLoading] = useState(false);
   const [launching, setLaunching] = useState(false);
-  const [showLeads, setShowLeads] = useState(step === 'audience');
+  const [leadsOpen, setLeadsOpen] = useState(false);
+  /** Resumo pós-lançamento (fix 5): nasce do estado recarregado após o voo. */
+  const [launchSummary, setLaunchSummary] = useState<CampaignState | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
@@ -112,11 +120,6 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
   useEffect(() => {
     void load();
   }, [load]);
-
-  // Painel de leads abre sozinho no passo Audiência; fora dele fica sob demanda.
-  useEffect(() => {
-    if (step === 'audience') setShowLeads(true);
-  }, [step]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -220,7 +223,8 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
     }
   };
 
-  /** Chip-ação "Colocar em voo": agenda imediato via action idempotente. */
+  /** Chip-ação "Colocar em voo": agenda imediato via action idempotente.
+   *  No sucesso, monta o RESUMO da campanha (fix 5) com atalho ao Monitor. */
   const handleLaunch = async () => {
     setError(null);
     setLaunching(true);
@@ -232,7 +236,9 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
         actionId: `launch-${campaignId}-${Date.now()}`,
         params: { mode: 'immediate' },
       });
-      await load();
+      const fresh = await jsonFetch<CampaignState>('GET', `/campaigns/${campaignId}/state`);
+      setLaunchSummary(fresh);
+      setState(fresh);
       onStateChange?.();
     } catch (err) {
       setError(err instanceof StudioRequestError ? err.message : 'Não deu para colocar em voo — verifique o saldo e o Certificado.');
@@ -269,8 +275,9 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
     // certificate/certificateLoading fora de propósito: reage só à necessidade.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [needsCertificate]);
+  // Chips contextuais do PRÓPRIO fluxo (fix 1, 2026-09-28): os chips genéricos
+  // de sugestão da home saíram do rodapé do chat — poluíam cada resposta.
   const stepChips = nextStepChips(state);
-  const chips = (suggestions && suggestions.length > 0 ? suggestions : stepChips).slice(0, 3);
   /** Pendência de verdade = bloqueia. Warning (SPF/DKIM) orienta sem travar. */
   const hasBlocking = certificate ? certificate.items.some((i) => i.level === 'block') : null;
 
@@ -339,17 +346,9 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
     <div className="mx-auto flex h-full w-full max-w-2xl flex-col">
       {/* Thread — a conversa cresce do centro; cards vivem aqui (FR-4).
           Linguagem (ref. AI-Chatbot-UI): piloto em texto plano com avatar
-          sparkle; usuário em card branco. */}
+          sparkle; usuário em card branco. O painel de leads NÃO mora mais
+          aqui: virou gaveta lateral (fix 4, 2026-09-28). */}
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-        {showLeads && (
-          <AudiencePanel
-            campaignId={campaignId}
-            onApplied={() => {
-              void load();
-              onStateChange?.();
-            }}
-          />
-        )}
         {messages.length === 0 && (
           <div className="cockpit-rise cockpit-glass rounded-2xl p-4 text-sm text-muted-foreground">
             <p className="font-medium text-foreground">Vamos montar sua campanha juntos.</p>
@@ -458,47 +457,72 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
           </div>
         )}
 
-        {/* Chips-ação: executam/passos reais, nunca texto decorativo (FR-9) */}
-        {!pending && chips.length > 0 && (
+        {/* Resumo pós-lançamento (fix 5): o cliente vê TUDO que foi configurado
+            e um atalho chamativo para acompanhar a campanha no Monitor. */}
+        {launchSummary && (
+          <div className="cockpit-rise flex justify-start gap-3">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/80 text-foreground shadow-[inset_0_0_0_1px_rgba(22,2,17,0.12)]">
+              <Rocket className="h-4 w-4" />
+            </div>
+            <div className="max-w-[85%] rounded-2xl rounded-bl-md border border-emerald-300 bg-emerald-50 p-4 text-sm">
+              <p className="font-semibold text-foreground">🚀 Campanha em voo!</p>
+              <ul className="mt-2 space-y-1 text-xs text-foreground/90">
+                <li>
+                  <strong>Objetivo:</strong> {launchSummary.campaign.objective || '—'}
+                  {launchSummary.campaign.offer ? ` · Oferta: ${launchSummary.campaign.offer}` : ''}
+                </li>
+                <li>
+                  <strong>Audiência:</strong>{' '}
+                  {typeof launchSummary.extras.audienceCount === 'number'
+                    ? `${launchSummary.extras.audienceCount.toLocaleString('pt-BR')} lead(s) selecionados`
+                    : '—'}
+                </li>
+                <li>
+                  <strong>Canais:</strong> {launchSummary.campaign.channels.join(', ')}
+                </li>
+                <li>
+                  <strong>Disparo:</strong>{' '}
+                  {launchSummary.campaign.schedule?.hourlyLimit
+                    ? `${launchSummary.campaign.schedule.hourlyLimit}/hora${
+                        launchSummary.campaign.schedule.dailyLimit ? ` · até ${launchSummary.campaign.schedule.dailyLimit}/dia` : ''
+                      }`
+                    : 'imediato'}
+                  {launchSummary.campaign.schedule?.windows?.[0]
+                    ? ` · janela ${launchSummary.campaign.schedule.windows[0].startHour}h–${launchSummary.campaign.schedule.windows[0].endHour}h`
+                    : ''}
+                </li>
+                <li>
+                  <strong>Segurança:</strong>{' '}
+                  {certificate?.level === 'green' ? 'Certificado verde ✓' : 'confira o Certificado no chat se algo pendear'}
+                </li>
+              </ul>
+              {onOpenMonitor && (
+                <button
+                  type="button"
+                  onClick={onOpenMonitor}
+                  className="cockpit-glow-approve mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-[#160211] px-4 py-3 text-sm font-semibold text-white shadow-lg transition-transform hover:brightness-110"
+                >
+                  <Rocket className="h-4 w-4" />
+                  Acompanhar disparos, respostas e leads no Monitor
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Chips-ação CONTEXTUAIS: só o que falta na campanha, nunca decorativo (FR-9) */}
+        {!pending && stepChips.length > 0 && (
           <div className="cockpit-stagger flex flex-wrap gap-2 pt-1">
-            {suggestions && suggestions.length > 0
-              ? suggestions.map((chip) => (
-                  <button
-                    key={chip.kind}
-                    type="button"
-                    title={chip.motivo}
-                    onClick={() => {
-                      // Chip com action: POST /campaigns/:id/actions (FR-9),
-                      // idempotente — nunca send livre.
-                      if (chip.action) {
-                        runCampaignAction(campaignId, {
-                          type: chip.action.type,
-                          actionId: `chip-${chip.kind}`,
-                          params: chip.action.params,
-                        })
-                          .then(() => load())
-                          .catch((err) =>
-                            setError(err instanceof StudioRequestError ? err.message : 'Falha ao executar a ação')
-                          );
-                        return;
-                      }
-                      void send(chip.prompt || chip.label);
-                    }}
-                    className="max-w-full truncate rounded-full border border-[#160211]/10 bg-white/60 px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-                  >
-                    {chip.label}
-                  </button>
-                ))
-              : stepChips.map((chip) => (
-                  <button
-                    key={chip.key}
-                    type="button"
-                    onClick={() => void send(chip.prompt)}
-                    className="rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-                  >
-                    {chip.label}
-                  </button>
-                ))}
+            {stepChips.map((chip) => (
+              <button
+                key={chip.key}
+                type="button"
+                onClick={() => void send(chip.prompt)}
+                className="rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+              >
+                {chip.label}
+              </button>
+            ))}
           </div>
         )}
         <div ref={bottomRef} />
@@ -514,20 +538,19 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
           rótulos e gating conforme feedback do dono, 2026-09-27). */}
       <div className="p-3 sm:p-4">
         <div className="mb-2 flex flex-wrap items-center gap-2">
-          {state && (
-            <button
-              type="button"
-              onClick={() => setShowLeads((v) => !v)}
-              aria-expanded={showLeads}
-              className="rounded-full border border-[#160211]/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white disabled:opacity-40"
-              title="Ver e ajustar quem recebe esta campanha"
-            >
-              {showLeads ? 'Esconder leads' : 'Ver leads'}
-              {typeof state.extras.audienceCount === 'number' && state.extras.audienceCount > 0
-                ? ` (${state.extras.audienceCount.toLocaleString('pt-BR')})`
-                : ''}
-            </button>
-          )}
+          {/* Gaveta de leads (fix 4): aberta em QUALQUER fase da campanha. */}
+          <button
+            type="button"
+            onClick={() => setLeadsOpen(true)}
+            className="flex items-center gap-1.5 rounded-full border border-[#160211]/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white"
+            title="Ver e ajustar quem recebe esta campanha — em qualquer fase"
+          >
+            <Users className="h-3.5 w-3.5" />
+            Leads
+            {typeof state?.extras.audienceCount === 'number' && state.extras.audienceCount > 0
+              ? ` (${state.extras.audienceCount.toLocaleString('pt-BR')})`
+              : ''}
+          </button>
           {/* Pendências: botão só existe quando há o que resolver. */}
           {(canFly || status === 'in_review') && certificate === null && (
             <span className="rounded-full border border-[#160211]/10 bg-white/[0.04] px-3.5 py-2 text-xs text-muted-foreground">
@@ -628,6 +651,38 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
           </div>
         </div>
       </div>
+      {/* Gaveta lateral de leads (fix 4, 2026-09-28): seleção e gestão em
+          qualquer fase, sobreposta à conversa; o agente manipula a MESMA
+          seleção via action select_leads. */}
+      {leadsOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label="Leads da campanha">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setLeadsOpen(false)} />
+          <div className="cockpit-glass-strong relative flex h-full w-full max-w-md flex-col border-l border-[#160211]/10 shadow-2xl">
+            <header className="flex items-center justify-between border-b border-[#160211]/10 px-4 py-3">
+              <p className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                <Users className="h-4 w-4" /> Leads da campanha
+              </p>
+              <button
+                type="button"
+                onClick={() => setLeadsOpen(false)}
+                aria-label="Fechar painel de leads"
+                className="rounded-lg border border-border p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <AudiencePanel
+                campaignId={campaignId}
+                onApplied={() => {
+                  void load();
+                  onStateChange?.();
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

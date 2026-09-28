@@ -313,6 +313,7 @@ export interface QueueRow {
   sentAt: string | null;
   cancelReason: string | null;
   retainedReason?: string | null;
+  companyName?: string | null;
 }
 
 export async function fetchQueue(id: string): Promise<{ rows: QueueRow[]; flowStatus: string }> {
@@ -320,6 +321,31 @@ export async function fetchQueue(id: string): Promise<{ rows: QueueRow[]; flowSt
     `/campaigns/${encodeURIComponent(id)}/queue`
   );
   return { rows: data.data, flowStatus: data.flowStatus };
+}
+
+/** Funil agregado da campanha (StudioMetricDaily rollup) — monitor. */
+export interface CampaignFunnel {
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  replies: number;
+  conversions: number;
+  bounces: number;
+  unsubs: number;
+  estimated: boolean;
+  rates: { deliveredRate: number; openRate: number; clickRate: number; replyRate: number; bounceRate: number };
+}
+
+export async function fetchCampaignAnalytics(id: string): Promise<{
+  funnel: CampaignFunnel;
+  roi: Record<string, unknown>;
+  campaign: { id: string; name: string; goalMetric?: string | null };
+}> {
+  const data = await request<{ data: { funnel: CampaignFunnel; roi: Record<string, unknown>; campaign: { id: string; name: string; goalMetric?: string | null } } }>(
+    `/campaigns/${encodeURIComponent(id)}/analytics`
+  );
+  return data.data;
 }
 
 export async function approveFirstBatch(

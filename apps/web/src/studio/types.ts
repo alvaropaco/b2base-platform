@@ -63,6 +63,8 @@ export interface StudioCampaignDetail extends StudioCampaignSummary {
   whatsappExecutionId?: string | null;
   approval?: { automation?: boolean; complianceLevel?: string | null } & Record<string, unknown>;
   contents?: Array<Record<string, unknown>>;
+  /** Snapshot ativo da audiência (GET /campaigns/:id) — null = nunca montada. */
+  audience?: { id: string; totalCount: number; includedCount: number; excludedCount: number } | null;
 }
 
 export interface StudioApiError {

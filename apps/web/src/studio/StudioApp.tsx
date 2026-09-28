@@ -17,6 +17,7 @@
  * redirecionam para `/studio` (FR-1).
  */
 import {
+  Activity,
   ArrowUp,
   Bell,
   Bot,
@@ -47,6 +48,7 @@ import {
 } from './api';
 import type { CockpitHome, ReputationBalance, ReputationEvent } from './types';
 import { CampaignChat } from './components/CampaignChat';
+import { CampaignMonitorView } from './components/CampaignMonitorView';
 import { CampaignsListView } from './views/CampaignsListView';
 import { AgentPanel } from './components/AgentPanel';
 import { BrandSettings } from './components/BrandSettings';
@@ -61,20 +63,25 @@ const RAIL_STEPS = [
 
 type RailKey = (typeof RAIL_STEPS)[number]['key'];
 
-/** Luz acesa = etapa corrente da máquina de estados (FR-3). */
+/** Luz acesa = etapa corrente da máquina de estados (FR-3).
+ *  2026-09-28 (fix 2): o Rail deve CAMINHAR com a campanha. O detalhe
+ *  (`GET /campaigns/:id`) devolve `audience: { includedCount } | null` —
+ *  o código antigo lia `audienceCount` (sempre undefined) e congelava em
+ *  "Audiência". Snapshot existe (mesmo com 0 leads) = etapa feita. */
 function currentRailStep(detail: {
   objective?: string | null;
-  audienceCount?: number;
+  audienceCount?: number | null;
+  audience?: { includedCount: number } | null;
   contents?: Array<Record<string, unknown>>;
   schedule?: { hourlyLimit?: number } | null;
   status?: string;
 }): RailKey | null {
   if (!detail.objective) return 'objective';
-  if (detail.audienceCount == null || detail.audienceCount === 0) return 'audience';
+  const audienceCount = detail.audienceCount ?? detail.audience?.includedCount ?? null;
+  if (audienceCount == null) return 'audience';
   if (!detail.contents || detail.contents.length === 0) return 'message';
   if (!detail.schedule?.hourlyLimit) return 'schedule';
-  if (detail.status === 'scheduled' || detail.status === 'running') return 'balance';
-  return 'schedule';
+  return 'balance';
 }
 
 /** Canal saudável = acima do piso do Orçamento de Reputação (FR-14). */
@@ -102,7 +109,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
   const [saldoOpen, setSaldoOpen] = useState(false);
   const [events, setEvents] = useState<ReputationEvent[]>([]);
   const [wakesOpen, setWakesOpen] = useState(false);
-  const [pane, setPane] = useState<'home' | 'campaigns' | 'agent' | 'brand'>('home');
+  const [pane, setPane] = useState<'home' | 'campaigns' | 'agent' | 'brand' | 'monitor'>('home');
   const [navOpen, setNavOpen] = useState(false);
   const [paused, setPaused] = useState(false);
   const [busyPause, setBusyPause] = useState(false);
@@ -290,6 +297,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
   const navItems: Array<{ key: typeof pane; label: string; icon: typeof Bot }> = [
     { key: 'home', label: 'Cockpit', icon: MessageCircle },
     { key: 'campaigns', label: 'Campanhas', icon: Megaphone },
+    { key: 'monitor', label: 'Monitor', icon: Activity },
     { key: 'agent', label: 'Agente IA', icon: Bot },
     { key: 'brand', label: 'Marca', icon: Palette },
   ];
@@ -704,6 +712,10 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                 }}
               />
             </section>
+          ) : pane === 'monitor' ? (
+            <section className="w-full px-4 py-6">
+              <CampaignMonitorView initialCampaignId={home?.activeCampaignId || null} />
+            </section>
           ) : pane === 'agent' ? (
             <section className="mx-auto w-full max-w-3xl px-4 py-6">
               <AgentPanel />
@@ -747,9 +759,9 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
           ) : hasCampaign && home?.activeCampaignId ? (
             <CampaignChat
               campaignId={home.activeCampaignId}
-              suggestions={home.chips}
               step={railCurrent}
               onExitToHome={exitToBriefing}
+              onOpenMonitor={() => navigate('monitor')}
               onStateChange={() => {
                 void loadHome();
                 if (home.activeCampaignId) {

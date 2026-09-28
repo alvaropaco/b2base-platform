@@ -30,6 +30,7 @@ const ACTIONS_V1 = {
   confirm_material: { version: 1, idempotency: 'params', description: 'Confirma a extração do material' },
   generate_content: { version: 1, idempotency: 'params', description: 'Gera pacote de conteúdo (create-style)' },
   set_schedule: { version: 1, idempotency: 'none', description: 'Configura agenda/ritmo e transita para scheduled' },
+  select_leads: { version: 1, idempotency: 'none', description: 'Ajusta a seleção manual de leads da audiência (set/add/remove por prospectId)' },
   show_balance: { version: 1, idempotency: 'none', description: 'Mostra o Orçamento de Reputação por canal com passo a passo de desbloqueio' },
   start_whatsapp_pairing: { version: 1, idempotency: 'none', description: 'Inicia/retoma o pareamento do WhatsApp (WAHA) e devolve o QR no chat' },
 };
@@ -106,6 +107,17 @@ function validate(action, params = {}) {
       return true; // tones opcional (default no serviço)
     case 'set_schedule':
       return true; // validação de janelas vive no serviço (INVALID_WINDOW)
+    case 'select_leads': {
+      const lists = ['set', 'add', 'remove'];
+      const hasAny = lists.some((k) => Array.isArray(params[k]) && params[k].length > 0);
+      if (!hasAny) {
+        const err = new Error('select_leads exige ao menos uma lista não vazia: set, add ou remove (prospectIds).');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
     default:
       return true;
   }

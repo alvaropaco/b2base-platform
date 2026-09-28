@@ -391,6 +391,87 @@ test('chat: mesma descrição de audiência no mesmo dia não quebra set_audienc
   }
 });
 
+// ── Fix 4b (2026-09-28): o agente manipula a seleção de leads no chat ───────
+
+test('chat: select_leads ajusta a audiência a partir da seleção vigente (add/remove)', async () => {
+  const llmImpl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      if (user.includes('NOVA MENSAGEM DO USUÁRIO: ADICIONA O LEAD')) {
+        return {
+          content: JSON.stringify({
+            reply: 'Feito — adicionei a Acme Alimentos à campanha.',
+            actions: [{ type: 'select_leads', add: ['l3'] }],
+          }),
+        };
+      }
+      if (user.includes('NOVA MENSAGEM DO USUÁRIO: TIRA O LEAD')) {
+        return {
+          content: JSON.stringify({
+            reply: 'Removi a Indústria da seleção.',
+            actions: [{ type: 'select_leads', remove: ['l2'] }],
+          }),
+        };
+      }
+      if (user.includes('NOVA MENSAGEM DO USUÁRIO: FANTASMA')) {
+        return {
+          content: JSON.stringify({
+            reply: 'Ok, adicionei.',
+            actions: [{ type: 'select_leads', add: ['lx'] }],
+          }),
+        };
+      }
+      return {
+        content: JSON.stringify({
+          reply: 'Montei a audiência de logística!',
+          actions: [{ type: 'set_audience', description: 'empresas de logística' }],
+        }),
+      };
+    }
+    if (user.includes('critérios de segmento')) {
+      return {
+        content: JSON.stringify({
+          criteria: { version: 1, groups: [{ op: 'AND', conditions: [{ field: 'industry', op: 'contains', value: 'logística' }] }] },
+          rationale: 'empresas do setor de logística',
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Seleção', channels: ['email'] });
+    prisma.prospect.rows.push(
+      { id: 'l1', orgId: 'org-1', companyName: 'Log A', industry: 'logística', opportunityScore: 90, status: 'qualified', state: 'SP', cnpjEmail: 'a@a.com' },
+      { id: 'l2', orgId: 'org-1', companyName: 'Log B', industry: 'logística', opportunityScore: 80, status: 'qualified', state: 'SP', cnpjEmail: 'b@b.com' },
+      { id: 'l3', orgId: 'org-1', companyName: 'Acme Alimentos', industry: 'alimentos', opportunityScore: 70, status: 'qualified', state: 'SP', cnpjEmail: 'c@c.com' }
+    );
+
+    // 1) Audiência por NL: pega l1 + l2 (setor logística).
+    const first = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'Quero vender para logística' });
+    assert.equal(first.res.status, 200);
+    assert.equal((await api('GET', `/campaigns/${c.data.id}/state`)).body.data.extras.audienceCount, 2);
+
+    // 2) Agente ADICIONA um lead fora do filtro (por id do estado).
+    const add = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'ADICIONA O LEAD Acme aqui' });
+    assert.equal(add.res.status, 200);
+    assert.equal(add.body.data.cards.find((card) => card.type === 'audience').label, 'Seleção de leads atualizada');
+    assert.equal((await api('GET', `/campaigns/${c.data.id}/state`)).body.data.extras.audienceCount, 3, 'add parte da seleção vigente');
+
+    // 3) Agente REMOVE: a seleção restante preserva o que já estava.
+    const remove = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'TIRA O LEAD Log B' });
+    assert.equal(remove.res.status, 200);
+    const state = (await api('GET', `/campaigns/${c.data.id}/state`)).body.data;
+    assert.equal(state.extras.audienceCount, 2, 'remove só o pedido');
+
+    // Ids de fora da org nunca entram (segurança multi-tenant).
+    prisma.prospect.rows.push({ id: 'lx', orgId: 'org-2', companyName: 'X', industry: 'logística', opportunityScore: 99, status: 'qualified', state: 'SP' });
+    await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'ADICIONA O LEAD FANTASMA' });
+    assert.equal((await api('GET', `/campaigns/${c.data.id}/state`)).body.data.extras.audienceCount, 2, 'lead de outra org é ignorado');
+  } finally {
+    server.close();
+  }
+});
+
 // ── SSE (streaming de progresso — iteração UX chat fluido) ─────────────────
 
 test('chat/stream: emite pensando → status das etapas → cards → done via SSE', async () => {

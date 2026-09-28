@@ -51,6 +51,12 @@ function actionParams(action) {
         timezone: action.timezone || null,
         useLeadTimezone: Boolean(action.useLeadTimezone),
       };
+    case 'select_leads':
+      return {
+        set: Array.isArray(action.set) ? action.set.map(String) : null,
+        add: Array.isArray(action.add) ? action.add.map(String) : null,
+        remove: Array.isArray(action.remove) ? action.remove.map(String) : null,
+      };
     default:
       return {};
   }
@@ -80,6 +86,23 @@ async function currentExtras(prisma, campaign) {
       product: m.extraction?.product || null,
     })),
   };
+
+  // Amostra da seleção vigente: o agente cita e manipula leads por nome/id
+  // (action select_leads) — mesma fonte do painel lateral de leads.
+  if (snapshotRows[0]) {
+    try {
+      const members = await prisma.studioAudienceMember.findMany({
+        where: { snapshotId: snapshotRows[0].id, included: true },
+        take: 40,
+      });
+      const ids = members.map((m) => m.prospectId);
+      const prospects = ids.length
+        ? await prisma.prospect.findMany({ where: { id: { in: ids } }, select: { id: true, companyName: true } })
+        : [];
+      const byId = new Map(prospects.map((p) => [p.id, p.companyName]));
+      extras.audienceLeadSample = ids.map((id) => ({ id, empresa: byId.get(id) || 'lead' }));
+    } catch (_e) { /* snapshot sem membros legíveis: segue sem amostra */ }
+  }
 
   // Canais para o agente explicar limites/bloqueios com passo a passo:
   // saldo por canal + status da sessão WhatsApp + domínio do e-mail.
@@ -233,17 +256,41 @@ function registerChatRoutes(router, context) {
         // Audiência vazia com base populada é o ponto cego nº 1 do chat (QA
         // 2026-09-28, F3): o card nomeia o problema e o total da base para o
         // usuário decidir entre ajustar o segmento ou importar leads.
-        const emptyMatch = snapshot.includedCount === 0 && baseCount > 0;
-        const rationaleText = rationale || criteriaDescription(criteria);
-        return {
-          type: 'audience',
-          label: emptyMatch ? 'Audiência montada — nenhum lead casou' : 'Audiência montada',
-          detail: emptyMatch
-            ? `0 leads incluídos — sua base tem ${baseCount} lead(s) e nenhum casou com o filtro (${rationaleText}). Me peça para ajustar o segmento — ampliar setor, região ou porte — ou importar mais leads.`
-            : `${snapshot.includedCount} leads incluídos (${snapshot.excludedCount} excluídos por segurança) — ${rationaleText}`,
-          emptyMatch,
-          baseCount,
-        };
+        return buildAudienceCard({ snapshot, baseCount, rationaleText: rationale || criteriaDescription(criteria) });
+      }
+
+      case 'select_leads': {
+        // O agente ajusta a seleção manual de leads (painel lateral e chat
+        // operam sobre a MESHA fonte: o snapshot ativo). set substitui;
+        // add/remove partem da seleção corrente. Ids de fora da org caem fora.
+        const snapshotRows = await prisma.studioAudienceSnapshot.findMany({
+          where: { campaignId: campaign.id, status: 'active' },
+        });
+        const current = snapshotRows[0]
+          ? (await prisma.studioAudienceMember.findMany({ where: { snapshotId: snapshotRows[0].id, included: true } })).map(
+              (m) => m.prospectId
+            )
+          : [];
+        const requested = new Set(
+          Array.isArray(action.set) && action.set.length ? action.set : current
+        );
+        for (const id of Array.isArray(action.add) ? action.add : []) requested.add(id);
+        for (const id of Array.isArray(action.remove) ? action.remove : []) requested.delete(id);
+        const candidates = [...requested];
+        const owned = candidates.length
+          ? (await prisma.prospect.findMany({ where: { id: { in: candidates }, orgId }, select: { id: true } })).map((p) => p.id)
+          : [];
+        const baseCount = await prisma.prospect.count({ where: { orgId } });
+        const { snapshot } = await campaignService.flow.materializeAudience(prisma, {
+          campaign,
+          prospectIds: owned,
+        });
+        const removed = (Array.isArray(action.remove) ? action.remove : []).length;
+        const added = (Array.isArray(action.add) ? action.add : []).length;
+        const rationaleText = Array.isArray(action.set) && action.set.length
+          ? 'seleção definida pelo usuário via chat'
+          : `${added} lead(s) adicionado(s), ${removed} removido(s)`;
+        return buildAudienceCard({ snapshot, baseCount, rationaleText, label: 'Seleção de leads atualizada' });
       }
 
       case 'attach_url': {
@@ -420,6 +467,25 @@ function criteriaDescription(criteria) {
   }
 
 /**
+ * Card único de audiência para set_audience e select_leads. Audiência vazia
+ * com base populada é o ponto cego nº 1 do chat (QA 2026-09-28, F3): o card
+ * nomeia o problema e o total da base para o usuário decidir entre ajustar o
+ * segmento ou importar leads.
+ */
+function buildAudienceCard({ snapshot, baseCount, rationaleText, label = 'Audiência montada' }) {
+  const emptyMatch = snapshot.includedCount === 0 && baseCount > 0;
+  return {
+    type: 'audience',
+    label: emptyMatch ? `${label} — nenhum lead casou` : label,
+    detail: emptyMatch
+      ? `0 leads incluídos — sua base tem ${baseCount} lead(s) e nenhum casou com o filtro (${rationaleText}). Me peça para ajustar o segmento — ampliar setor, região ou porte — ou importar mais leads.`
+      : `${snapshot.includedCount} leads incluídos (${snapshot.excludedCount} excluídos por segurança) — ${rationaleText}`,
+    emptyMatch,
+    baseCount,
+  };
+}
+
+/**
  * Card do Orçamento de Reputação em linguagem clara (FR-20): status por canal
  * (PRONTO / PENDENTE / BLOQUEADO) + passo a passo numerado de desbloqueio.
  */
@@ -476,6 +542,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
   const ACTION_LABELS = {
     set_objective: 'Definindo objetivo…',
     set_audience: 'Criando audiência…',
+    select_leads: 'Ajustando os leads selecionados…',
     attach_url: 'Anexando e extraindo material…',
     confirm_material: 'Confirmando extração…',
     generate_content: 'Gerando conteúdo…',

@@ -97,13 +97,13 @@ test('actionKey: escopada em org+campanha; actionId do cliente vence; hash deter
   assert.equal(manifest.actionKey({ orgId: 'org-1', campaignId: 'c1', action: 'set_objective', params: {} }), null, 'idempotência none não gera chave');
 });
 
-test('manifest v1: contrato fechado com as 8 actions do orquestrador', () => {
+test('manifest v1: contrato fechado com as 9 actions do orquestrador', () => {
   // Evolução ADITIVA (2026-09-27): show_balance (leitura pura) e
   // start_whatsapp_pairing (pareamento WAHA) entraram sem alterar forma,
   // idempotência ou chaves das 6 originais — consumidores existentes não
   // quebram. Mudança de forma/semântica das existentes segue exigindo v2.
   assert.deepEqual(Object.keys(manifest.ACTIONS_V1).sort(), [
-    'attach_url', 'confirm_material', 'generate_content', 'set_audience',
+    'attach_url', 'confirm_material', 'generate_content', 'select_leads', 'set_audience',
     'set_objective', 'set_schedule', 'show_balance', 'start_whatsapp_pairing',
   ]);
   for (const spec of Object.values(manifest.ACTIONS_V1)) {
@@ -238,7 +238,10 @@ test('mesmo actionId em campanhas DIFERENTES: ambas executam (chave escopada por
     assert.equal(second.res.status, 200);
     assert.equal(first.body.data.card.replayed, undefined, 'campanha 1 executa');
     assert.equal(second.body.data.card.replayed, undefined, 'campanha 2 EXECUTA — não replaya a da 1ª');
-    assert.equal(prisma.studioSegment.rows.length, 2, 'um segmento por campanha');
+    // Segmento é BIBLIOTECA por org (@@unique orgId+nome): mesma descrição no
+    // mesmo dia deduplica (fix 2026-09-28) — as campanhas compartilham a
+    // entrada da biblioteca; runs continuam por campanha.
+    assert.equal(prisma.studioSegment.rows.length, 1, 'segmento deduplicado na biblioteca da org');
     assert.equal(prisma.studioActionRun.rows.length, 2, 'uma run por campanha');
   } finally {
     server.close();
