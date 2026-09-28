@@ -338,6 +338,59 @@ test('chat: audiência sem nenhum match avisa com o total da base no card e no r
   }
 });
 
+// ── Dedupe de segmento (bug exposto pelo evaluator em 2026-09-28): recriar a
+// mesma audiência no mesmo dia colidia com @@unique(orgId, name) e o turno
+// inteiro virava card de erro — mesmo com o snapshot já materializado. ──────
+
+test('chat: mesma descrição de audiência no mesmo dia não quebra set_audience', async () => {
+  const llmImpl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Audiência montada!',
+          actions: [{ type: 'set_audience', description: 'empresas de logística' }],
+        }),
+      };
+    }
+    if (user.includes('critérios de segmento')) {
+      return {
+        content: JSON.stringify({
+          criteria: { version: 1, groups: [{ op: 'AND', conditions: [{ field: 'industry', op: 'contains', value: 'logística' }] }] },
+          rationale: 'empresas do setor de logística',
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl });
+  try {
+    const { body: c1 } = await api('POST', '/campaigns', { name: 'A', channels: ['email'] });
+    const { body: c2 } = await api('POST', '/campaigns', { name: 'B', channels: ['email'] });
+    prisma.prospect.rows.push(
+      { id: 'l1', orgId: 'org-1', companyName: 'A', industry: 'logística', opportunityScore: 90, status: 'qualified', state: 'SP', cnpjEmail: 'a@a.com' }
+    );
+
+    for (const [name, campaignId] of [['1ª', c1.data.id], ['2ª', c2.data.id]]) {
+      const { res, body } = await api('POST', `/campaigns/${campaignId}/chat`, {
+        message: `Quero vender ERP para logística (${name})`,
+      });
+      assert.equal(res.status, 200);
+      assert.ok(
+        body.data.cards.some((card) => card.type === 'audience'),
+        `${name} vez retorna card de audiência`
+      );
+      assert.equal(
+        body.data.cards.some((card) => card.type === 'error'),
+        false,
+        `${name} vez não vira card de erro`
+      );
+    }
+    assert.equal(prisma.studioSegment.rows.length, 1, 'segmento deduplicado (1 linha, não 2)');
+  } finally {
+    server.close();
+  }
+});
+
 // ── SSE (streaming de progresso — iteração UX chat fluido) ─────────────────
 
 test('chat/stream: emite pensando → status das etapas → cards → done via SSE', async () => {

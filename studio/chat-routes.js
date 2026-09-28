@@ -207,15 +207,29 @@ function registerChatRoutes(router, context) {
           campaign,
           prospectIds: prospects.map((p) => p.id),
         });
-        await prisma.studioSegment.create({
-          data: {
-            orgId,
-            name: `Audiência ${new Date().toLocaleDateString('pt-BR')} — ${String(action.description || '').slice(0, 60)}`,
-            criteria,
-            naturalLanguageInput: String(action.description || ''),
-            createdBy: userId,
-          },
+        // O registro do segmento é auxiliar (o snapshot já materializou a
+        // audiência): o nome é único por (orgId, nome) e inclui data +
+        // descrição, então recriar a MESMA audiência no mesmo dia colide
+        // (bug exposto pelo evaluator em 2026-09-28 — reprovava o turno
+        // inteiro). Reaproveita o segmento existente e segue com o card.
+        const segmentName = `Audiência ${new Date().toLocaleDateString('pt-BR')} — ${String(action.description || '').slice(0, 60)}`;
+        const existingSegment = await prisma.studioSegment.findUnique({
+          where: { orgId_name: { orgId, name: segmentName } },
         });
+        if (!existingSegment) {
+          await prisma.studioSegment.create({
+            data: {
+              orgId,
+              name: segmentName,
+              criteria,
+              naturalLanguageInput: String(action.description || ''),
+              createdBy: userId,
+            },
+          }).catch((err) => {
+            if (err?.code === 'P2002') return null; // corrida: outro create venceu
+            throw err;
+          });
+        }
         // Audiência vazia com base populada é o ponto cego nº 1 do chat (QA
         // 2026-09-28, F3): o card nomeia o problema e o total da base para o
         // usuário decidir entre ajustar o segmento ou importar leads.

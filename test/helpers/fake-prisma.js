@@ -108,8 +108,13 @@ function makeModel(name, uniqueFields = [], compositeUniques = []) {
       return applyData(row, { createdAt: new Date(), ...data });
     },
     async findUnique({ where }) {
-      const key = Object.values(where)[0];
       const field = Object.keys(where)[0];
+      const key = Object.values(where)[0];
+      // Where composto (@@unique "a_b"): { orgId_name: { orgId, name } }.
+      if (key && typeof key === 'object' && !Array.isArray(key)) {
+        const fields = field.split('_');
+        return rows.find((r) => fields.every((f) => r[f] === key[f])) || null;
+      }
       return rows.find((r) => r[field] === key) || null;
     },
     async findFirst({ where = {}, orderBy } = {}) {
@@ -168,7 +173,7 @@ function createFakePrisma() {
     prospect: makeModel('prospect'),
     // Campaign Studio (specs/010) — modelos do Studio + execuções de canal
     studioCampaign: makeModel('studioCampaign'),
-    studioSegment: makeModel('studioSegment'),
+    studioSegment: makeModel('studioSegment', [], [['orgId', 'name']]),
     studioAudienceSnapshot: makeModel('studioAudienceSnapshot'),
     studioAudienceMember: makeModel('studioAudienceMember'),
     studioContent: makeModel('studioContent'),
