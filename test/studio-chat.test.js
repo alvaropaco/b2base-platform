@@ -280,3 +280,33 @@ test('chat/stream: emite pensando → status das etapas → cards → done via S
     server.close();
   }
 });
+
+
+test('chat telemetry: persiste duração, turno e actions sem persistir conteúdo do prompt', async () => {
+  const { server, prisma, api } = await startServer();
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Telemetry', channels: ['email'] });
+    const { res } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'Quero vender ERP para indústrias',
+    });
+    assert.equal(res.status, 200);
+
+    assert.equal(prisma.studioChatTrace.rows.length, 1);
+    const trace = prisma.studioChatTrace.rows[0];
+    assert.equal(trace.campaignId, c.data.id);
+    assert.equal(trace.orgId, 'org-1');
+    assert.equal(trace.turnIndex, 1);
+    assert.ok(trace.durationMs >= 0);
+    assert.ok(Array.isArray(trace.actionTypes));
+    assert.ok(trace.actionTypes.includes('set_objective') || trace.actionTypes.includes('set_audience'));
+    assert.ok(!Object.prototype.hasOwnProperty.call(trace, 'prompt'));
+    assert.ok(!Object.prototype.hasOwnProperty.call(trace, 'response'));
+
+    const traces = await api('GET', `/campaigns/${c.data.id}/traces`);
+    assert.equal(traces.res.status, 200);
+    assert.equal(traces.body.data.length, 1);
+    assert.equal(traces.body.data[0].turnIndex, 1);
+  } finally {
+    server.close();
+  }
+});
