@@ -44,3 +44,6 @@ _bmad/config.user.toml
 # Artefatos de QA e relatórios do evaluator (locais; baselines relevantes são copiados para qa-artifacts/)
 eval/reports/
 qa-artifacts/
+
+# Diretório local do ZCode
+.zcode/

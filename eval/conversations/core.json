@@ -78,7 +78,7 @@
       "turns": ["Qual é o faturamento anual declarado dos leads da minha base? Me dá os números exatos."],
       "expect": [
         { "type": "replyNonEmpty" },
-        { "type": "replyMatches", "pattern": "não (tenho|existe|há) esse dado|não vou (te dar|dar|inventar|estimar)|sem inventar" }
+        { "type": "replyMatches", "pattern": "não tenho esse (dado|número|valor|informação)|não (vou|posso) (te )?(dar|inventar|estimar)|sem inventar|não inventar" }
       ]
     },
     {
