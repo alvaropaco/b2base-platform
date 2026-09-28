@@ -72,6 +72,18 @@ async function runCase(client, caseDef, judgeDeps) {
   const ctx = { turns, state };
   const outcome = evaluateCase(caseDef, ctx);
 
+  // Telemetria operacional (StudioChatTrace) — métricas sem conteúdo.
+  const tracesSummary = Array.isArray(traces)
+    ? {
+        turns: traces.length,
+        llmModels: [...new Set(traces.map((t) => t.llmModel).filter(Boolean))],
+        totalTokens: traces.reduce((sum, t) => sum + Number(t.llmTotalTokens || 0), 0),
+        fallbackUsed: traces.filter((t) => t.llmFallbackUsed).length,
+        truncated: traces.filter((t) => t.llmTruncated).length,
+        failedTurns: traces.filter((t) => t.status === 'failed').length,
+      }
+    : null;
+
   // Classificação simples de falha de infraestrutura: gateway LLM sem
   // saldo/rate-limit não é regressão de comportamento — é bloqueador operacional.
   const streamErrors = turns.map((t) => t.streamError).filter(Boolean);
@@ -101,6 +113,7 @@ async function runCase(client, caseDef, judgeDeps) {
     latencyMs: turns.map((t) => t.latencyMs),
     httpErrors: turns.filter((t) => t.streamError && !llmGatewayErrors.includes(t.streamError)).map((t) => t.streamError),
     llmGatewayErrors,
+    traces: tracesSummary,
     tracesAvailable: traces !== null,
     judge,
     judgeError,
@@ -127,6 +140,7 @@ function aggregate(results) {
     },
     httpErrors: results.flatMap((r) => r.httpErrors),
     llmGatewayErrors: results.flatMap((r) => r.llmGatewayErrors || []),
+    totalTokens: results.reduce((sum, r) => sum + (r.traces?.totalTokens || 0), 0),
     tracesAvailable: results.every((r) => r.tracesAvailable),
     judge: judgeScores.length
       ? {

@@ -105,7 +105,7 @@ function buildHistoryBlock(history) {
 function createChatAgent({ callLlm } = {}) {
   const llm = callLlm || require('../../llm-client').callLlm;
 
-  async function orchestrate({ campaign, history, userMessage, extras }) {
+  async function orchestrate({ campaign, history, userMessage, extras, onLlmCall = () => {} }) {
     const user = [
       buildStateBlock(campaign, extras),
       buildOrgBlock(extras),
@@ -117,11 +117,39 @@ function createChatAgent({ callLlm } = {}) {
       .filter(Boolean)
       .join('\n\n');
 
+    // Telemetria por tentativa (StudioChatTrace via onLlmCall) + reparo de
+    // JSON em 2 tentativas (truncado → pedido de concisão; inválido → a
+    // resposta anterior volta no prompt). Falhar aqui é falha do MODELO, não
+    // do usuário — o fallback final diz isso honestamente.
+    const instrumented = async (opts) => {
+      const startedAt = Date.now();
+      try {
+        const result = await llm(opts);
+        onLlmCall({
+          durationMs: Date.now() - startedAt,
+          model: result.model || null,
+          usage: result.usage || null,
+          truncated: Boolean(result.truncated),
+          fallbackUsed: Boolean(result.fallbackUsed),
+          status: 'succeeded',
+        });
+        return result;
+      } catch (error) {
+        onLlmCall({
+          durationMs: Date.now() - startedAt,
+          model: null,
+          usage: null,
+          truncated: false,
+          fallbackUsed: false,
+          status: 'failed',
+          errorCode: error.code || null,
+        });
+        throw error;
+      }
+    };
+
     try {
-      // Reparo de JSON em 2 tentativas (truncado → pedido de concisão;
-      // inválido → a resposta anterior volta no prompt). Fallar aqui é falha
-      // do MODELO, não do usuário — o fallback final diz isso honestamente.
-      const parsed = await callLlmJson(llm, {
+      const parsed = await callLlmJson(instrumented, {
         system: SYSTEM_PROMPT,
         buildUser: (previousRaw) =>
           previousRaw

@@ -185,6 +185,7 @@ function createFakePrisma() {
     studioRecommendation: makeModel('studioRecommendation'),
     studioTemplate: makeModel('studioTemplate'),
     studioChatMessage: makeModel('studioChatMessage'),
+    studioChatTrace: makeModel('studioChatTrace'),
     // Campaign Studio Cockpit (specs/011) — orçamento de reputação, actions
     // idempotentes e consentimento WhatsApp (unique composto no ledger).
     studioReputationAccount: makeModel('studioReputationAccount', [], [['orgId', 'channel']]),

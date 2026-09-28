@@ -21,6 +21,8 @@
     "test": "node --test test/*.test.js",
     "test:integration": "node --test test/integration/*.int.test.js",
     "eval:chat": "node eval/run-conversations.js",
+    "eval:replay": "node eval/replay-conversation.js",
+    "eval:chat:judge": "B2BASE_EVAL_JUDGE=true node eval/run-conversations.js",
     "docker:build": "docker build -t b2base ."
   },
   "devDependencies": {

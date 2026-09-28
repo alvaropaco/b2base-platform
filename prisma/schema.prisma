@@ -1429,6 +1429,32 @@ model StudioChatMessage {
   @@index([campaignId, createdAt])
 }
 
+
+// Telemetria de um turno do chat: métricas operacionais e ações executadas,
+// sem persistir prompts/respostas ou outros conteúdos sensíveis.
+model StudioChatTrace {
+  id                  String   @id @default(cuid())
+  orgId               String
+  campaignId          String
+  turnIndex           Int      @default(0)
+  durationMs          Int      @default(0)
+  llmDurationMs       Int      @default(0)
+  llmModel            String?
+  llmPromptTokens     Int?
+  llmCompletionTokens Int?
+  llmTotalTokens      Int?
+  llmFallbackUsed    Boolean  @default(false)
+  llmTruncated       Boolean  @default(false)
+  status              String   @default("succeeded") // succeeded | failed
+  errorCode           String?
+  actionTypes         Json     @default("[]")
+  actionDurationsMs   Json     @default("{}")
+  createdAt           DateTime @default(now())
+
+  @@index([orgId, createdAt])
+  @@index([campaignId, createdAt])
+}
+
 // ============================================================================
 // CAMPAIGN STUDIO COCKPIT (specs/011) — Orçamento de Reputação, actions
 // idempotentes, consentimento WhatsApp. Ledger transacional com writer único
