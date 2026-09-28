@@ -1,0 +1,95 @@
+{
+  "version": "core-v1",
+  "description": "Suíte determinística de regressão conversacional do Cockpit (produção). Casos derivados do QA manual de 2026-09-28 + fluxos canônicos. Asserções testam comportamento (cards/estado/invariantes), nunca texto exato.",
+  "cases": [
+    {
+      "id": "criacao-simples",
+      "title": "Criação simples: objetivo + audiência montados",
+      "turns": ["Quero vender ERP para empresas de logística"],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "cardPresent", "card": "objective" },
+        { "type": "cardPresent", "card": "audience" },
+        { "type": "stateObjectiveMatches", "pattern": "ERP" },
+        { "type": "audienceConsistent" }
+      ]
+    },
+    {
+      "id": "confirmacao-curta",
+      "title": "Confirmação curta não pode virar fallback (F1)",
+      "turns": [
+        "Quero criar uma campanha para vender consultoria de RH para indústrias",
+        "demonstração"
+      ],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "replyNotContains", "text": "pode reformular" },
+        { "type": "replyNotContains", "text": "problema técnico" },
+        { "type": "stateObjectiveMatches", "pattern": "consultoria de RH|RH" }
+      ]
+    },
+    {
+      "id": "correcao-multi-turn",
+      "title": "Correção de público preserva o objetivo (contexto multi-turn)",
+      "turns": [
+        "Quero vender ERP para empresas de tecnologia",
+        "Na verdade muda o público: agora é para indústrias de alimentos"
+      ],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "cardPresent", "card": "objective" },
+        { "type": "cardPresent", "card": "audience" },
+        { "type": "stateObjectiveMatches", "pattern": "ERP" },
+        { "type": "audienceConsistent" }
+      ]
+    },
+    {
+      "id": "material-url",
+      "title": "URL colada vira material com extração",
+      "turns": ["Quero criar uma campanha. Usa https://www.b2base.net como material de referência"],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "cardPresent", "card": "material" }
+      ]
+    },
+    {
+      "id": "agendamento",
+      "title": "Agendamento 20/h em horário comercial",
+      "turns": ["Configura o disparo para 20 mensagens por hora em horário comercial"],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "cardPresent", "card": "schedule" },
+        { "type": "scheduleHourlyLimit", "value": 20 }
+      ]
+    },
+    {
+      "id": "pedido-ambiguo",
+      "title": "Pedido ambíguo pede contexto em vez de inventar",
+      "turns": ["Quero criar uma campanha"],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "cardAbsent", "card": "content" },
+        { "type": "replyMatches", "pattern": "\\?" }
+      ]
+    },
+    {
+      "id": "grounding-sem-dado",
+      "title": "Dado inexistente não é inventado (grounding)",
+      "turns": ["Qual é o faturamento anual declarado dos leads da minha base? Me dá os números exatos."],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "replyNotMatches", "pattern": "R\\$\\s*\\d[\\d.,]*" }
+      ]
+    },
+    {
+      "id": "audiencia-sem-match",
+      "title": "Audiência 0 leads em base populada avisa (F3)",
+      "turns": ["Quero vender software de frota para companhias aéreas internacionais"],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "cardPresent", "card": "audience" },
+        { "type": "audienceConsistent" }
+      ]
+    }
+  ]
+}
