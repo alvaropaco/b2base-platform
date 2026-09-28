@@ -202,6 +202,7 @@ function registerChatRoutes(router, context) {
         const { criteria, rationale } = await segmentNl.fromPrompt(String(action.description || ''));
         const where = segmentService.buildWhere(orgId, criteria);
         const prospects = await prisma.prospect.findMany({ where });
+        const baseCount = await prisma.prospect.count({ where: { orgId } });
         const { snapshot } = await campaignService.flow.materializeAudience(prisma, {
           campaign,
           prospectIds: prospects.map((p) => p.id),
@@ -215,10 +216,19 @@ function registerChatRoutes(router, context) {
             createdBy: userId,
           },
         });
+        // Audiência vazia com base populada é o ponto cego nº 1 do chat (QA
+        // 2026-09-28, F3): o card nomeia o problema e o total da base para o
+        // usuário decidir entre ajustar o segmento ou importar leads.
+        const emptyMatch = snapshot.includedCount === 0 && baseCount > 0;
+        const rationaleText = rationale || criteriaDescription(criteria);
         return {
           type: 'audience',
-          label: 'Audiência montada',
-          detail: `${snapshot.includedCount} leads incluídos (${snapshot.excludedCount} excluídos por segurança) — ${rationale || criteriaDescription(criteria)}`,
+          label: emptyMatch ? 'Audiência montada — nenhum lead casou' : 'Audiência montada',
+          detail: emptyMatch
+            ? `0 leads incluídos — sua base tem ${baseCount} lead(s) e nenhum casou com o filtro (${rationaleText}). Me peça para ajustar o segmento — ampliar setor, região ou porte — ou importar mais leads.`
+            : `${snapshot.includedCount} leads incluídos (${snapshot.excludedCount} excluídos por segurança) — ${rationaleText}`,
+          emptyMatch,
+          baseCount,
         };
       }
 
@@ -499,12 +509,13 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     });
 
     const extras = await currentExtras(prismaClient, campaign);
-    const { reply, actions } = await chatAgent.orchestrate({
+    const { reply: modelReply, actions } = await chatAgent.orchestrate({
       campaign,
       history: [...history, userMessage],
       userMessage: message,
       extras,
     });
+    let reply = modelReply;
     emit({ type: 'reply', text: reply });
 
     const cards = [...autoAttachCards];
@@ -523,6 +534,18 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
         cards.push(errorCard);
         emit({ type: 'card_error', card: errorCard });
       }
+    }
+
+    // O reply do modelo saiu ANTES das ações rodarem e pode otimizar ("cai
+    // como uma luva") justamente quando a audiência fecha em 0 leads (QA
+    // 2026-09-28, F3). O aviso determinístico corrige o turno no fim — e o
+    // reemit via SSE substitui o texto no frontend.
+    const emptyAudienceCard = cards.find((c) => c && c.type === 'audience' && c.emptyMatch);
+    if (emptyAudienceCard) {
+      reply +=
+        `\n\n⚠️ **Atenção:** a audiência ficou com **0 leads** — sua base tem ${emptyAudienceCard.baseCount} lead(s) ` +
+        'e nenhum casou com o filtro. Quer que eu ajuste o segmento (ampliar setor, região ou porte) ou prefere importar leads?';
+      emit({ type: 'reply', text: reply });
     }
 
     await prismaClient.studioChatMessage.create({

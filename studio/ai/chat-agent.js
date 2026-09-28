@@ -20,12 +20,15 @@
  *  - none
  */
 
-const { parseModelJson } = require('./json');
+const { callLlmJson } = require('./json');
 const skills = require('./skills');
 
 const SYSTEM_PROMPT = [
   'Você é o assistente de criação de campanhas do B2Base (prospecção B2B no Brasil).',
   'Você conversa em português, de forma curta e objetiva, UMA pergunta por vez quando faltar informação.',
+  'Se o usuário responder algo curto ("sim", "pode", "demonstração") ou escolher uma opção que VOCÊ ofereceu,',
+  'interprete a resposta à luz da sua pergunta anterior no HISTÓRICO — nunca peça para reformular sem antes',
+  'tentar responder ao que foi perguntado.',
   'Você monta a campanha inteira: objetivo, audiência (segmento de leads), conteúdo dos canais e agendamento dos disparos.',
   'Se o usuário anexar material (PDF/imagem/URL), use-o como fonte do conteúdo.',
   'ANTES de gerar conteúdo a partir de material anexado, apresente a extração (produto/oferta/público) e peça confirmação.',
@@ -114,26 +117,33 @@ function createChatAgent({ callLlm } = {}) {
       .filter(Boolean)
       .join('\n\n');
 
-    const result = await llm({
-      system: SYSTEM_PROMPT,
-      user,
-      jsonMode: true,
-      temperature: 0.4,
-      maxTokens: 900,
-      tag: 'studio:chat',
-    });
-    const parsed = parseModelJson(result.content);
-    if (!parsed || typeof parsed.reply !== 'string') {
-      // Fallback honesto: sem ação, pede para reformular.
+    try {
+      // Reparo de JSON em 2 tentativas (truncado → pedido de concisão;
+      // inválido → a resposta anterior volta no prompt). Fallar aqui é falha
+      // do MODELO, não do usuário — o fallback final diz isso honestamente.
+      const parsed = await callLlmJson(llm, {
+        system: SYSTEM_PROMPT,
+        buildUser: (previousRaw) =>
+          previousRaw
+            ? `${user}\n\nSUA RESPOSTA ANTERIOR NÃO VEIO COMO JSON VÁLIDO PARA O USUÁRIO. Refaça a MESMA decisão em JSON válido, sem texto fora do JSON. Sua resposta anterior foi:\n${String(previousRaw).slice(0, 800)}`
+            : user,
+        validate: (parsed) =>
+          typeof parsed.reply === 'string' && parsed.reply.trim() ? null : 'reply ausente ou vazio',
+        maxTokens: 1200,
+        temperature: 0.4,
+        tag: 'studio:chat',
+      });
       return {
-        reply: 'Não entendi completamente — pode reformular? (ex.: "quero vender ERP para indústrias de SP, disparar 20 por hora em horário comercial")',
+        reply: parsed.reply,
+        actions: Array.isArray(parsed.actions) ? parsed.actions.filter((a) => a && a.type) : [],
+      };
+    } catch (_err) {
+      return {
+        reply:
+          'Tive um problema técnico para processar sua mensagem agora — nada foi alterado na campanha. Pode enviar de novo? Se persistir, me diga com outras palavras.',
         actions: [{ type: 'none' }],
       };
     }
-    return {
-      reply: parsed.reply,
-      actions: Array.isArray(parsed.actions) ? parsed.actions.filter((a) => a && a.type) : [],
-    };
   }
 
   return { orchestrate };

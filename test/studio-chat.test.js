@@ -88,7 +88,7 @@ function llm() {
   };
 }
 
-async function startServer({ orgPlan = 'premium' } = {}) {
+async function startServer({ orgPlan = 'premium', llmImpl } = {}) {
   const app = express();
   app.use(express.json());
   const prisma = createFakePrisma();
@@ -101,7 +101,7 @@ async function startServer({ orgPlan = 'premium' } = {}) {
   app.use('/api/studio', createStudioRouter(prisma, {
     overrides: {
       aiDeps: {
-        callLlm: llm(),
+        callLlm: llmImpl || llm(),
         fetchImpl: async () => ({
           ok: true,
           status: 200,
@@ -215,6 +215,124 @@ test('chat: agendamento configurado por conversa com previsão de conclusão', a
     const campaign = prisma.studioCampaign.rows.find((row) => row.id === c.data.id);
     assert.equal(campaign.schedule.hourlyLimit, 20);
     assert.equal(campaign.schedule.windows[0].startHour, 9);
+  } finally {
+    server.close();
+  }
+});
+
+// ── F1 (QA 2026-09-28): JSON quebrado do modelo não vira "Não entendi" ──────
+
+test('chat: JSON inválido do modelo é reparado no retry e executa as ações', async () => {
+  let orchestratorCalls = 0;
+  const llmImpl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      orchestratorCalls += 1;
+      if (orchestratorCalls === 1) {
+        // 1ª tentativa: JSON truncado (o modelo "sumiu" no meio) — era isso
+        // que disparava o fallback "Não entendi completamente" na produção.
+        return { content: '{"reply":"Quase pronto, deixa eu' };
+      }
+      // Retry (com a resposta anterior no prompt): decisão válida.
+      return {
+        content: JSON.stringify({
+          reply: 'demonstração anotada como oferta! ✅',
+          actions: [{ type: 'set_objective', objective: 'vender ERP', offer: 'demonstração' }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Retry', channels: ['email'] });
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'demonstração' });
+    assert.equal(res.status, 200);
+    assert.equal(orchestratorCalls, 2, 'retry aconteceu');
+    assert.equal(body.data.reply, 'demonstração anotada como oferta! ✅', 'resposta do modelo, não fallback');
+    assert.ok(!body.data.reply.includes('Não entendi'), 'não culpa o usuário');
+    assert.ok(
+      body.data.cards.some((card) => card.type === 'objective'),
+      'ação do retry foi executada de verdade'
+    );
+    assert.equal(prisma.studioCampaign.rows.find((row) => row.id === c.data.id).offer, 'demonstração');
+  } finally {
+    server.close();
+  }
+});
+
+test('chat: falha persistente de JSON vira fallback honesto (problema técnico, não culpa do usuário)', async () => {
+  const llmImpl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) return { content: 'isto definitivamente não é json' };
+    return { content: '{}' };
+  };
+  const { server, api } = await startServer({ llmImpl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Fallback', channels: ['email'] });
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'pode sim!' });
+    assert.equal(res.status, 200);
+    assert.ok(body.data.reply.includes('problema técnico'), 'assume a falha do sistema');
+    assert.ok(!body.data.reply.includes('Não entendi completamente'), 'não pede reformular como se o usuário errasse');
+    assert.equal(body.data.cards.length, 0, 'nenhuma ação executada');
+  } finally {
+    server.close();
+  }
+});
+
+// ── F3 (QA 2026-09-28): audiência 0 leads com base populada avisa ───────────
+
+test('chat: audiência sem nenhum match avisa com o total da base no card e no reply', async () => {
+  const llmImpl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          // O modelo otimista diz que "cai como uma luva" — é exatamente a
+          // contradição que o aviso determinístico precisa corrigir.
+          reply: 'Montei a audiência perfeita — cai como uma luva no seu objetivo!',
+          actions: [{ type: 'set_audience', description: 'empresas de logística' }],
+        }),
+      };
+    }
+    if (user.includes('critérios de segmento')) {
+      return {
+        content: JSON.stringify({
+          criteria: { version: 1, groups: [{ op: 'AND', conditions: [{ field: 'industry', op: 'contains', value: 'logística' }] }] },
+          rationale: 'empresas do setor de logística',
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Vazia', channels: ['email'] });
+    prisma.prospect.rows.push(
+      { id: 'l1', orgId: 'org-1', companyName: 'A', industry: 'tecnologia', opportunityScore: 90, status: 'qualified', state: 'SP', cnpjEmail: 'a@a.com' },
+      { id: 'l2', orgId: 'org-1', companyName: 'B', industry: 'tecnologia', opportunityScore: 80, status: 'qualified', state: 'SP', cnpjEmail: 'b@b.com' },
+      { id: 'l3', orgId: 'org-1', companyName: 'C', industry: 'alimentos', opportunityScore: 82, status: 'qualified', state: 'SP', cnpjEmail: 'c@c.com' }
+    );
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'Quero vender ERP para logística',
+    });
+    assert.equal(res.status, 200);
+    const audienceCard = body.data.cards.find((card) => card.type === 'audience');
+    assert.ok(audienceCard, 'card de audiência');
+    assert.equal(audienceCard.emptyMatch, true, 'marca audiência vazia');
+    assert.equal(audienceCard.baseCount, 3, 'total da base informado');
+    assert.ok(audienceCard.label.includes('nenhum lead casou'), 'label explícito');
+    assert.ok(audienceCard.detail.includes('sua base tem 3 lead(s)'), 'contraste 0 × base no detail');
+
+    // O reply do turno carrega o aviso determinístico por cima do texto
+    // otimista do modelo — a contradição some do histórico.
+    const history = (await api('GET', `/campaigns/${c.data.id}/chat`)).body.data;
+    const assistant = history[history.length - 1];
+    assert.equal(assistant.role, 'assistant');
+    assert.ok(assistant.text.includes('0 leads'), 'aviso de audiência vazia no reply persistido');
+    assert.ok(assistant.text.includes('ajuste o segmento'), 'sugestão de correção no reply');
+
+    // Estado do painel continua coerente (0 incluídos).
+    const state = (await api('GET', `/campaigns/${c.data.id}/state`)).body.data;
+    assert.equal(state.extras.audienceCount, 0);
   } finally {
     server.close();
   }
