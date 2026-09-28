@@ -121,14 +121,18 @@ async function main() {
   const judgeOverall = judgeScores.length
     ? Number((judgeScores.reduce((a, b) => a + b, 0) / judgeScores.length).toFixed(2))
     : null;
+  const judgeThreshold = Number(process.env.B2BASE_EVAL_JUDGE_THRESHOLD || 7);
 
   const report = {
     generatedAt: new Date().toISOString(),
     baseUrl,
     overall,
     judgeOverall,
+    judgeThreshold,
     threshold,
-    passed: overall >= threshold && results.every((r) => r.failures.length === 0),
+    passed: overall >= threshold &&
+      results.every((r) => r.failures.length === 0) &&
+      (!process.env.B2BASE_EVAL_JUDGE || process.env.B2BASE_EVAL_JUDGE !== 'true' || (judgeOverall != null && judgeOverall >= judgeThreshold)),
     traceSummary,
     cases: results
   };
