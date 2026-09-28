@@ -56,8 +56,9 @@ test('tudo verde: certificado aprova e persiste o selo na campanha (AD-7)', asyn
   });
   const verdict = await certificate.evaluate(prisma, campaign);
   assert.equal(verdict.level, 'green');
-  assert.ok(verdict.items.length >= 4, 'cada item com estado');
+  assert.ok(verdict.items.length >= 1, 'itens de estado relevantes (ruído ok foi removido)');
   assert.ok(verdict.items.every((i) => i.detail), 'cada item com explicação (FR-27)');
+  assert.ok(verdict.items.every((i) => !['window', 'unsubscribe'].includes(i.key)), 'itens de ruído não existem mais');
   const persisted = prisma.studioCampaign.rows[0].approval.certificate;
   assert.ok(persisted, 'selo persistido na campanha');
   assert.equal(persisted.level, 'green');
@@ -73,19 +74,22 @@ test('item reprovado BLOQUEIA: saldo abaixo do necessário (FR-27/FR-15)', async
   assert.equal(verdict.level, 'blocked');
   const saldo = verdict.items.find((i) => i.key === 'saldo');
   assert.equal(saldo.level, 'block');
-  assert.ok(saldo.detail.includes('disponível'), 'explica o quanto tem e o quanto precisa');
+  assert.ok(saldo.detail.includes('disponíveis'), 'explica o quanto tem e o quanto precisa (linguagem leiga)');
 });
 
-test('item reprovado BLOQUEIA: domínio sem SPF/DKIM verificados (FR-16/AD-8)', async () => {
+test('domínio sem SPF/DKIM é AVISO não-bloqueante, com passo a passo leigo (FR-16/AD-8; pivô 2026-09-27)', async () => {
   const prisma = createFakePrisma();
   const campaign = seedCampaign(prisma, {
     members: [{ prospectId: 'l1', included: true }],
   });
   prisma.studioReputationAccount.rows[0].domainAuthStatus = 'unverified';
   const verdict = await certificate.evaluate(prisma, campaign);
-  assert.equal(verdict.level, 'blocked');
-  assert.equal(verdict.items.find((i) => i.key === 'domain_auth').level, 'block');
-  assert.ok(verdict.items.find((i) => i.key === 'domain_auth').detail.toLowerCase().includes('spf'), 'instrução de configuração');
+  const domain = verdict.items.find((i) => i.key === 'domain_auth');
+  assert.equal(domain.level, 'warning', 'SPF/DKIM não bloqueia mais (orientação, não portão)');
+  assert.ok(domain.detail.toLowerCase().includes('spf'), 'explica o que falta');
+  assert.ok(domain.detail.includes('Registros DNS'), 'passo a passo leigo (painel do provedor → DNS)');
+  assert.ok(domain.detail.includes('peça'), 'oferece ajuda do agente (listar registros)');
+  assert.ok(verdict.items.some((i) => i.key === 'saldo' && i.level === 'block'), 'saldo efetivo 0 continua visível (anti-spam físico permanece no gate)');
 });
 
 test('item reprovado BLOQUEIA: WhatsApp sem consentimento, com caminho para consentir (FR-35/AD-11)', async () => {

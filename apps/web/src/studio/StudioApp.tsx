@@ -748,6 +748,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
             <CampaignChat
               campaignId={home.activeCampaignId}
               suggestions={home.chips}
+              step={railCurrent}
               onExitToHome={exitToBriefing}
               onStateChange={() => {
                 void loadHome();

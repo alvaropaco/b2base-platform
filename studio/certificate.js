@@ -51,16 +51,6 @@ async function baseContents(prisma, campaign) {
   });
 }
 
-function hasUnsubscribeConfigured(contents) {
-  return contents
-    .filter((c) => c.channel === 'email')
-    .some((c) => {
-      const doc = JSON.stringify(c.emailDoc || {}).toLowerCase();
-      const subject = String(c.subject || '').toLowerCase();
-      return doc.includes('unsubscribe') || doc.includes('descadastro') || subject.includes('descadastro');
-    });
-}
-
 /**
  * Leads incluídos sem consentimento WhatsApp registrados (FR-35): consentimento
  * é registro persistido (StudioLeadConsent) ou resposta prévia a e-mail
@@ -108,11 +98,11 @@ async function evaluate(prisma, campaign, { now = new Date(), skipPersist = fals
     if (!account || available < Math.max(1, units)) {
       items.push(item(
         'saldo',
-        'Saldo de reputação',
+        primaryChannel === 'email' ? 'Envio por e-mail' : 'Envio por WhatsApp',
         'block',
         account
-          ? `Saldo disponível ${available} de ${units} necessárias para este disparo. Reposição diária libera mais unidades.`
-          : 'Canal ainda sem orçamento de reputação — configure o canal para gerar o saldo.'
+          ? `Esta campanha precisa de ${units} envio(s) e você tem ${available} disponíveis hoje. A reposição diária libera mais unidades — ou me peça para reduzir a audiência.`
+          : `Você ainda não configurou um mecanismo de ${primaryChannel === 'email' ? 'e-mail' : 'WhatsApp'} para enviar campanhas. Quer que eu te ajude a configurar? É só me pedir aqui no chat.`
       ));
     } else {
       items.push(item('saldo', 'Saldo de reputação', 'ok', `${available} unidades disponíveis para ${units} envio(s).`));
@@ -123,28 +113,26 @@ async function evaluate(prisma, campaign, { now = new Date(), skipPersist = fals
   if (channels.includes('email')) {
     const account = await reputation.getAccount(prisma, campaign.orgId, 'email');
     if (!account || account.domainAuthStatus !== 'verified') {
+      // Não bloqueia (2026-09-27, feedback do dono): orienta passo a passo em
+      // linguagem leiga — o cliente não conhece SPF/DKIM/DNS.
       items.push(item(
         'domain_auth',
-        'Domínio autenticado (SPF/DKIM)',
-        'block',
-        'O domínio de envio ainda não tem SPF/DKIM verificados. Configure os registros DNS — a verificação é automática e libera o saldo.'
+        'Proteção anti-spam do seu e-mail (SPF/DKIM)',
+        'warning',
+        'Para seus e-mails não caírem em spam, o seu domínio precisa de uma "assinatura de segurança" (os registros SPF e DKIM). Falta pouco:\n' +
+        '1. Entre no painel onde seu site/domínio está hospedado (ex.: Registro.br, GoDaddy, Hostinger, Cloudflare).\n' +
+        '2. Procure a seção "Registros DNS" (ou "Zona de DNS").\n' +
+        '3. Me peça "listar os registros DNS" e eu mostro cada registro para você copiar e colar lá.\n' +
+        '4. Depois de salvar, a verificação é automática e libera o envio por e-mail.'
       ));
     } else {
-      items.push(item('domain_auth', 'Domínio autenticado (SPF/DKIM)', 'ok', 'SPF e DKIM verificados por DNS.'));
+      items.push(item('domain_auth', 'Proteção anti-spam do seu e-mail (SPF/DKIM)', 'ok', 'Seu domínio já está assinado (SPF e DKIM verificados).'));
     }
 
-    // 3b) Descadastro configurado (FR-37) — a garantia vive no COMPILE (AD-2):
-    // o bridge injeta headers List-Unsubscribe (one-click) + rodapé em TODOS
-    // os e-mails. O conteúdo gerado não precisa trazer o link — este item
-    // nunca bloqueia (bloquear aqui seria condição impossível).
-    items.push(item(
-      'unsubscribe',
-      'Descadastro acessível',
-      'ok',
-      hasUnsubscribeConfigured(contents)
-        ? 'Link de descadastro presente no conteúdo + headers List-Unsubscribe injetados no compile.'
-        : 'Headers List-Unsubscribe (one-click) e rodapé de descadastro injetados no compile para todo e-mail.'
-    ));
+    // 3b) Descadastro (FR-37): a garantia vive no COMPILE (AD-2) — o bridge
+    // injeta headers List-Unsubscribe + rodapé em TODOS os e-mails. Item
+    // removido do certificado (2026-09-27): só notificaríamos se houvesse
+    // problema, e hoje a injeção automática não falha silenciosamente.
   }
 
   // 3) Opt-outs honrados (FR-27): exclusões por opt-out são mantidas fora.
@@ -152,27 +140,15 @@ async function evaluate(prisma, campaign, { now = new Date(), skipPersist = fals
     const excluded = await prisma.studioAudienceMember.findMany({
       where: { snapshotId: snapshot.id, included: false, excludeReason: 'opt_out' },
     });
-    items.push(item(
-      'opt_out',
-      'Opt-outs honrados',
-      'ok',
-      excluded.length > 0
-        ? `${excluded.length} lead(s) com opt-out ficam de fora deste disparo.`
-        : 'Nenhum opt-out pendente — pedidos de saída são respeitados.'
-    ));
+    if (excluded.length > 0) {
+      items.push(item(
+        'opt_out',
+        'Opt-outs honrados',
+        'ok',
+        `${excluded.length} lead(s) com opt-out ficam de fora deste disparo — pedidos de saída são respeitados.`
+      ));
+    }
   }
-
-  // 4) Janela de envio configurada (FR-27).
-  const schedule = campaign.schedule || {};
-  const windowOk = schedule.mode === 'immediate' || (Array.isArray(schedule.windows) && schedule.windows.length > 0);
-  items.push(item(
-    'window',
-    'Janela de envio',
-    windowOk ? 'ok' : 'block',
-    windowOk
-      ? 'Janela de envio definida — nada sai fora do horário combinado.'
-      : 'Defina quando a campanha pode enviar (janela de dias/horas).'
-  ));
 
   // 5) Consentimento WhatsApp por lead (FR-35/AD-11).
   if (channels.includes('whatsapp')) {
@@ -186,8 +162,6 @@ async function evaluate(prisma, campaign, { now = new Date(), skipPersist = fals
         'block',
         `${gapLabel} lead(s) sem consentimento registrado para WhatsApp. O canal só é usado para quem respondeu e-mail ou deu opt-in — registre o consentimento antes de incluir.`
       ));
-    } else {
-      items.push(item('consent_whatsapp', 'Consentimento WhatsApp', 'ok', 'Todos os leads incluídos têm consentimento registrado.'));
     }
   }
 
@@ -264,4 +238,4 @@ async function grantConsent(prisma, { orgId, prospectId, source = 'manual', gran
   }
 }
 
-module.exports = { evaluate, grantConsent, requiredUnits, hasUnsubscribeConfigured };
+module.exports = { evaluate, grantConsent, requiredUnits };

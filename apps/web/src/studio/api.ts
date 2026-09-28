@@ -713,3 +713,38 @@ export async function uploadBrandAsset(file: File, kind: BrandAsset['kind']): Pr
 export async function deleteBrandAsset(id: string): Promise<void> {
   await request(`/brand/assets/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
+
+// ── Audiência: leads do snapshot ativo, agrupados para seleção ──────────────
+
+export interface AudienceLead {
+  id: string;
+  name: string;
+  company: string;
+  industry: string | null;
+  city: string | null;
+  state: string | null;
+  employees: number | null;
+  cnpj: string | null;
+  score: number;
+}
+
+export interface AudienceLeadGroup {
+  key: string;
+  count: number;
+  subs: Array<{
+    key: string;
+    count: number;
+    subs: Array<{ key: string; count: number; leadIds: string[] }>;
+  }>;
+}
+
+export async function fetchAudienceLeads(id: string): Promise<{
+  total: number;
+  leads: AudienceLead[];
+  groups: AudienceLeadGroup[];
+}> {
+  const data = await request<{ data: { total: number; leads: AudienceLead[]; groups: AudienceLeadGroup[] } }>(
+    `/campaigns/${encodeURIComponent(id)}/audience/leads`
+  );
+  return data.data;
+}

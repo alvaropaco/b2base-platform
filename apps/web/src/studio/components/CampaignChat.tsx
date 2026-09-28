@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { ArrowUp, Paperclip, Sparkles } from 'lucide-react';
+import { AudiencePanel } from './AudiencePanel';
 import { StudioRequestError, fetchCertificate, runCampaignAction } from '../api';
 import type { CertificateVerdict, CockpitChip } from '../types';
 
@@ -64,6 +65,8 @@ export interface CampaignChatProps {
   onApproved?: () => void;
   /** "Salvar rascunho e sair": volta ao briefing mantendo a campanha em draft. */
   onExitToHome?: () => void;
+  /** Etapa corrente do Rail (ex.: 'audience') — liga painéis contextuais. */
+  step?: string | null;
 }
 
 /** Próximas ações válidas da máquina de estados (FR-3/FR-8) → chips. */
@@ -79,7 +82,7 @@ function nextStepChips(state: CampaignState | null): Array<{ key: string; label:
   return chips.slice(0, 3);
 }
 
-export function CampaignChat({ campaignId, suggestions, onStateChange, onApproved, onExitToHome }: CampaignChatProps) {
+export function CampaignChat({ campaignId, suggestions, onStateChange, onApproved, onExitToHome, step }: CampaignChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [state, setState] = useState<CampaignState | null>(null);
   const [input, setInput] = useState('');
@@ -90,6 +93,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
   const [certificate, setCertificate] = useState<CertificateVerdict | null>(null);
   const [certificateLoading, setCertificateLoading] = useState(false);
   const [launching, setLaunching] = useState(false);
+  const [showLeads, setShowLeads] = useState(step === 'audience');
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
@@ -108,6 +112,11 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Painel de leads abre sozinho no passo Audiência; fora dele fica sob demanda.
+  useEffect(() => {
+    if (step === 'audience') setShowLeads(true);
+  }, [step]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -249,8 +258,21 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
   const status: string | undefined = state?.campaign.status;
   const isRunning = status === 'running';
   const canFly = status === 'approved' || status === 'scheduled' || status === 'in_review';
+
+  // Certificado pré-carregado (2026-09-27): os botões de decisão precisam
+  // saber ANTES se há pendências — sem fetch automático o usuário aprovaria
+  // cego. Re-avalia sempre que o estado muda (o send() limpa o certificado).
+  const needsCertificate = canFly || status === 'in_review';
+  useEffect(() => {
+    if (!needsCertificate || certificate || certificateLoading) return;
+    void handleCertificate();
+    // certificate/certificateLoading fora de propósito: reage só à necessidade.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsCertificate]);
   const stepChips = nextStepChips(state);
   const chips = (suggestions && suggestions.length > 0 ? suggestions : stepChips).slice(0, 3);
+  /** Pendência de verdade = bloqueia. Warning (SPF/DKIM) orienta sem travar. */
+  const hasBlocking = certificate ? certificate.items.some((i) => i.level === 'block') : null;
 
   /** Card do thread: glass padrão; QR do WhatsApp e saldo têm cor própria. */
   const renderCard = (card: ChatCard, i: number) => {
@@ -316,9 +338,18 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
   return (
     <div className="mx-auto flex h-full w-full max-w-2xl flex-col">
       {/* Thread — a conversa cresce do centro; cards vivem aqui (FR-4).
-          Linguagem (ref. Zyricon): piloto fala em texto plano com avatar
-          violeta; usuário em bolha de gradiente. */}
+          Linguagem (ref. AI-Chatbot-UI): piloto em texto plano com avatar
+          sparkle; usuário em card branco. */}
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+        {showLeads && (
+          <AudiencePanel
+            campaignId={campaignId}
+            onApplied={() => {
+              void load();
+              onStateChange?.();
+            }}
+          />
+        )}
         {messages.length === 0 && (
           <div className="cockpit-rise cockpit-glass rounded-2xl p-4 text-sm text-muted-foreground">
             <p className="font-medium text-foreground">Vamos montar sua campanha juntos.</p>
@@ -479,28 +510,55 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
         </p>
       )}
 
-      {/* Zona de decisão: ações de confiança agrupadas ao composer
-          (Certificado → Aprovar → Colocar em voo, FR-27). */}
+      {/* Zona de decisão: pendências → seguir pra mensagem → voo (FR-27;
+          rótulos e gating conforme feedback do dono, 2026-09-27). */}
       <div className="p-3 sm:p-4">
         <div className="mb-2 flex flex-wrap items-center gap-2">
-          {(canFly || status === 'in_review') && (
+          {state && (
+            <button
+              type="button"
+              onClick={() => setShowLeads((v) => !v)}
+              aria-expanded={showLeads}
+              className="rounded-full border border-[#160211]/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white disabled:opacity-40"
+              title="Ver e ajustar quem recebe esta campanha"
+            >
+              {showLeads ? 'Esconder leads' : 'Ver leads'}
+              {typeof state.extras.audienceCount === 'number' && state.extras.audienceCount > 0
+                ? ` (${state.extras.audienceCount.toLocaleString('pt-BR')})`
+                : ''}
+            </button>
+          )}
+          {/* Pendências: botão só existe quando há o que resolver. */}
+          {(canFly || status === 'in_review') && certificate === null && (
+            <span className="rounded-full border border-[#160211]/10 bg-white/[0.04] px-3.5 py-2 text-xs text-muted-foreground">
+              Conferindo pendências…
+            </span>
+          )}
+          {certificate && hasBlocking && (
             <button
               type="button"
               onClick={() => void handleCertificate()}
               disabled={certificateLoading}
-              className="rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white/10 disabled:opacity-40"
+              className="rounded-full border border-rose-300 bg-rose-50 px-3.5 py-2 text-xs font-medium text-rose-800 transition-colors hover:bg-rose-100 disabled:opacity-40"
+              title="Há pendências bloqueando o avanço desta campanha"
             >
-              {certificateLoading ? 'Conferindo…' : 'Ver Certificado'}
+              {certificateLoading ? 'Conferindo…' : 'Ver pendências'}
             </button>
           )}
           {status === 'in_review' && (
             <button
               type="button"
-              onClick={() => void handleApprove()}
+              onClick={() => {
+                void (async () => {
+                  await handleApprove();
+                  void send('Gere o conteúdo da campanha para eu revisar.');
+                })();
+              }}
+              disabled={Boolean(hasBlocking) || sending}
               className="rounded-full bg-[#160211] px-3.5 py-2 text-xs font-medium text-white shadow-md disabled:opacity-40"
-              title="Aprova a campanha — a audiência congela aqui"
+              title={hasBlocking ? 'Resolva as pendências antes de seguir' : 'Aprova a audiência e segue para a Mensagem'}
             >
-              Aprovar campanha
+              Seguir pra Mensagem
             </button>
           )}
           {canFly && status !== 'in_review' && (
@@ -518,7 +576,7 @@ export function CampaignChat({ campaignId, suggestions, onStateChange, onApprove
             <button
               type="button"
               onClick={onExitToHome}
-              className="ml-auto rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
+              className="ml-auto rounded-full border border-[#160211]/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-white hover:text-foreground"
               title="A campanha fica salva como rascunho — retome quando quiser"
             >
               Salvar rascunho e sair

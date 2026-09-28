@@ -16,6 +16,97 @@ const { httpError } = require('./router');
 function registerAudienceRoutes(router, context) {
   const { prisma } = context;
 
+  // GET /api/studio/campaigns/:id/audience/leads — leads incluídos no snapshot
+  // ativo, agrupados hierarquicamente (indústria › cidade/UF › porte) para
+  // revisão e seleção no Cockpit (2026-09-27, feedback do dono do produto).
+  router.get('/campaigns/:id/audience/leads', async (req, res, next) => {
+    try {
+      const { orgId } = req.studio;
+      const campaign = await prisma.studioCampaign.findUnique({ where: { id: req.params.id } });
+      if (!campaign || campaign.orgId !== orgId) throw httpError('NOT_FOUND', 404, 'Campanha não encontrada');
+
+      const snapshot = (
+        await prisma.studioAudienceSnapshot.findMany({
+          where: { campaignId: campaign.id, status: 'active' },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        })
+      )[0] || null;
+      if (!snapshot) {
+        return res.json({ success: true, data: { total: 0, leads: [], groups: [] } });
+      }
+
+      const members = await prisma.studioAudienceMember.findMany({
+        where: { snapshotId: snapshot.id, included: true },
+        take: 5000,
+      });
+      const ids = members.map((m) => m.prospectId);
+      const prospects = ids.length
+        ? await prisma.prospect.findMany({
+            where: { id: { in: ids } },
+            select: {
+              id: true, companyName: true, contactName: true, tradeName: true,
+              industry: true, city: true, state: true, employees: true,
+              cnpj: true, opportunityScore: true,
+            },
+          })
+        : [];
+      const byId = new Map(prospects.map((p) => [p.id, p]));
+      const leads = ids
+        .map((id) => byId.get(id))
+        .filter(Boolean)
+        .map((p) => ({
+          id: p.id,
+          name: p.contactName || p.tradeName || p.companyName,
+          company: p.companyName,
+          industry: p.industry || null,
+          city: p.city || null,
+          state: p.state || null,
+          employees: p.employees ?? null,
+          cnpj: p.cnpj || null,
+          score: p.opportunityScore ?? 0,
+        }))
+        .sort((a, b) => (b.score || 0) - (a.score || 0) || String(a.company).localeCompare(String(b.company)));
+
+      // Hierarquia: indústria › cidade/UF › porte (employees em faixas).
+      const sizeBand = (e) =>
+        e == null ? 'Porte não informado'
+          : e <= 10 ? 'Micro (1–10)'
+          : e <= 50 ? 'Pequena (11–50)'
+          : e <= 200 ? 'Média (51–200)'
+          : 'Grande (200+)';
+      const industryMap = new Map();
+      for (const lead of leads) {
+        const industry = lead.industry || 'Sem categoria';
+        const locality = `${lead.city || 'Cidade não informada'}${lead.state ? ` — ${lead.state}` : ''}`;
+        const band = sizeBand(lead.employees);
+        if (!industryMap.has(industry)) industryMap.set(industry, { key: industry, count: 0, subs: new Map() });
+        const g = industryMap.get(industry);
+        g.count += 1;
+        if (!g.subs.has(locality)) g.subs.set(locality, { key: locality, count: 0, subs: new Map() });
+        const sub = g.subs.get(locality);
+        sub.count += 1;
+        if (!sub.subs.has(band)) sub.subs.set(band, { key: band, count: 0, leadIds: [] });
+        const leaf = sub.subs.get(band);
+        leaf.count += 1;
+        leaf.leadIds.push(lead.id);
+      }
+      const groups = [...industryMap.values()].map((g) => ({
+        key: g.key,
+        count: g.count,
+        subs: [...g.subs.values()].map((sub) => ({
+          key: sub.key,
+          count: sub.count,
+          subs: [...sub.subs.values()],
+        })),
+      }));
+
+      res.json({ success: true, data: { total: leads.length, leads, groups } });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // POST /api/studio/campaigns/:id/audience — define a audiência.
   router.post('/campaigns/:id/audience', async (req, res, next) => {
     try {
