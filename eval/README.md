@@ -60,3 +60,5 @@ Add a case to eval/conversations/core.json. Prefer behavior, state and semantic-
 ## CI
 
 The existing manual GitHub Actions workflow can run the regression suite against a deployed test/staging URL. Keep the judge opt-in because it consumes LLM tokens.
+
+For GitHub Actions Judge runs, configure the optional repository secrets `B2BASE_LITELLM_URL`, `B2BASE_LITELLM_API_KEY` and `B2BASE_LITELLM_MODEL`.
