@@ -29,6 +29,7 @@ function matches(record, where = {}) {
     if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
       // Operadores do Prisma suportados pelo fake: { lt, lte, gt, gte, in, contains, equals }
       if ('in' in expected) return expected.in.includes(record[field]);
+      if ('notIn' in expected) return !expected.notIn.includes(record[field]);
       if ('contains' in expected) {
         return String(record[field] ?? '')
           .toLowerCase()
@@ -124,8 +125,11 @@ function makeModel(name, uniqueFields = [], compositeUniques = []) {
       }
       return found[0] || null;
     },
-    async findMany({ where = {}, take } = {}) {
-      const found = rows.filter((r) => matches(r, where));
+    async findMany({ where = {}, orderBy, take } = {}) {
+      let found = rows.filter((r) => matches(r, where));
+      if (orderBy && orderBy.createdAt === 'desc') {
+        found = [...found].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+      }
       return take != null ? found.slice(0, Math.max(0, Number(take))) : found;
     },
     async update({ where, data }) {

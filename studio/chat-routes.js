@@ -101,6 +101,16 @@ async function currentExtras(prisma, campaign) {
         : [];
       const byId = new Map(prospects.map((p) => [p.id, p.companyName]));
       extras.audienceLeadSample = ids.map((id) => ({ id, empresa: byId.get(id) || 'lead' }));
+      // Leads na base FORA da seleção: sem isso o agente não consegue ADICIONAR
+      // de volta um lead removido ("traz a Repro de volta") — ele só via os
+      // incluídos e pedia prospectId na mão (QA visual 2026-09-28).
+      const foraDaSelecao = await prisma.prospect.findMany({
+        where: { orgId: campaign.orgId, id: { notIn: ids } },
+        select: { id: true, companyName: true },
+        orderBy: { createdAt: 'desc' },
+        take: 40,
+      });
+      extras.audienceAvailableSample = foraDaSelecao.map((p) => ({ id: p.id, empresa: p.companyName || 'lead' }));
     } catch (_e) { /* snapshot sem membros legíveis: segue sem amostra */ }
   }
 

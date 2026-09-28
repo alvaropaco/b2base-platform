@@ -420,6 +420,19 @@ test('chat: select_leads ajusta a audiência a partir da seleção vigente (add/
           }),
         };
       }
+      if (user.includes('NOVA MENSAGEM DO USUÁRIO: TRAZ O LEAD')) {
+        // O agente só conhece o id do lead removido pela amostra de
+        // disponíveis no estado — sem ela, não teria como adicionar de volta.
+        if (!user.includes('audienciaDisponiveis') || !user.includes('"id":"l2"')) {
+          return { content: JSON.stringify({ reply: 'Não localizei esse lead na base.' }) };
+        }
+        return {
+          content: JSON.stringify({
+            reply: 'Reincluí a Log B na seleção.',
+            actions: [{ type: 'select_leads', add: ['l2'] }],
+          }),
+        };
+      }
       return {
         content: JSON.stringify({
           reply: 'Montei a audiência de logística!',
@@ -463,10 +476,21 @@ test('chat: select_leads ajusta a audiência a partir da seleção vigente (add/
     const state = (await api('GET', `/campaigns/${c.data.id}/state`)).body.data;
     assert.equal(state.extras.audienceCount, 2, 'remove só o pedido');
 
+    // 3b) Amostra de disponíveis: o lead removido fica visível FORA da seleção
+    // — é a fonte que permite o agente ADICIONAR de volta por nome.
+    assert.ok(state.extras.audienceAvailableSample.some((l) => l.id === 'l2'), 'removido aparece nos disponíveis');
+    assert.ok(!state.extras.audienceAvailableSample.some((l) => l.id === 'l1'), 'incluído não aparece nos disponíveis');
+
+    // 3c) "Traz de volta": agente resolve o id pela amostra e reinclui.
+    const volta = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'TRAZ O LEAD Log B de volta' });
+    assert.equal(volta.res.status, 200);
+    assert.equal(volta.body.data.cards.find((card) => card.type === 'audience').label, 'Seleção de leads atualizada');
+    assert.equal((await api('GET', `/campaigns/${c.data.id}/state`)).body.data.extras.audienceCount, 3, 'devolve o lead removido');
+
     // Ids de fora da org nunca entram (segurança multi-tenant).
     prisma.prospect.rows.push({ id: 'lx', orgId: 'org-2', companyName: 'X', industry: 'logística', opportunityScore: 99, status: 'qualified', state: 'SP' });
     await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'ADICIONA O LEAD FANTASMA' });
-    assert.equal((await api('GET', `/campaigns/${c.data.id}/state`)).body.data.extras.audienceCount, 2, 'lead de outra org é ignorado');
+    assert.equal((await api('GET', `/campaigns/${c.data.id}/state`)).body.data.extras.audienceCount, 3, 'lead de outra org é ignorado');
   } finally {
     server.close();
   }
