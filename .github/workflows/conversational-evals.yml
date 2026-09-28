@@ -44,4 +44,6 @@ jobs:
           B2BASE_EVAL_JUDGE: ${{ inputs.judge }}
           B2BASE_EVAL_JUDGE_THRESHOLD: ${{ inputs.judge_threshold }}
           B2BASE_EVAL_ORG_ID: eval-org
-        run: pnpm run eval:chat
+          LITELLM_URL: ${{ secrets.B2BASE_LITELLM_URL }}
+          LITELLM_API_KEY: ${{ secrets.B2BASE_LITELLM_API_KEY }}
+          LITELLM_MODEL: ${{ secrets.B2BASE_LITELLM_MODEL }}
