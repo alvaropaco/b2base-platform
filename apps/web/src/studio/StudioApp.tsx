@@ -128,7 +128,12 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
       // A escolha LOCAL de campanha ativa vence o default do servidor: refetches
       // de estado (apply da gaveta de leads, actions do chat) não podem trocar
       // de campanha e desviar mensagens para outro thread (bug QA E2E 2026-09-28).
-      setHome((prev) => (prev ? { ...data, activeCampaignId: prev.activeCampaignId ?? data.activeCampaignId } : data));
+      // Nome viaja junto — senão o topo mostra o título de OUTRA campanha.
+      setHome((prev) =>
+        prev && prev.activeCampaignId
+          ? { ...data, activeCampaignId: prev.activeCampaignId, activeCampaignName: prev.activeCampaignName }
+          : data
+      );
       setPaused(data.paused);
       setBalances(data.balances || []);
     } catch (err) {

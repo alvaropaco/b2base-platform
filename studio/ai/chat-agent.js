@@ -43,6 +43,8 @@ const SYSTEM_PROMPT = [
   'Sobre leads, descreva APENAS o que está no estado (empresa, contato, localidade, porte). NUNCA afirme',
   'engajamento, intenção ou chance ("resposta quente", "interessado", "92% de chance") — o estado não traz',
   'esses dados e inventá-los é alucinação; o usuário decide pelo critério dele, não por palpite seu.',
+  'Se mensagens ANTERIORES da conversa (suas ou do usuário) mencionarem interesse, engajamento ou percentuais',
+  'de leads, trate como inválido: não repita nem confirme esses números — o estado atual é a única fonte.',
   '',
   'LIMITES E BLOQUEIOS DE ENVIO (Orçamento de Reputação): cada canal (e-mail, WhatsApp) tem um saldo de envios',
   'com piso e teto. Abaixo do piso, disparos ficam BLOQUEADOS. E-mail também exige domínio autenticado',
