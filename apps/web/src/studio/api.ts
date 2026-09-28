@@ -738,13 +738,17 @@ export interface AudienceLeadGroup {
   }>;
 }
 
-export async function fetchAudienceLeads(id: string): Promise<{
+export async function fetchAudienceLeads(
+  id: string,
+  source: 'snapshot' | 'base' = 'snapshot'
+): Promise<{
   total: number;
   leads: AudienceLead[];
   groups: AudienceLeadGroup[];
+  selectedIds: string[];
 }> {
-  const data = await request<{ data: { total: number; leads: AudienceLead[]; groups: AudienceLeadGroup[] } }>(
-    `/campaigns/${encodeURIComponent(id)}/audience/leads`
-  );
+  const data = await request<{
+    data: { total: number; leads: AudienceLead[]; groups: AudienceLeadGroup[]; selectedIds: string[] };
+  }>(`/campaigns/${encodeURIComponent(id)}/audience/leads${source === 'base' ? '?source=base' : ''}`);
   return data.data;
 }

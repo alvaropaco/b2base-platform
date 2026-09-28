@@ -57,11 +57,13 @@ export function AudiencePanel({ campaignId, onApplied }: AudiencePanelProps) {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await fetchAudienceLeads(campaignId);
+      // Sempre da BASE: todos os leads da organização com os da audiência
+      // atual pré-marcados — revisar e selecionar são o mesmo gesto.
+      const data = await fetchAudienceLeads(campaignId, 'base');
       setLeads(data.leads);
       setGroups(data.groups);
       setTotal(data.total);
-      setSelected(new Set(data.leads.map((l) => l.id))); // audiência atual = tudo marcado
+      setSelected(new Set(data.selectedIds || []));
       setOpenGroups(new Set(data.groups.slice(0, 2).map((g) => g.key))); // 2 primeiras abertas
     } catch (err) {
       setError(err instanceof StudioRequestError ? err.message : 'Falha ao carregar os leads');
@@ -122,7 +124,7 @@ export function AudiencePanel({ campaignId, onApplied }: AudiencePanelProps) {
       await setManualAudience(campaignId, leads.filter((l) => selected.has(l.id)).map((l) => l.id));
       await load();
       onApplied?.();
-      setNotice('Audiência atualizada com a sua seleção.');
+      setNotice('Audiência atualizada — quem recebe é exatamente a sua seleção.');
     } catch (err) {
       setError(err instanceof StudioRequestError ? err.message : 'Falha ao aplicar a seleção');
     } finally {
@@ -141,10 +143,10 @@ export function AudiencePanel({ campaignId, onApplied }: AudiencePanelProps) {
   if (total === 0) {
     return (
       <aside className="cockpit-rise border-b border-[#160211]/10 bg-white/50 px-4 py-3 text-xs">
-        <p className="font-semibold">Leads da audiência</p>
+        <p className="font-semibold">Selecione quem vai receber</p>
         <p className="mt-1 text-muted-foreground">
-          Nenhum lead definido ainda. Me conte para quem você quer vender aqui no chat que eu monto a audiência — ou
-          selecione os leads no painel de Campanhas.
+          Sua base ainda não tem leads. Importe ou descubra empresas na aba Descobrir — depois volte aqui e eu monto a
+          campanha para eles.
         </p>
       </aside>
     );
@@ -157,9 +159,9 @@ export function AudiencePanel({ campaignId, onApplied }: AudiencePanelProps) {
     <aside className="cockpit-rise border-b border-[#160211]/10 bg-white/50 px-4 py-3 text-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="flex items-center gap-2 font-semibold">
-          <Users className="h-4 w-4" /> Leads da audiência
+          <Users className="h-4 w-4" /> Quem vai receber a campanha
           <span className="rounded-full bg-[#160211]/5 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-            {total} no total · {selected.size} selecionados
+            {selected.size} selecionados de {total} da sua base
           </span>
         </p>
         <div className="flex items-center gap-1.5">
@@ -318,7 +320,7 @@ export function AudiencePanel({ campaignId, onApplied }: AudiencePanelProps) {
 
       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
         <span className="text-[11px] text-muted-foreground">
-          {selectedVisible} de {filtered.length} visíveis selecionados · aplicar cria um novo snapshot da audiência
+          {selectedVisible} de {filtered.length} visíveis selecionados · aplicar atualiza quem recebe esta campanha
         </span>
         <button
           type="button"

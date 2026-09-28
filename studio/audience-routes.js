@@ -32,15 +32,40 @@ function registerAudienceRoutes(router, context) {
           take: 1,
         })
       )[0] || null;
-      if (!snapshot) {
-        return res.json({ success: true, data: { total: 0, leads: [], groups: [] } });
+
+      // source=base (2026-09-27): lista TODOS os leads da organização para
+      // seleção — o painel pré-marca quem já está na audiência atual
+      // (selectedIds). Sem o parâmetro, mantém o comportamento de revisão
+      // (somente incluídos no snapshot).
+      const source = req.query.source === 'base' ? 'base' : 'snapshot';
+      let ids = [];
+      let selectedIds = [];
+      if (source === 'base') {
+        const baseRows = await prisma.prospect.findMany({
+          where: { orgId },
+          select: { id: true },
+          take: 5000,
+        });
+        ids = baseRows.map((r) => r.id);
+        if (snapshot) {
+          const members = await prisma.studioAudienceMember.findMany({
+            where: { snapshotId: snapshot.id, included: true },
+            select: { prospectId: true },
+          });
+          selectedIds = members.map((m) => m.prospectId);
+        }
+      } else {
+        if (!snapshot) {
+          return res.json({ success: true, data: { total: 0, leads: [], groups: [], selectedIds: [] } });
+        }
+        const members = await prisma.studioAudienceMember.findMany({
+          where: { snapshotId: snapshot.id, included: true },
+          take: 5000,
+        });
+        ids = members.map((m) => m.prospectId);
+        selectedIds = [...ids];
       }
 
-      const members = await prisma.studioAudienceMember.findMany({
-        where: { snapshotId: snapshot.id, included: true },
-        take: 5000,
-      });
-      const ids = members.map((m) => m.prospectId);
       const prospects = ids.length
         ? await prisma.prospect.findMany({
             where: { id: { in: ids } },
@@ -101,7 +126,7 @@ function registerAudienceRoutes(router, context) {
         })),
       }));
 
-      res.json({ success: true, data: { total: leads.length, leads, groups } });
+      res.json({ success: true, data: { total: leads.length, leads, groups, selectedIds } });
     } catch (err) {
       next(err);
     }
