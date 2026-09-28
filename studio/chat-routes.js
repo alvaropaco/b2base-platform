@@ -510,17 +510,27 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     const history = await prismaClient.studioChatMessage.findMany({
       where: { campaignId: campaign.id },
     });
-    const turnIndex = Math.floor(history.length / 2) + 1;
+    const turnIndex = history.filter((item) => item.role === 'user').length + 1;
 
     // URLs coladas viram materiais automaticamente (contexto dos agentes).
     const urls = [...message.matchAll(URL_RE)].map((m) => m[1]).slice(0, 3);
     const autoAttachCards = [];
     for (const url of urls) {
       emit({ type: 'status', label: ACTION_LABELS.attach_url });
-      const result = await runAction({ type: 'attach_url', url }, { campaign, cards: autoAttachCards, orgId, userId });
-      if (result) {
-        autoAttachCards.push(result);
-        emit({ type: 'card', card: result });
+      actionTypes.push('attach_url');
+      const actionStartedAt = Date.now();
+      try {
+        const result = await runAction({ type: 'attach_url', url }, { campaign, cards: autoAttachCards, orgId, userId });
+        if (result) {
+          autoAttachCards.push(result);
+          emit({ type: 'card', card: result });
+        }
+      } catch (err) {
+        const errorCard = { type: 'error', label: 'Ação "attach_url" falhou', detail: err.message };
+        autoAttachCards.push(errorCard);
+        emit({ type: 'card_error', card: errorCard });
+      } finally {
+        actionDurationsMs.attach_url = (actionDurationsMs.attach_url || 0) + (Date.now() - actionStartedAt);
       }
     }
 
