@@ -672,3 +672,61 @@ test('queue: campanha sem execução reporta flowStatus "not_started" (U3)', asy
     server.close();
   }
 });
+
+test('chat: campanha recém-criada expõe a base em audienciaDisponiveis (sem snapshot)', async () => {
+  const { server, prisma, api } = await startServer();
+  try {
+    prisma.prospect.rows.push(
+      { id: 'l1', orgId: 'org-1', companyName: 'Tech A', industry: 'tecnologia', opportunityScore: 90, status: 'qualified', state: 'SP', cnpjEmail: 'a@a.com' }
+    );
+    const { body: c } = await api('POST', '/campaigns', { name: 'Fresh sem audiência', channels: ['email'] });
+    const state = (await api('GET', `/campaigns/${c.data.id}/state`)).body.data;
+    assert.ok(
+      (state.extras.audienceAvailableSample || []).some((l) => l.id === 'l1'),
+      'sem snapshot, os leads da base precisam estar disponíveis para o agente selecionar por nome'
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('chat: select_leads antes de set_audience não perde a seleção (ordem canônica)', async () => {
+  const llmImpl = async ({ user }) => {
+    if (user.includes('critérios de segmento')) {
+      return {
+        content: JSON.stringify({
+          criteria: { version: 1, groups: [{ op: 'AND', conditions: [{ field: 'industry', op: 'contains', value: 'náutica' }] }] },
+          rationale: 'empresas de náutica',
+        }),
+      };
+    }
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Feito.',
+          // Ordem "errada" do modelo: seleção ANTES do segmento. A ordem
+          // canônica executa set_audience primeiro e a seleção sobrevive.
+          actions: [
+            { type: 'select_leads', add: ['l1'] },
+            { type: 'set_audience', description: 'empresas de náutica' },
+          ],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl });
+  try {
+    prisma.prospect.rows.push(
+      { id: 'l1', orgId: 'org-1', companyName: 'Tech A', industry: 'tecnologia', opportunityScore: 90, status: 'qualified', state: 'SP', cnpjEmail: 'a@a.com' }
+    );
+    const { body: c } = await api('POST', '/campaigns', { name: 'Ordem canônica', channels: ['email'] });
+    const r = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'ADICIONA E SEGMENTA' });
+    assert.equal(r.res.status, 200);
+    const audCards = r.body.data.cards.filter((card) => card.type === 'audience');
+    assert.equal(audCards[audCards.length - 1].label, 'Seleção de leads atualizada', 'select_leads roda DEPOIS do set_audience');
+    assert.equal((await api('GET', `/campaigns/${c.data.id}/state`)).body.data.extras.audienceCount, 1, 'seleção sobrevive ao rematerialize');
+  } finally {
+    server.close();
+  }
+});

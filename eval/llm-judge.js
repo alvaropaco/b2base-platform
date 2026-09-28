@@ -102,7 +102,7 @@ async function judgeConversation({ callLlm, conversation, caseDef }) {
     user,
     jsonMode: true,
     temperature: 0,
-    maxTokens: 2000,
+    maxTokens: 3000, // juiz detalhado estourava 2000 e truncava o JSON (JUDGE_INVALID_JSON)
     tag: 'eval:judge',
   });
   const latencyMs = Date.now() - t0;

@@ -89,30 +89,31 @@ async function currentExtras(prisma, campaign) {
 
   // Amostra da seleção vigente: o agente cita e manipula leads por nome/id
   // (action select_leads) — mesma fonte do painel lateral de leads.
-  if (snapshotRows[0]) {
-    try {
+  try {
+    let includedIds = [];
+    if (snapshotRows[0]) {
       const members = await prisma.studioAudienceMember.findMany({
         where: { snapshotId: snapshotRows[0].id, included: true },
         take: 40,
       });
-      const ids = members.map((m) => m.prospectId);
-      const prospects = ids.length
-        ? await prisma.prospect.findMany({ where: { id: { in: ids } }, select: { id: true, companyName: true } })
+      includedIds = members.map((m) => m.prospectId);
+      const prospects = includedIds.length
+        ? await prisma.prospect.findMany({ where: { id: { in: includedIds } }, select: { id: true, companyName: true } })
         : [];
       const byId = new Map(prospects.map((p) => [p.id, p.companyName]));
-      extras.audienceLeadSample = ids.map((id) => ({ id, empresa: byId.get(id) || 'lead' }));
-      // Leads na base FORA da seleção: sem isso o agente não consegue ADICIONAR
-      // de volta um lead removido ("traz a Repro de volta") — ele só via os
-      // incluídos e pedia prospectId na mão (QA visual 2026-09-28).
-      const foraDaSelecao = await prisma.prospect.findMany({
-        where: { orgId: campaign.orgId, id: { notIn: ids } },
-        select: { id: true, companyName: true },
-        orderBy: { createdAt: 'desc' },
-        take: 40,
-      });
-      extras.audienceAvailableSample = foraDaSelecao.map((p) => ({ id: p.id, empresa: p.companyName || 'lead' }));
-    } catch (_e) { /* snapshot sem membros legíveis: segue sem amostra */ }
-  }
+      extras.audienceLeadSample = includedIds.map((id) => ({ id, empresa: byId.get(id) || 'lead' }));
+    }
+    // Leads na base FORA da seleção — INDEPENDENTE de snapshot existir: numa
+    // campanha recém-criada (sem audiência) o agente precisava desses ids para
+    // "quero exatamente os leads X e Y" e não tinha nenhum (QA E2E 2026-09-28).
+    const foraDaSelecao = await prisma.prospect.findMany({
+      where: { orgId: campaign.orgId, id: { notIn: includedIds } },
+      select: { id: true, companyName: true },
+      orderBy: { createdAt: 'desc' },
+      take: 40,
+    });
+    extras.audienceAvailableSample = foraDaSelecao.map((p) => ({ id: p.id, empresa: p.companyName || 'lead' }));
+  } catch (_e) { /* base ilegível: segue sem amostras */ }
 
   // Canais para o agente explicar limites/bloqueios com passo a passo:
   // saldo por canal + status da sessão WhatsApp + domínio do e-mail.
@@ -674,7 +675,14 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     emit({ type: 'reply', text: reply });
 
     const cards = [...autoAttachCards];
-    for (const action of actions) {
+    // Ordem canônica: set_audience REMATERIALIZA a seleção — se o modelo
+    // emits select_leads antes e set_audience depois, o set apaga a seleção
+    // que acabou de ser feita (regressão QA E2E 2026-09-28, estado-consistente).
+    const ACTION_ORDER = { set_objective: 0, set_audience: 1, attach_url: 2, confirm_material: 3, generate_content: 4, select_leads: 5, set_schedule: 6 };
+    const orderedActions = [...actions].sort(
+      (a, b) => (ACTION_ORDER[a?.type] ?? 9) - (ACTION_ORDER[b?.type] ?? 9)
+    );
+    for (const action of orderedActions) {
       const label = ACTION_LABELS[action.type];
       if (label) emit({ type: 'status', label });
       if (action && action.type && action.type !== 'none') actionTypes.push(action.type);
