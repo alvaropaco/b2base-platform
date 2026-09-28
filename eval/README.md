@@ -1,26 +1,29 @@
 # B2Base Conversational Evaluation
 
-This suite tests the Campaign Studio chat as a black-box conversation API.
+The suite treats the Campaign Studio `/api/studio` chat as a black-box conversation API and turns regressions into repeatable tests.
 
-## Run against a local server
+## What is covered
+
+- multi-turn conversations;
+- observable response quality instead of brittle exact-text matching;
+- expected semantic cards (`objective`, `audience`, `material`, `schedule`);
+- clarification behavior for incomplete prompts;
+- a numeric quality score and CI threshold.
+
+## Running against a local/staging server
 
 ```bash
-B2BASE_EVAL_URL=http://127.0.0.1:3001 pnpm run eval:chat
+B2BASE_EVAL_URL=http://127.0.0.1:3001 \
+B2BASE_EVAL_THRESHOLD=85 \
+pnpm run eval:chat
 ```
 
-The runner executes the same multi-turn conversations repeatedly and checks:
+The target environment must expose a test organization that can create Campaign Studio campaigns. The evaluator does not store model/API credentials.
 
-- non-empty responses;
-- expected semantic cards;
-- clarification behavior for incomplete requests;
-- multi-turn continuity.
+## Adding regressions
 
-The suite is intentionally dependency-free and does not require a model-specific SDK.
+Add a case to `eval/conversations/core.json`. Prefer assertions about behavior, cards and state over exact wording so prompt/model improvements do not make tests unnecessarily brittle.
 
-## Adding a regression
+## Next integration step
 
-Add a case to `conversations/core.json` and capture the user messages and observable expectations. Prefer behavior assertions over exact wording so prompt improvements do not create brittle tests.
-
-## CI gate
-
-Set `B2BASE_EVAL_URL` to an already-running test environment and optionally `B2BASE_EVAL_THRESHOLD` to change the quality gate.
+The current evaluator is intentionally black-box. It is a stable foundation for adding LLM-as-a-judge, traces, latency/token assertions and replayable production conversations later without changing the test-case format.
