@@ -730,3 +730,58 @@ test('chat: select_leads antes de set_audience não perde a seleção (ordem can
     server.close();
   }
 });
+
+test('histórico: timeline mista de e-mail + WhatsApp por lead, mais recente primeiro', async () => {
+  const { server, prisma, api } = await startServer();
+  try {
+    prisma.prospect.rows.push(
+      { id: 'lead-1', orgId: 'org-1', companyName: 'Repro Alimentos LTDA', contactName: 'Rita', cnpjEmail: 'rita@repro.com', city: 'São Paulo', state: 'SP' },
+      { id: 'lead-x', orgId: 'org-2', companyName: 'Fora da org', cnpjEmail: 'x@x.com' }
+    );
+    const { body: c } = await api('POST', '/campaigns', { name: 'Com execuções', channels: ['email', 'whatsapp'] });
+    const row = prisma.studioCampaign.rows.find((r) => r.id === c.data.id);
+    row.emailExecutionId = 'exec-email';
+    row.whatsappExecutionId = 'exec-wa';
+
+    // e-mail: contato + eventos (fora de ordem de criação de propósito)
+    prisma.outreachContact.rows.push({
+      id: 'oc-1', prospectId: 'lead-1', campaignId: 'exec-email', status: 'REPLIED',
+      outreachSequence: 1, replyCount: 1, lastReplyAt: new Date('2026-09-29T11:00:00Z'),
+      sentAt: new Date('2026-09-29T10:00:00Z'),
+    });
+    prisma.outreachEvent.rows.push(
+      { id: 'ev-1', contactId: 'oc-1', type: 'email_sent', status: 'SENT', createdAt: new Date('2026-09-29T10:00:00Z') },
+      { id: 'ev-2', contactId: 'oc-1', type: 'email_replied', status: 'REPLIED', createdAt: new Date('2026-09-29T11:00:00Z') }
+    );
+    // whatsapp: contato + mensagens nos dois sentidos
+    prisma.whatsappCampaignContact.rows.push({ id: 'wac-1', campaignId: 'exec-wa', prospectId: 'lead-1', status: 'SENT' });
+    prisma.whatsAppMessage.rows.push(
+      { id: 'wm-1', campaignContactId: 'wac-1', direction: 'OUTBOUND', status: 'DELIVERED', content: 'Olá! Demonstração?', createdAt: new Date('2026-09-29T12:00:00Z'), sentAt: new Date('2026-09-29T12:00:00Z') },
+      { id: 'wm-2', campaignContactId: 'wac-1', direction: 'INBOUND', status: 'READ', content: 'Quero saber mais', createdAt: new Date('2026-09-29T12:30:00Z'), sentAt: new Date('2026-09-29T12:30:00Z') }
+    );
+
+    const r = await api('GET', `/campaigns/${c.data.id}/leads/lead-1/history`);
+    assert.equal(r.res.status, 200);
+    assert.equal(r.body.data.prospect.companyName, 'Repro Alimentos LTDA');
+    assert.equal(r.body.data.emailContact.replyCount, 1);
+    assert.deepEqual(
+      r.body.data.events.map((e) => e.type),
+      ['wa_inbound', 'wa_outbound', 'email_replied', 'email_sent'],
+      'eventos ordenados do mais recente para o mais antigo, canais misturados'
+    );
+    assert.equal(r.body.data.events.find((e) => e.type === 'wa_inbound').content, 'Quero saber mais');
+
+    // Lead de OUTRA org: 404 (isolamento multi-tenant)
+    const r2 = await api('GET', `/campaigns/${c.data.id}/leads/lead-x/history`);
+    assert.equal(r2.res.status, 404);
+
+    // Campanha sem execuções: timeline vazia, sem erro
+    const { body: c2 } = await api('POST', '/campaigns', { name: 'Sem exec', channels: ['email'] });
+    const r3 = await api('GET', `/campaigns/${c2.data.id}/leads/lead-1/history`);
+    assert.equal(r3.res.status, 200);
+    assert.deepEqual(r3.body.data.events, []);
+    assert.equal(r3.body.data.emailContact, null);
+  } finally {
+    server.close();
+  }
+});

@@ -11,14 +11,16 @@
  * manual sempre disponível.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Activity, CalendarClock, ChevronDown, Mail, MessageSquare, RefreshCw, Users } from 'lucide-react';
+import { Activity, CalendarClock, ChevronDown, History, Mail, MessageSquare, RefreshCw, Users, X } from 'lucide-react';
 import {
   fetchCampaign,
   fetchCampaignAnalytics,
   fetchCampaigns,
+  fetchLeadHistory,
   fetchQueue,
   StudioRequestError,
   type CampaignFunnel,
+  type LeadHistory,
   type QueueRow,
 } from '../api';
 import type { StudioCampaignDetail, StudioCampaignSummary } from '../types';
@@ -42,6 +44,23 @@ const QUEUE_STATUS_LABEL: Record<string, string> = {
   REPLIED: 'Respondeu',
   CANCELLED: 'Cancelado',
   FAILED: 'Falhou',
+};
+
+/** Rótulos da timeline de histórico (tipos de OutreachEvent + WhatsApp). */
+const EVENT_LABEL: Record<string, string> = {
+  email_scheduled: 'E-mail agendado',
+  email_sent: 'E-mail enviado',
+  email_delivered_inferred: 'Entrega inferida',
+  email_opened_inferred: 'Abertura inferida',
+  email_replied: 'Lead respondeu',
+  email_bounced: 'Bounce',
+  email_failed: 'Falha no envio',
+  email_unsubscribed: 'Descadastro',
+  email_cancelled: 'Cancelado',
+  followup_scheduled: 'Follow-up agendado',
+  followup_sent: 'Follow-up enviado',
+  wa_outbound: 'WhatsApp enviado',
+  wa_inbound: 'WhatsApp recebido',
 };
 
 const FLOW_LABEL: Record<string, string> = {
@@ -75,6 +94,27 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
   const [queue, setQueue] = useState<{ rows: QueueRow[]; flowStatus: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [historyLead, setHistoryLead] = useState<{ prospectId: string; companyName: string | null } | null>(null);
+  const [history, setHistory] = useState<LeadHistory | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  const openHistory = useCallback(
+    async (r: QueueRow) => {
+      setHistoryLead({ prospectId: r.prospectId, companyName: r.companyName || null });
+      setHistory(null);
+      setHistoryError(null);
+      setHistoryLoading(true);
+      try {
+        setHistory(await fetchLeadHistory(campaignId as string, r.prospectId));
+      } catch (err) {
+        setHistoryError(err instanceof StudioRequestError ? err.message : 'Falha ao carregar o histórico');
+      } finally {
+        setHistoryLoading(false);
+      }
+    },
+    [campaignId]
+  );
 
   const load = useCallback(async () => {
     if (!campaignId) {
@@ -276,31 +316,38 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
               ) : (
                 <ul className="divide-y divide-[#160211]/5">
                   {rows.slice(0, 25).map((r, i) => (
-                    <li key={`${r.prospectId}-${r.channel}-${i}`} className="flex flex-wrap items-center gap-2 px-3.5 py-2 text-xs">
-                      <span className="flex items-center gap-1 rounded-full bg-[#160211]/5 px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">
-                        {channelIcon(r.channel)} {r.channel}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate font-medium text-foreground">
-                        {r.companyName || r.prospectId}
-                      </span>
-                      <span
-                        className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
-                          r.status === 'SENT' || r.status === 'REPLIED'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : r.status === 'FAILED' || r.cancelReason
-                              ? 'bg-rose-100 text-rose-800'
-                              : 'bg-[#160211]/5 text-muted-foreground'
-                        }`}
+                    <li key={`${r.prospectId}-${r.channel}-${i}`}>
+                      <button
+                        type="button"
+                        onClick={() => void openHistory(r)}
+                        title="Ver todos os contatos desta campanha com este lead"
+                        className="flex w-full flex-wrap items-center gap-2 px-3.5 py-2 text-xs text-left hover:bg-[#160211]/[0.03]"
                       >
-                        {QUEUE_STATUS_LABEL[r.status] || r.status}
-                      </span>
-                      <span className="w-32 text-right text-[10px] text-muted-foreground">
-                        {r.sentAt
-                          ? `enviado ${new Date(r.sentAt).toLocaleString('pt-BR')}`
-                          : r.scheduledAt
-                            ? `agenda ${new Date(r.scheduledAt).toLocaleString('pt-BR')}`
-                            : ''}
-                      </span>
+                        <span className="flex items-center gap-1 rounded-full bg-[#160211]/5 px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">
+                          {channelIcon(r.channel)} {r.channel}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                          {r.companyName || r.prospectId}
+                        </span>
+                        <span
+                          className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                            r.status === 'SENT' || r.status === 'REPLIED'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : r.status === 'FAILED' || r.cancelReason
+                                ? 'bg-rose-100 text-rose-800'
+                                : 'bg-[#160211]/5 text-muted-foreground'
+                          }`}
+                        >
+                          {QUEUE_STATUS_LABEL[r.status] || r.status}
+                        </span>
+                        <span className="w-32 text-right text-[10px] text-muted-foreground">
+                          {r.sentAt
+                            ? `enviado ${new Date(r.sentAt).toLocaleString('pt-BR')}`
+                            : r.scheduledAt
+                              ? `agenda ${new Date(r.scheduledAt).toLocaleString('pt-BR')}`
+                              : ''}
+                        </span>
+                      </button>
                     </li>
                   ))}
                 </ul>
@@ -311,6 +358,97 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
             )}
           </section>
         </>
+      )}
+
+      {/* Histórico de contatos com o lead — drill-down da fila (timeline). */}
+      {historyLead && (
+        <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label="Histórico de contatos">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setHistoryLead(null)} />
+          <div className="cockpit-glass-strong relative flex h-full w-full max-w-md flex-col border-l border-[#160211]/10 shadow-2xl">
+            <header className="flex items-center justify-between border-b border-[#160211]/10 px-4 py-3">
+              <div className="min-w-0">
+                <p className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                  <History className="h-4 w-4" /> Histórico do contato
+                </p>
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                  {historyLead.companyName || historyLead.prospectId}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHistoryLead(null)}
+                aria-label="Fechar histórico"
+                className="rounded-lg border border-border p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-xs">
+              {historyLoading && <p className="text-muted-foreground">Carregando histórico…</p>}
+              {historyError && (
+                <p role="alert" className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-rose-800">
+                  {historyError}
+                </p>
+              )}
+              {!historyLoading && !historyError && history && (
+                <>
+                  {history.emailContact ? (
+                    <div className="mb-3 flex flex-wrap gap-1.5">
+                      <span className="rounded-full bg-[#160211]/5 px-2 py-0.5 text-[10px] text-muted-foreground">
+                        e-mail: {QUEUE_STATUS_LABEL[history.emailContact.status] || history.emailContact.status}
+                      </span>
+                      {history.emailContact.replyCount > 0 && (
+                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-800">
+                          {history.emailContact.replyCount} resposta(s)
+                        </span>
+                      )}
+                      {history.emailContact.unsubscribed && (
+                        <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-medium text-rose-800">
+                          descadastro
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="mb-3 text-muted-foreground">
+                      Este lead ainda não entrou na execução de e-mail da campanha.
+                    </p>
+                  )}
+                  {history.events.length === 0 ? (
+                    <p className="rounded-xl border border-[#160211]/10 bg-white/60 px-3 py-4 text-center text-muted-foreground">
+                      Nenhum contato registrado ainda — a timeline aparece aqui no primeiro disparo.
+                    </p>
+                  ) : (
+                    <ol className="space-y-0 border-l border-[#160211]/10 pl-3">
+                      {history.events.map((e, i) => (
+                        <li key={`${e.type}-${i}`} className="relative pb-3 pl-3">
+                          <span
+                            className={`absolute -left-[5px] top-1 h-2 w-2 rounded-full ${
+                              e.channel === 'whatsapp'
+                                ? 'bg-emerald-500'
+                                : e.type.includes('replied')
+                                  ? 'bg-violet-500'
+                                  : e.type.includes('bounced') || e.type.includes('failed')
+                                    ? 'bg-rose-500'
+                                    : 'bg-[#160211]/30'
+                            }`}
+                          />
+                          <p className="font-medium text-foreground">{EVENT_LABEL[e.type] || e.type}</p>
+                          <p className="text-[10px] text-muted-foreground">
+                            {new Date(e.at).toLocaleString('pt-BR')} · {e.channel}
+                            {e.status ? ` · ${e.status}` : ''}
+                          </p>
+                          {e.content && (
+                            <p className="mt-1 rounded-lg bg-white/70 px-2 py-1 text-[11px] text-foreground/80">{e.content}</p>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

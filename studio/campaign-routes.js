@@ -15,6 +15,7 @@ const {
 } = require('./campaign-service');
 const { httpError } = require('./errors');
 const { validatePlaceholders } = require('./variables');
+const { waContactModel } = require('./channel-bridge');
 
 const FUNNEL_STAGES = ['top', 'middle', 'bottom'];
 const CHANNELS = ['email', 'whatsapp', 'linkedin_text'];
@@ -212,7 +213,7 @@ function registerCampaignRoutes(router, context) {
           });
         }
         if (campaign.whatsappExecutionId) {
-          await prisma.whatsappCampaignContact.updateMany({
+          await waContactModel(prisma).updateMany({
             where: { campaignId: campaign.whatsappExecutionId, status: 'QUEUED' },
             data: { status: 'CANCELLED', cancelReason: 'cancelled' },
           });
@@ -304,7 +305,7 @@ function registerCampaignRoutes(router, context) {
         }
       }
       if (campaign.whatsappExecutionId) {
-        const contacts = await prisma.whatsappCampaignContact.findMany({
+        const contacts = await waContactModel(prisma).findMany({
           where: { campaignId: campaign.whatsappExecutionId },
         });
         for (const c of contacts) {
@@ -350,6 +351,95 @@ function registerCampaignRoutes(router, context) {
         }
       }
       res.json({ success: true, data: rows, count: rows.length, flowStatus });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /campaigns/:id/leads/:prospectId/history — linha do tempo de TODOS os
+  // contatos da campanha com um lead: eventos de e-mail (OutreachEvent do
+  // contato na execução) + WhatsApp (mensagens por campaignContactId), mais
+  // recentes primeiro. Escopo de org: loadOrgCampaign + prospect da org.
+  router.get('/campaigns/:id/leads/:prospectId/history', async (req, res, next) => {
+    try {
+      const campaign = await loadOrgCampaign(prisma, req.studio.orgId, req.params.id);
+      const prospect = await prisma.prospect.findFirst({
+        where: { id: req.params.prospectId, orgId: req.studio.orgId },
+        select: { id: true, companyName: true, contactName: true, cnpjEmail: true, city: true, state: true },
+      });
+      if (!prospect) {
+        throw httpError('LEAD_NOT_FOUND', 404, 'Lead não encontrado nesta organização');
+      }
+
+      const events = [];
+      let emailContact = null;
+      if (campaign.emailExecutionId) {
+        emailContact = await prisma.outreachContact.findUnique({
+          where: {
+            prospectId_campaignId: {
+              prospectId: prospect.id,
+              campaignId: campaign.emailExecutionId,
+            },
+          },
+        });
+        if (emailContact) {
+          const evs = await prisma.outreachEvent.findMany({
+            where: { contactId: emailContact.id },
+            orderBy: { createdAt: 'desc' },
+            take: 100,
+          });
+          for (const e of evs) {
+            events.push({ at: e.createdAt, channel: 'email', type: e.type, status: e.status });
+          }
+        }
+      }
+
+      if (campaign.whatsappExecutionId) {
+        const waContact = await waContactModel(prisma).findUnique({
+          where: {
+            campaignId_prospectId: {
+              campaignId: campaign.whatsappExecutionId,
+              prospectId: prospect.id,
+            },
+          },
+        });
+        if (waContact) {
+          const msgs = await prisma.whatsAppMessage.findMany({
+            where: { campaignContactId: waContact.id },
+            orderBy: { createdAt: 'desc' },
+            take: 100,
+          });
+          for (const m of msgs) {
+            events.push({
+              at: m.sentAt || m.createdAt,
+              channel: 'whatsapp',
+              type: m.direction === 'INBOUND' ? 'wa_inbound' : 'wa_outbound',
+              status: m.status,
+              content: m.content ? String(m.content).slice(0, 280) : null,
+            });
+          }
+        }
+      }
+
+      events.sort((a, b) => new Date(b.at) - new Date(a.at));
+
+      res.json({
+        success: true,
+        data: {
+          prospect,
+          emailContact: emailContact
+            ? {
+                status: emailContact.status,
+                sequence: emailContact.outreachSequence,
+                replyCount: emailContact.replyCount,
+                lastReplyAt: emailContact.lastReplyAt || null,
+                unsubscribed: emailContact.unsubscribed,
+                cancelReason: emailContact.cancelReason || null,
+              }
+            : null,
+          events,
+        },
+      });
     } catch (err) {
       next(err);
     }

@@ -209,6 +209,7 @@ function createFakePrisma() {
     whatsappCampaign: makeModel('whatsappCampaign'),
     whatsappSequenceStep: makeModel('whatsappSequenceStep'),
     whatsappCampaignContact: makeModel('whatsappCampaignContact'),
+    whatsAppMessage: makeModel('whatsAppMessage'),
     suppressionList: makeModel('suppressionList'),
     leadChannelState: makeModel('leadChannelState'),
     emailAccount: makeModel('emailAccount'),

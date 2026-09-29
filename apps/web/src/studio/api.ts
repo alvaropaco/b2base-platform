@@ -778,3 +778,42 @@ export async function fetchAudienceLeads(
   }>(`/campaigns/${encodeURIComponent(id)}/audience/leads${source === 'base' ? '?source=base' : ''}`);
   return data.data;
 }
+
+// ── Histórico de contatos com um lead (timeline da campanha) ────────────────
+
+export interface LeadHistoryEvent {
+  at: string;
+  channel: 'email' | 'whatsapp';
+  type: string;
+  status: string;
+  content?: string | null;
+}
+
+export interface LeadHistoryEmailContact {
+  status: string;
+  sequence: number;
+  replyCount: number;
+  lastReplyAt: string | null;
+  unsubscribed: boolean;
+  cancelReason: string | null;
+}
+
+export interface LeadHistory {
+  prospect: {
+    id: string;
+    companyName: string;
+    contactName: string | null;
+    cnpjEmail: string | null;
+    city: string | null;
+    state: string | null;
+  };
+  emailContact: LeadHistoryEmailContact | null;
+  events: LeadHistoryEvent[];
+}
+
+export async function fetchLeadHistory(campaignId: string, prospectId: string): Promise<LeadHistory> {
+  const data = await request<{ data: LeadHistory }>(
+    `/campaigns/${encodeURIComponent(campaignId)}/leads/${encodeURIComponent(prospectId)}/history`
+  );
+  return data.data;
+}
