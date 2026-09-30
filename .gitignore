@@ -47,3 +47,11 @@ qa-artifacts/
 
 # Diretório local do ZCode
 .zcode/
+
+# Build outputs gerados (tsconfig incremental / vite build de config)
+*.tsbuildinfo
+apps/web/vite.config.js
+apps/web/vite.config.d.ts
+
+# Diretório local do OMO
+.omo/
