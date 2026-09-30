@@ -10,6 +10,28 @@
  */
 const Bull = require('bull');
 
+// Incidente 2026-09-30: createQueue era chamado POR OPERAÇÃO (fluxo de envio
+// em outreach-workers:378/459/604, dns-verify, reengagement, metrics) e cada
+// chamada instanciava uma Bull Queue nova — cada uma abre 2+ conexões Redis
+// que nunca fecham — derrubando o Redis no maxclients (~10k conexões órfãs
+// em 32h). Queue é SINGLETON por nome: instâncias Bull da mesma queue são
+// seguras para add/process compartilhados no mesmo processo.
+let BullImpl = Bull;
+const _queueByName = new Map();
+const _registeredNames = new Set();
+
+/** Injeta o construtor de Bull em testes (padrão _set*ForTests da casa). */
+function _setBullForTests(impl) {
+  BullImpl = impl;
+  _resetQueuesForTests();
+}
+
+function _resetQueuesForTests() {
+  _queueByName.clear();
+  _registeredNames.clear();
+  _queues = null;
+}
+
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 const REDIS_PASSWORD = process.env.REDIS_PASSWORD || null;
@@ -27,7 +49,13 @@ const QUEUES = Object.freeze({
 });
 
 function createQueue(name) {
-  return new Bull(name, { redis: redisConfig() });
+  // Singleton por nome (incidente 2026-09-30): chamadas repetidas de
+  // createQueue/getQueues/makeQueue convergem para a MESMA instância Bull —
+  // sem novas conexões Redis por chamada.
+  if (_queueByName.has(name)) return _queueByName.get(name);
+  const queue = new BullImpl(name, { redis: redisConfig() });
+  _queueByName.set(name, queue);
+  return queue;
 }
 
 let _queues = null;
@@ -53,6 +81,13 @@ const _workers = [];
  * @returns {import('bull').Queue}
  */
 function registerProcessor(name, processor, concurrency = 1) {
+  // Idempotente por nome (incidente 2026-09-30): re-registrar no MESMO
+  // processo trocaria o processador da queue singleton e duplicaria consumo
+  // em reimports/loops. Segundo registro é ignorado com aviso.
+  if (_registeredNames.has(name)) {
+    console.warn(`[queues] processador "${name}" já registrado neste processo — re-registro ignorado`);
+    return _queueByName.get(name);
+  }
   const queue = createQueue(name);
   queue.process(concurrency, async (job) => {
     try {
@@ -62,6 +97,7 @@ function registerProcessor(name, processor, concurrency = 1) {
       throw err;
     }
   });
+  _registeredNames.add(name);
   _workers.push(queue);
   return queue;
 }
@@ -70,6 +106,9 @@ async function closeAllQueues() {
   const q = getQueues();
   await Promise.all([q.prepare, q.send, q.gmailSync].map((q) => q.close()));
   _queues = null;
+  _queueByName.delete(QUEUES.OUTREACH_PREPARE);
+  _queueByName.delete(QUEUES.OUTREACH_SEND);
+  _queueByName.delete(QUEUES.OUTREACH_GMAIL_SYNC);
 }
 
 async function closeAllWorkers() {
@@ -85,4 +124,6 @@ module.exports = {
   closeAllQueues,
   closeAllWorkers,
   redisConfig,
+  _setBullForTests,
+  _resetQueuesForTests,
 };
