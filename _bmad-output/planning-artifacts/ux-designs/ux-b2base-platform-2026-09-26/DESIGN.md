@@ -3,7 +3,7 @@ name: Campaign Cockpit
 description: Identidade visual do Cockpit — noite arroxeada com bloom radial, sidebar, orbe e composer em vidro; violeta elétrico e glow estritamente semântico.
 status: final
 created: 2026-09-26
-updated: 2026-09-27
+updated: 2026-09-29
 companions:
   - EXPERIENCE.md
 sources:
@@ -81,7 +81,9 @@ Frame raiz 32px · cards/composer 8–12px · chips e pills (`9999px`) · sparkl
 - **Rail (5 luzes)** — Objetivo→Audiência→Mensagem→Agenda→Saldo; passo corrente em pill com gradiente violeta + glow; etapas futuras `text-2/90`; sweep de 900ms no envio autorizado (`cockpit-rail-sweep`). Faixa scrollável com máscara de fade à direita; **o passo corrente rola para o centro** no mobile.
 - **Chip** — pill de UMA linha, borda `accent/25`, fundo `accent/10`; motivo citável no `title` (tooltip). Feature card correspondente (ícone + label + motivo) na abertura.
 - **Mensagens** — piloto: texto plano com avatar circular em gradiente; usuário: bolha em gradiente `rounded-2xl rounded-br-md`. Cards de resultado em glass com "Fontes dos dados". Turno em curso: typing dots (3 pontos pulsantes) + status.
-- **Certificado** — card rico no thread; verde (glow success) libera, rosa bloqueia.
+- **Certificado** — card rico no thread; em 2026-09-29 virou **checklist de prontidão** (nunca portão): item ok em verde (glow success sutil), pendência em âmbar com caminho, rosa reservado ao que impede somente o disparo. Não desabilita botão de avanço.
+- **Pré-voo (preview de disparo)** — tela de destino da criação: dois cartões de vidro lado a lado — e-mail com o render real (preview ≡ envio) e WhatsApp como bolha de conversa; cada cartão com heading próprio e modo edição inline. Banner de pendências em âmbar (não bloqueante) com ação embutida ("conectar canal"). CTA primário sólido `{colors.ink}`: "Colocar em voo" (ou "Conectar canal para disparar" no cenário pendente).
+- **Chip de anexo** — pill com ícone do tipo (imagem/documento), nome truncado em UMA linha e "×" de remoção; borda `accent/25`, fundo `accent/10`; badge discreto com o canal destino (e-mail/WhatsApp). Segue a gramática do Chip.
 - **Pausa global** — sempre acessível na topbar (pill) e junto dos Despertares no mobile; ativa: pill rosada + banner explicativo em `danger`.
 
 ## Do's and Don'ts
