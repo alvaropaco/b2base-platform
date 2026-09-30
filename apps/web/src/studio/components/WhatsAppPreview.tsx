@@ -32,7 +32,8 @@ export function WhatsAppPreview({ campaign }: WhatsAppPreviewProps) {
           sample.map((s) => ({
             prospectId: s.prospectId,
             companyName: s.companyName,
-            renders: s.renders.filter((r) => r.channel === 'whatsapp'),
+            // E14: bolha só com texto REAL — `text` vazio não vira bolha vazia.
+            renders: s.renders.filter((r) => r.channel === 'whatsapp' && r.text && r.text.trim()),
           }))
         )
       )

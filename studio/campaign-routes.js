@@ -14,7 +14,6 @@ const {
   STUDIO_STATES,
 } = require('./campaign-service');
 const { httpError } = require('./errors');
-const { validatePlaceholders } = require('./variables');
 const { waContactModel } = require('./channel-bridge');
 
 const FUNNEL_STAGES = ['top', 'middle', 'bottom'];
@@ -157,9 +156,19 @@ function registerCampaignRoutes(router, context) {
         useLeadTimezone: Boolean(body.useLeadTimezone),
       };
       require('./campaign-service').assertTransition(campaign.status, 'scheduled');
+      // Story 1.5 (D5): "pendente de envio" só sai da campanha com canal
+      // DECLARADO conectado (interseção AD-2) — e NENHUM outro statusReason
+      // é tocado (paridade com tick/imediato, que só limpam o motivo delas).
+      const connectedSchedule = await require('./channel-bridge').connectedSendChannels(prisma, campaign.orgId);
+      const declaredSendable = (campaign.channels || []).filter((c) => c === 'email' || c === 'whatsapp');
+      const declaredConnected = declaredSendable.length > 0 && declaredSendable.some((c) => connectedSchedule[c]);
       const updated = await prisma.studioCampaign.update({
         where: { id: campaign.id },
-        data: { status: 'scheduled', schedule },
+        data: {
+          status: 'scheduled',
+          schedule,
+          ...(campaign.statusReason === 'NO_CHANNEL_CONNECTED' && declaredConnected ? { statusReason: null } : {}),
+        },
       });
       // Previsão de conclusão (FR-020) a partir da audiência congelada.
       const snapshot = await flow.activeSnapshot(prisma, campaign);
@@ -497,7 +506,8 @@ function registerCampaignRoutes(router, context) {
     }
   });
 
-  // GET /api/studio/campaigns/:id — detalhe completo.
+  // GET /api/studio/campaigns/:id — detalhe completo (inclui canais conectados
+  // da org para o Pré-voo decidir o CTA por estado — Story 3.1/UX-DR5).
   router.get('/campaigns/:id', async (req, res, next) => {
     try {
       const { orgId } = req.studio;
@@ -508,11 +518,13 @@ function registerCampaignRoutes(router, context) {
           where: { campaignId: campaign.id, status: 'active' },
         })
       )[0];
+      const connectedChannels = await require('./channel-bridge').connectedSendChannels(prisma, orgId);
       res.json({
         success: true,
         data: {
           ...campaign,
           contents,
+          connectedChannels,
           audience: snapshot
             ? {
                 id: snapshot.id,
@@ -553,73 +565,71 @@ function registerCampaignRoutes(router, context) {
     }
   });
 
-  // PATCH /api/studio/campaigns/:id — edita metadados (apenas estados editáveis).
+  // PATCH /api/studio/campaigns/:id — edita metadados (apenas estados
+  // editáveis) e conteúdo (CONTENT_EDITABLE_STATES — B1: aprovada/agendada/
+  // em voo continuam editáveis no que ainda não saiu; Story 3.3).
   router.patch('/campaigns/:id', async (req, res, next) => {
     try {
       const { orgId, userId } = req.studio;
       const campaign = await loadOrgCampaign(prisma, orgId, req.params.id);
-      assertEditable(campaign);
 
       const data = {};
       const body = req.body || {};
-      if (body.name != null) {
-        if (!String(body.name).trim()) throw badRequest('INVALID_NAME', 'Nome não pode ser vazio.');
-        data.name = String(body.name).trim().slice(0, 200);
-      }
-      if (body.description != null) data.description = String(body.description).slice(0, 2000);
-      if (body.objective != null) data.objective = String(body.objective).slice(0, 2000);
-      if (body.offer != null) data.offer = String(body.offer).slice(0, 2000);
-      if (body.funnelStage != null) {
-        if (!FUNNEL_STAGES.includes(body.funnelStage)) {
-          throw badRequest('INVALID_FUNNEL_STAGE', `Estágio inválido: ${body.funnelStage}`);
+      const contentOnly = Array.isArray(body.contents) &&
+        body.name == null && body.description == null && body.objective == null &&
+        body.offer == null && body.funnelStage == null && body.channels == null && body.status == null;
+
+      // Conteúdos: serviço único (validação de placeholders FR-033, sync em
+      // voo, approval.contentEdits — Story 3.3/D9; persiste `emailDoc` —
+      // antes era descartado silenciosamente). ORDEM: assertEditable vem
+      // ANTES de qualquer mutação — com contents+metadado em estado não
+      // editável, NADA é aplicado (nunca 409 com mutação parcial).
+      let contentsResult = null;
+      if (!contentOnly) {
+        assertEditable(campaign);
+
+        if (body.name != null) {
+          if (!String(body.name).trim()) throw badRequest('INVALID_NAME', 'Nome não pode ser vazio.');
+          data.name = String(body.name).trim().slice(0, 200);
         }
-        data.funnelStage = body.funnelStage;
-      }
-      if (body.channels != null) data.channels = validateChannels(body.channels);
+        if (body.description != null) data.description = String(body.description).slice(0, 2000);
+        if (body.objective != null) data.objective = String(body.objective).slice(0, 2000);
+        if (body.offer != null) data.offer = String(body.offer).slice(0, 2000);
+        if (body.funnelStage != null) {
+          if (!FUNNEL_STAGES.includes(body.funnelStage)) {
+            throw badRequest('INVALID_FUNNEL_STAGE', `Estágio inválido: ${body.funnelStage}`);
+          }
+          data.funnelStage = body.funnelStage;
+        }
+        if (body.channels != null) data.channels = validateChannels(body.channels);
 
-      if (body.status != null) {
-        // Transição de estado explícita (ex.: devolver para rascunho).
-        assertTransition(campaign.status, body.status);
-        data.status = body.status;
-      }
+        if (body.status != null) {
+          // Transição de estado explícita (ex.: devolver para rascunho).
+          assertTransition(campaign.status, body.status);
+          data.status = body.status;
+        }
 
-      // FR-006: editar na pausa devolve para revisão (re-aprovação
-      // obrigatória antes de voltar a rodar).
-      if (campaign.status === 'paused' && data.status == null) {
-        data.status = 'in_review';
+        // FR-006: editar na pausa devolve para revisão (re-aprovação
+        // obrigatória antes de voltar a rodar).
+        if (campaign.status === 'paused' && data.status == null) {
+          data.status = 'in_review';
+        }
       }
-
-      // Conteúdos: valida placeholders contra o catálogo (FR-033).
       if (Array.isArray(body.contents)) {
-        for (const content of body.contents) {
-          const texts = [content.subject, content.preheader, content.whatsappText, content.linkedinText];
-          for (const text of texts) {
-            const { ok, unknown } = validatePlaceholders(text || '');
-            if (!ok) {
-              throw badRequest('UNKNOWN_VARIABLE', `Variáveis fora do catálogo: ${unknown.join(', ')}`);
-            }
-          }
-          if (content.id) {
-            await prisma.studioContent.update({
-              where: { id: content.id },
-              data: {
-                ...(content.subject != null ? { subject: content.subject } : {}),
-                ...(content.preheader != null ? { preheader: content.preheader } : {}),
-                ...(content.whatsappText != null ? { whatsappText: content.whatsappText } : {}),
-                ...(content.linkedinText != null ? { linkedinText: content.linkedinText } : {}),
-                ...(content.ctaUrl != null ? { ctaUrl: content.ctaUrl } : {}),
-                editHistory: [
-                  ...((content.editHistory || [])),
-                  { by: userId, at: new Date().toISOString(), summary: 'edição via revisão' },
-                ],
-              },
-            });
-          }
-        }
+        contentsResult = await require('./campaign-service').flow.updateContents(prisma, {
+          campaign,
+          contents: body.contents,
+          userId,
+        });
       }
 
-      const updated = await prisma.studioCampaign.update({ where: { id: campaign.id }, data });
-      res.json({ success: true, data: updated });
+      if (Object.keys(data).length > 0) {
+        await prisma.studioCampaign.update({ where: { id: campaign.id }, data });
+      }
+      // Sempre FRESCO: contents-only pode ter mudado approval (contentEdits)
+      // e `data` não reflete nada do que o serviço aplicou.
+      const updated = await prisma.studioCampaign.findUnique({ where: { id: campaign.id } });
+      res.json({ success: true, data: updated, ...(contentsResult ? { contents: contentsResult } : {}) });
     } catch (err) {
       next(err);
     }

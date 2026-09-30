@@ -30,6 +30,7 @@ import {
   Palette,
   Play,
   Plus,
+  Rocket,
   ShieldCheck,
   Sparkles,
   Wand2,
@@ -50,6 +51,7 @@ import type { CockpitHome, ReputationBalance, ReputationEvent } from './types';
 import { CampaignChat } from './components/CampaignChat';
 import { CampaignMonitorView } from './components/CampaignMonitorView';
 import { CampaignsListView } from './views/CampaignsListView';
+import { PreFlightView } from './views/PreFlightView';
 import { AgentPanel } from './components/AgentPanel';
 import { BrandSettings } from './components/BrandSettings';
 
@@ -109,7 +111,9 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
   const [saldoOpen, setSaldoOpen] = useState(false);
   const [events, setEvents] = useState<ReputationEvent[]>([]);
   const [wakesOpen, setWakesOpen] = useState(false);
-  const [pane, setPane] = useState<'home' | 'campaigns' | 'agent' | 'brand' | 'monitor'>('home');
+  // FR-1/Story 3.1: 'preflight' é o destino do fim da criação (redirect
+  // automático via onApproved) e painel de ajuste fino pré-lançamento.
+  const [pane, setPane] = useState<'home' | 'campaigns' | 'agent' | 'brand' | 'monitor' | 'preflight'>('home');
   const [navOpen, setNavOpen] = useState(false);
   const [paused, setPaused] = useState(false);
   const [busyPause, setBusyPause] = useState(false);
@@ -308,6 +312,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
     { key: 'home', label: 'Cockpit', icon: MessageCircle },
     { key: 'campaigns', label: 'Campanhas', icon: Megaphone },
     { key: 'monitor', label: 'Monitor', icon: Activity },
+    { key: 'preflight', label: 'Pré-voo', icon: Rocket },
     { key: 'agent', label: 'Agente IA', icon: Bot },
     { key: 'brand', label: 'Marca', icon: Palette },
   ];
@@ -726,6 +731,28 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
             <section className="w-full px-4 py-6">
               <CampaignMonitorView initialCampaignId={home?.activeCampaignId || null} />
             </section>
+          ) : pane === 'preflight' ? (
+            hasCampaign && home?.activeCampaignId ? (
+              <PreFlightView
+                key={home.activeCampaignId}
+                campaignId={home.activeCampaignId}
+                onBackToChat={() => navigate('home')}
+                onOpenMonitor={() => navigate('monitor')}
+              />
+            ) : (
+              <section className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-10 text-center">
+                <p className="text-sm text-muted-foreground">
+                  Abra uma campanha no Cockpit para ver o Pré-voo — o fim da criação chega aqui sozinho.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => navigate('campaigns')}
+                  className="rounded-full border border-[#160211]/10 bg-white/60 px-3.5 py-2 text-xs font-medium text-foreground hover:bg-white"
+                >
+                  Ver campanhas
+                </button>
+              </section>
+            )
           ) : pane === 'agent' ? (
             <section className="mx-auto w-full max-w-3xl px-4 py-6">
               <AgentPanel />
@@ -772,6 +799,11 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
               step={railCurrent}
               onExitToHome={exitToBriefing}
               onOpenMonitor={() => navigate('monitor')}
+              // Story 3.2 (FR9): fim da criação → redirect automático ao
+              // Pré-voo, sem pedir permissão e sem polling (gancho onApproved).
+              onApproved={() => navigate('preflight')}
+              // Story 1.5 (D5): "pendente de envio" abre o Pré-voo na hora.
+              onOpenPreflight={() => navigate('preflight')}
               onStateChange={() => {
                 void loadHome();
                 if (home.activeCampaignId) {

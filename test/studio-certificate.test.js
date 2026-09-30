@@ -64,17 +64,28 @@ test('tudo verde: certificado aprova e persiste o selo na campanha (AD-7)', asyn
   assert.equal(persisted.level, 'green');
 });
 
-test('item reprovado BLOQUEIA: saldo abaixo do necessário (FR-27/FR-15)', async () => {
+test('saldo abaixo do necessário é PENDÊNCIA na criação — tom mordomo, nunca "bloqueado" (FR1 onda 2026-09-29)', async () => {
   const prisma = createFakePrisma();
   const campaign = seedCampaign(prisma, {
     members: Array.from({ length: 50 }, (_, i) => ({ prospectId: `l${i}`, included: true })), // 50 necessárias
   });
   prisma.studioReputationAccount.rows[0].balance = 20;
   const verdict = await certificate.evaluate(prisma, campaign);
-  assert.equal(verdict.level, 'blocked');
+  assert.equal(verdict.level, 'amber', 'pendência NUNCA bloqueia a criação');
   const saldo = verdict.items.find((i) => i.key === 'saldo');
-  assert.equal(saldo.level, 'block');
-  assert.ok(saldo.detail.includes('disponíveis'), 'explica o quanto tem e o quanto precisa (linguagem leiga)');
+  assert.equal(saldo.level, 'pending');
+  assert.ok(saldo.detail.includes('Faltam'), 'diz o que falta (tom mordomo)');
+  assert.ok(saldo.detail.includes('reposição diária libera'), 'diz quando libera');
+  assert.ok(!saldo.detail.toLowerCase().includes('bloqueado'), 'nunca soa interdição (UX-DR4)');
+  assert.ok(saldo.whenUnblocks && /\d{2}:\d{2}/.test(saldo.whenUnblocks), 'quando libera, em horário pt-BR local (B15)');
+  assert.ok(saldo.howToFix, 'o que destrava (howToFix)');
+  assert.ok(!verdict.items.some((i) => i.level === 'block'), 'nenhum item bloqueia o avanço da criação');
+
+  // DISPARO (`forDispatch`, só o gate): o anti-spam físico permanece (AD-4) —
+  // o mesmo estado, avaliado no disparo, volta a ser 'block'.
+  const release = await certificate.evaluate(prisma, campaign, { skipPersist: true, forDispatch: true });
+  assert.equal(release.level, 'blocked');
+  assert.equal(release.items.find((i) => i.key === 'saldo').level, 'block');
 });
 
 test('domínio sem SPF/DKIM é AVISO não-bloqueante, com passo a passo leigo (FR-16/AD-8; pivô 2026-09-27)', async () => {
@@ -89,10 +100,12 @@ test('domínio sem SPF/DKIM é AVISO não-bloqueante, com passo a passo leigo (F
   assert.ok(domain.detail.toLowerCase().includes('spf'), 'explica o que falta');
   assert.ok(domain.detail.includes('Registros DNS'), 'passo a passo leigo (painel do provedor → DNS)');
   assert.ok(domain.detail.includes('peça'), 'oferece ajuda do agente (listar registros)');
-  assert.ok(verdict.items.some((i) => i.key === 'saldo' && i.level === 'block'), 'saldo efetivo 0 continua visível (anti-spam físico permanece no gate)');
+  const saldo = verdict.items.find((i) => i.key === 'saldo');
+  assert.equal(saldo.level, 'pending', 'saldo efetivo 0 segue visível — como pendência de disparo (o gate decide no envio)');
+  assert.equal(verdict.level, 'amber', 'criação segue liberada com pendências');
 });
 
-test('item reprovado BLOQUEIA: WhatsApp sem consentimento, com caminho para consentir (FR-35/AD-11)', async () => {
+test('consentimento WhatsApp é INFORMATIVO na criação e bloqueia só no disparo (FR5/FR-35/AD-11; task 1.3)', async () => {
   const prisma = createFakePrisma();
   const campaign = seedCampaign(prisma, {
     channels: ['whatsapp'],
@@ -101,21 +114,63 @@ test('item reprovado BLOQUEIA: WhatsApp sem consentimento, com caminho para cons
       { prospectId: 'l2', included: true },
     ],
   });
-  // Saldo do canal WhatsApp (v1: 1 conta por canal — PRD §9).
+  // Canal WhatsApp conectado (isola o item `canal`) + saldo do canal
+  // WhatsApp (v1: 1 conta por canal — PRD §9).
+  prisma.whatsappAccount.rows.push({ id: 'wa-1', orgId: 'org-1', status: 'CONNECTED' });
   prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
   const verdict = await certificate.evaluate(prisma, campaign);
-  assert.equal(verdict.level, 'blocked');
+  assert.equal(verdict.level, 'amber', 'consentimento não bloqueia a criação');
   const consent = verdict.items.find((i) => i.key === 'consent_whatsapp');
-  assert.equal(consent.level, 'block');
+  assert.equal(consent.level, 'pending');
   assert.ok(consent.detail.includes('2'), 'conta os leads sem consentimento');
+  assert.ok(consent.detail.includes('fora do WhatsApp'), 'caminho: ficam fora do canal (canal único)');
+  assert.ok(!consent.detail.includes('recebem só e-mail'), 'E12: sem canal e-mail declarado, a copy não promete e-mail');
 
-  // Caminho para consentir: registro persistido destrava o item.
+  // No DISPARO (`forDispatch`) o consentimento segue bloqueando campanha com
+  // canal WhatsApp (gate AD-4 — task 1.3 do plano); a matrícula preserva a
+  // regra de excluir não consentidos (bridge).
+  const dispatch = await certificate.evaluate(prisma, campaign, { skipPersist: true, forDispatch: true });
+  assert.equal(dispatch.items.find((i) => i.key === 'consent_whatsapp').level, 'block', 'consentimento bloqueia no disparo');
+
+  // Caminho para consentir: registro persistido resolve o aviso.
   await certificate.grantConsent(prisma, { orgId: 'org-1', prospectId: 'l1', source: 'email_reply', evidence: { messageId: 'm-1' } });
-  const green = await certificate.evaluate(prisma, campaign, { skipPersist: true });
-  assert.equal(green.level, 'blocked', 'l2 continua sem consentimento');
+  const one = await certificate.evaluate(prisma, campaign, { skipPersist: true });
+  assert.equal(one.items.find((i) => i.key === 'consent_whatsapp').detail.includes('1'), true, 'contagem cai ao consentir');
   await certificate.grantConsent(prisma, { orgId: 'org-1', prospectId: 'l2', source: 'opt_in' });
   const allGreen = await certificate.evaluate(prisma, campaign, { skipPersist: true });
   assert.equal(allGreen.level, 'green');
+});
+
+test('consentimento com canal e-mail na campanha: copy diz "recebem só e-mail" (E12)', async () => {
+  const prisma = createFakePrisma();
+  const campaign = seedCampaign(prisma, {
+    channels: ['email', 'whatsapp'],
+    members: [{ prospectId: 'l1', included: true }],
+  });
+  prisma.whatsappAccount.rows.push({ id: 'wa-1', orgId: 'org-1', status: 'CONNECTED' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
+  const verdict = await certificate.evaluate(prisma, campaign, { skipPersist: true });
+  const consent = verdict.items.find((i) => i.key === 'consent_whatsapp');
+  assert.ok(consent.detail.includes('recebem só e-mail'), 'E12: com canal e-mail, copy explica que recebem e-mail');
+});
+
+test('sem canal de envio conectado: item `canal` pendente com caminho (Story 1.5/UX-DR5)', async () => {
+  const prisma = createFakePrisma();
+  const campaign = seedCampaign(prisma, {
+    channels: ['email', 'whatsapp'],
+    members: [{ prospectId: 'l1', included: true }],
+  });
+  // Nenhuma conta conectada: remove o e-mail da seed.
+  prisma.emailAccount.rows.length = 0;
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
+  const verdict = await certificate.evaluate(prisma, campaign, { skipPersist: true });
+  const canal = verdict.items.find((i) => i.key === 'canal');
+  assert.ok(canal, 'item de canal presente');
+  assert.equal(canal.level, 'pending', 'criação nunca bloqueia por canal');
+  assert.equal(canal.howToFix, 'conectar um canal de envio (e-mail ou WhatsApp)');
+  assert.ok(canal.whenUnblocks.includes('conectar'), 'caminho de destravamento por nome');
+  const dispatch = await certificate.evaluate(prisma, campaign, { skipPersist: true, forDispatch: true });
+  assert.equal(dispatch.items.find((i) => i.key === 'canal').level, 'block', 'no disparo o gate bloqueia (AD-4)');
 });
 
 test('consentimento: resposta prévia a e-mail (REPLIED) conta como porta de entrada (FR-35)', async () => {
@@ -124,6 +179,7 @@ test('consentimento: resposta prévia a e-mail (REPLIED) conta como porta de ent
     channels: ['whatsapp'],
     members: [{ prospectId: 'l1', included: true }],
   });
+  prisma.whatsappAccount.rows.push({ id: 'wa-1', orgId: 'org-1', status: 'CONNECTED' });
   prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
   prisma.outreachContact.rows.push({ id: 'oc-1', campaignId: 'exec-1', prospectId: 'l1', status: 'REPLIED' });
   const verdict = await certificate.evaluate(prisma, campaign, { skipPersist: true });
@@ -163,7 +219,7 @@ test('Teste da Maria é AVISO, não bloqueio: conteúdo longo marca warning (FR-
   const maria = verdict.items.find((i) => i.key === 'maria_test');
   assert.ok(maria, 'heurística presente');
   assert.equal(maria.level, 'warning');
-  assert.equal(verdict.level, 'green', 'aviso não bloqueia');
+  assert.equal(verdict.level, 'amber', 'aviso marca pendência, não bloqueio');
 });
 
 // ── HTTP: rotas do Certificado e do consentimento ────────────────────────────

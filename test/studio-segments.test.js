@@ -40,6 +40,9 @@ async function startServer() {
   const app = express();
   app.use(express.json());
   const prisma = createFakePrisma();
+  // Canal de envio conectado (onda 2026-09-29): só canal conectado compila
+  // execução na aprovação — o teste de congelamento precisa da fila montada.
+  prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
   app.use((req, _res, next) => {
     req.user = { id: 'user-1', orgId: 'org-1' };
     next();

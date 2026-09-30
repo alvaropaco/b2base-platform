@@ -54,6 +54,9 @@ async function startServer({ dispatch } = {}) {
   app.use(express.json());
   const prisma = createFakePrisma();
   const dispatched = [];
+  // Canal de envio conectado (onda 2026-09-29): o disparo imediato exige um
+  // canal efetivo — testes de dispatch contam com o e-mail conectado aqui.
+  prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
 
   app.use((req, _res, next) => {
     req.user = { id: 'user-1', orgId: 'org-1' };

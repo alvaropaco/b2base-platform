@@ -40,6 +40,14 @@ const TRANSITIONS = {
 /** Estados em que o conteúdo da campanha pode ser editado (FR-006). */
 const EDITABLE_STATES = ['draft', 'in_review', 'paused'];
 
+/**
+ * Estados em que o CONTEÚDO (só conteúdo) pode ser editado (B1/E1 — onda
+ * 2026-09-29): `approved` e `scheduled` entram na 1.5 (o Pré-voo é
+ * pós-aprove) e `running` na 3.3 (edição em voo do que ainda não saiu).
+ * Metadados da campanha continuam nos EDITABLE_STATES de sempre (FR-006).
+ */
+const CONTENT_EDITABLE_STATES = ['draft', 'in_review', 'paused', 'approved', 'scheduled', 'running'];
+
 function canTransition(from, to) {
   return (TRANSITIONS[from] || []).includes(to);
 }
@@ -88,6 +96,7 @@ module.exports = {
   STUDIO_STATES,
   TRANSITIONS,
   EDITABLE_STATES,
+  CONTENT_EDITABLE_STATES,
   canTransition,
   assertTransition,
   assertEditable,
@@ -108,6 +117,15 @@ function httpErr(code, status, message) {
   err.code = code;
   err.status = status;
   return err;
+}
+
+/** JSON estável (chaves ordenadas em todos os níveis) para diff de conteúdo. */
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === 'object') {
+    return Object.keys(value).sort().map((k) => `${k}:${canonicalJson(value[k])}`).join('|');
+  }
+  return JSON.stringify(value) ?? 'null';
 }
 
 /**
@@ -234,6 +252,16 @@ async function approveCampaign(prisma, { campaign, userId }) {
     channels: campaign.channels || [],
   });
 
+  // Onda "criação sem bloqueios" (FR4/Story 1.5): aprovar NUNCA depende de
+  // canal conectado. Campanha com canal de envio declarado (email/whatsapp)
+  // e NENHUM canal conectado fica aprovada e visível como "pendente de
+  // envio" (statusReason dedicado) — conectar o canal destrava o disparo na
+  // mesma tela, sem refazer a criação. Com canal conectado, o motivo antigo
+  // é limpo (re-aprovação conserta o estado).
+  const sendable = (campaign.channels || []).filter((c) => c === 'email' || c === 'whatsapp');
+  const effective = compiled.channels ? compiled.channels.effective : sendable;
+  const statusReason = sendable.length > 0 && effective.length === 0 ? 'NO_CHANNEL_CONNECTED' : null;
+
   // A/B (US10): experimento em execução recebe a divisão determinística
   // (hash por lead — research D10) no momento do congelamento.
   const experiments = await prisma.studioExperiment.findMany({
@@ -243,6 +271,7 @@ async function approveCampaign(prisma, { campaign, userId }) {
     where: { id: campaign.id },
     data: {
       status: 'approved',
+      statusReason,
       approvedById: userId,
       approvedAt: new Date(),
       approval,
@@ -275,12 +304,31 @@ async function approveCampaign(prisma, { campaign, userId }) {
 /**
  * Disparo imediato (US1): exige `approved`, transita para `running` e
  * delega aos motores (override injetável em testes — sem BullMQ).
+ *
+ * T-UNLOCK (D5, onda "criação sem bloqueios"): com o gate a favor (canal
+ * efetivo existe) e execuções nulas (aprovou sem canal), o compile roda NA
+ * HORA — conectar o canal depois basta, sem refazer a criação. Os ids das
+ * execuções compiladas são PERSISTIDOS: sem isso o scheduler liberaria de
+ * execuções nulas para sempre ("Em voo" com fila vazia — known-bad G1).
+ * Sem nenhum canal de fato: 409 explicável (NO_CHANNEL_CONNECTED) e a
+ * campanha segue "pendente de envio" (statusReason preservado).
  */
 async function runImmediateDispatch(prisma, { campaign, userId, overrides = {} }) {
   assertTransition(campaign.status, 'running');
   const snapshot = await activeSnapshot(prisma, campaign);
   if (!snapshot || snapshot.includedCount === 0) {
     throw httpErr('EMPTY_AUDIENCE', 409, 'Audiência vazia.');
+  }
+  const sendable = (campaign.channels || []).filter((c) => c === 'email' || c === 'whatsapp');
+  const connected = await bridge.connectedSendChannels(prisma, campaign.orgId);
+  // Sem canal DECLARÁVEL (channels vazio ou só linkedin_text) também é
+  // "sem canal de fato": entrar em running criaria fila vazia para sempre.
+  if (sendable.length === 0 || !sendable.some((c) => connected[c])) {
+    throw httpErr(
+      'NO_CHANNEL_CONNECTED',
+      409,
+      'A campanha está pronta — conecte um canal de envio (e-mail ou WhatsApp) para colocá-la em voo.'
+    );
   }
   const contents = await prisma.studioContent.findMany({
     where: { campaignId: campaign.id, kind: 'base', stepIndex: 1 },
@@ -315,9 +363,112 @@ async function runImmediateDispatch(prisma, { campaign, userId, overrides = {} }
 
   const updated = await prisma.studioCampaign.update({
     where: { id: campaign.id },
-    data: { status: 'running' },
+    data: {
+      status: 'running',
+      statusReason: null, // saiu de "pendente de envio" — só com canal de fato (D5)
+      // Links reversos das execuções (re)compiladas — destrava o tick (D5).
+      emailExecutionId: compiled.emailExecution?.id || campaign.emailExecutionId || null,
+      whatsappExecutionId: compiled.whatsappExecution?.id || campaign.whatsappExecutionId || null,
+    },
   });
   return { campaign: updated, dispatch: dispatchResult };
+}
+
+/**
+ * Story 3.3 (FR8)/D9 — serviço ÚNICO de edição de conteúdo, usado pelo PATCH
+ * da UI e pela action aditiva `edit_content` do chat (AD-6). Editável em
+ * CONTENT_EDITABLE_STATES (B1: `approved`/`scheduled`/`running` incluídos);
+ * mensagens já enviadas são imutáveis (sync só toca steps sem envio —
+ * `bridge.syncPendingTemplates`); `approval.contentEdits` registrado em voo
+ * SOMENTE com mudança real (E8), com "a partir de quando vale" (UX-DR4).
+ * Escopo de org: o conteúdo precisa pertencer à campanha da org (NFR2).
+ */
+async function updateContents(prisma, { campaign, contents, userId }) {
+  if (!CONTENT_EDITABLE_STATES.includes(campaign.status)) {
+    const err = new Error(
+      'Conteúdo em voo já despachado não muda: pause a campanha para alterar o que ainda não saiu.'
+    );
+    err.code = 'CAMPAIGN_LOCKED';
+    err.status = 409;
+    throw err;
+  }
+  if (!Array.isArray(contents) || contents.length === 0) {
+    throw httpErr('INVALID_CONTENTS', 400, 'Informe ao menos um conteúdo com id.');
+  }
+  const { validatePlaceholders } = require('./variables');
+  const updated = [];
+  let changed = 0;
+  for (const input of contents) {
+    if (!input || !input.id) {
+      throw httpErr('INVALID_CONTENTS', 400, 'Cada conteúdo precisa de `id`.');
+    }
+    // Textos validados contra o catálogo (FR-033) — inclui o emailDoc (I/O:
+    // "validação de placeholders" para PATCH de emailDoc).
+    const texts = [
+      input.subject,
+      input.preheader,
+      input.whatsappText,
+      input.linkedinText,
+      input.emailDoc != null ? JSON.stringify(input.emailDoc) : null,
+    ];
+    for (const text of texts) {
+      const { ok, unknown } = validatePlaceholders(text || '');
+      if (!ok) {
+        throw httpErr('UNKNOWN_VARIABLE', 400, `Variáveis fora do catálogo: ${unknown.join(', ')}`);
+      }
+    }
+    const row = await prisma.studioContent.findUnique({ where: { id: input.id } });
+    if (!row || row.orgId !== campaign.orgId || row.campaignId !== campaign.id) {
+      throw httpErr('NOT_FOUND', 404, 'Conteúdo não encontrado nesta campanha.');
+    }
+    const FIELDS = ['subject', 'preheader', 'whatsappText', 'linkedinText', 'ctaUrl', 'emailDoc'];
+    const patch = {};
+    for (const field of FIELDS) {
+      if (input[field] == null) continue; // ausente OU null nunca apaga o campo
+      if (canonicalJson(input[field]) === canonicalJson(row[field])) continue;
+      patch[field] = input[field];
+    }
+    if (Object.keys(patch).length === 0) {
+      updated.push(row); // sem mudança real: nada a persistir (E8)
+      continue;
+    }
+    changed += 1;
+    const saved = await prisma.studioContent.update({
+      where: { id: row.id },
+      data: {
+        ...patch,
+        editHistory: [
+          ...(Array.isArray(row.editHistory) ? row.editHistory : []),
+          { by: userId, at: new Date().toISOString(), summary: 'edição de conteúdo' },
+        ],
+      },
+    });
+    updated.push(saved);
+  }
+
+  // Em voo (aprovada/agendada/rodando): propaga aos templates do que ainda
+  // não saiu — sem débito novo, enviados imutáveis (AD-13).
+  let sync = null;
+  if (campaign.emailExecutionId || campaign.whatsappExecutionId) {
+    sync = await bridge.syncPendingTemplates(prisma, campaign);
+  }
+
+  // Monitor registra que houve edição e a partir de quando vale (B8) — só em
+  // voo e só quando algo mudou de fato (nunca edição falsa, E8).
+  let contentEditRecorded = false;
+  if (changed > 0 && ['scheduled', 'running'].includes(campaign.status)) {
+    const approval = {
+      ...(campaign.approval || {}),
+      contentEdits: [
+        ...((campaign.approval && Array.isArray(campaign.approval.contentEdits)) ? campaign.approval.contentEdits : []),
+        { at: new Date().toISOString(), by: userId, count: changed, appliesFrom: new Date().toISOString() },
+      ],
+    };
+    await prisma.studioCampaign.update({ where: { id: campaign.id }, data: { approval } });
+    campaign.approval = approval;
+    contentEditRecorded = true;
+  }
+  return { contents: updated, sync, contentEditRecorded };
 }
 
 /**
@@ -369,5 +520,6 @@ module.exports.flow = {
   activeSnapshot,
   approveCampaign,
   runImmediateDispatch,
+  updateContents,
   refundUnsentOnCancel,
 };

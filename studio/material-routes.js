@@ -9,13 +9,26 @@
 
 const multer = require('multer');
 const { createMaterialService } = require('./material-service');
+// Limites 5MB/25MB em UMA fonte (attachment-service) — materiais e anexos
+// compartilham os mesmos tetos por plano.
+const { createAttachmentService, MAX_UPLOAD_TRIAL, MAX_UPLOAD_PREMIUM } = require('./attachment-service');
 const { createBatchRunner } = require('./ai-batch');
 const { createExtractor } = require('./ai/extract');
 const { createComposer } = require('./ai/compose');
 const { httpError } = require('./errors');
 
-const MAX_UPLOAD_TRIAL = 5 * 1024 * 1024; // 5MB
-const MAX_UPLOAD_PREMIUM = 25 * 1024 * 1024; // 25MB
+/** Middleware multer com erro EXPLICÁVEL: LIMIT_FILE_SIZE → 400 (E4), nunca 500. */
+function uploadOr400(multerInstance) {
+  return (req, res, next) => {
+    multerInstance(req, res, (err) => {
+      if (err && err.code === 'LIMIT_FILE_SIZE') {
+        return next(httpError('MATERIAL_TOO_LARGE', 400, 'Arquivo acima do limite do plano — veja o limite antes de enviar.'));
+      }
+      if (err) return next(err);
+      return next();
+    });
+  };
+}
 
 function registerMaterialRoutes(router, context) {
   const { prisma, overrides = {} } = context;
@@ -24,6 +37,7 @@ function registerMaterialRoutes(router, context) {
   // Serviços do Studio (singletons por instância do router — testes injetam
   // deps de IA via overrides.aiDeps, produção usa llm-client real).
   const materialService = createMaterialService(prisma, aiDeps);
+  const attachmentService = createAttachmentService(prisma);
   const composer = createComposer(aiDeps);
   context.batchHandlers = context.batchHandlers || {};
   const metrics = require('../metrics');
@@ -123,11 +137,18 @@ function registerMaterialRoutes(router, context) {
   }
 
   // POST /api/studio/materials — upload (multipart) ou {url|prompt|kind+description}.
-  router.post('/materials', upload.any(), async (req, res, next) => {
+  // D7: quando o upload acontece no contexto de uma campanha (campo
+  // `campaignId`), o material nasce vinculado a ela (aba Materiais por
+  // campanha); sem contexto, continua material da org.
+  router.post('/materials', uploadOr400(upload.any()), async (req, res, next) => {
     try {
       const { orgId, userId } = req.studio;
       let material;
-      const file = (req.files || []).find(Boolean);
+      const files = req.files || [];
+      if (files.length > 1) {
+        throw httpError('INVALID_MATERIAL', 400, 'Envie UM arquivo por vez.');
+      }
+      const file = files[0];
       if (file) {
         const { isPremiumOrg } = require('../plan');
         const premium = await isPremiumOrg(prisma, orgId);
@@ -135,9 +156,18 @@ function registerMaterialRoutes(router, context) {
         if (file.size > limit) {
           throw httpError('MATERIAL_TOO_LARGE', 400, `Material excede o limite do plano (${Math.round(limit / 1024 / 1024)}MB).`);
         }
+        let campaignId = null;
+        if (req.body?.campaignId) {
+          const campaign = await prisma.studioCampaign.findUnique({ where: { id: String(req.body.campaignId) } });
+          if (!campaign || campaign.orgId !== orgId) {
+            throw httpError('NOT_FOUND', 404, 'Campanha não encontrada');
+          }
+          campaignId = campaign.id;
+        }
         material = await materialService.createMaterial({
           orgId,
           userId,
+          campaignId,
           buffer: file.buffer,
           mimeType: file.mimetype,
           originalName: file.originalname,
@@ -277,6 +307,128 @@ function registerMaterialRoutes(router, context) {
       const paused = context.batchRunner.pauseBatch(req.params.id);
       if (!paused) throw httpError('NOT_FOUND', 404, 'Lote não encontrado');
       res.json({ success: true, data: { paused: true } });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ── Anexos de campanha (Story 2.1, FR6) e Materiais da campanha (2.4/D7) ──
+
+  async function loadOrgCampaignLocal(orgId, id) {
+    const campaign = await prisma.studioCampaign.findUnique({ where: { id } });
+    if (!campaign || campaign.orgId !== orgId) {
+      throw httpError('NOT_FOUND', 404, 'Campanha não encontrada');
+    }
+    return campaign;
+  }
+
+  // POST /campaigns/:id/attachments — upload do anexo (multipart) com canal
+  // destino (`email|whatsapp|both`), limites do plano visíveis + recusa
+  // explicável (E4: multer LIMIT_FILE_SIZE vira 400) — reutiliza o storage do
+  // Studio (SHA-256 + whitelist, NFR5). Sem message/rota nova fora daqui.
+  router.post('/campaigns/:id/attachments', uploadOr400(upload.any()), async (req, res, next) => {
+    try {
+      const { orgId, userId } = req.studio;
+      const campaign = await loadOrgCampaignLocal(orgId, req.params.id);
+      const file = (req.files || []).find(Boolean);
+      if (!file) throw httpError('INVALID_ATTACHMENT', 400, 'Envie um arquivo para anexar.');
+      const { isPremiumOrg } = require('../plan');
+      const premium = await isPremiumOrg(prisma, orgId);
+      const limit = premium ? MAX_UPLOAD_PREMIUM : MAX_UPLOAD_TRIAL;
+      if (file.size > limit) {
+        throw httpError('ATTACHMENT_TOO_LARGE', 400, `Anexo excede o limite do plano (${Math.round(limit / 1024 / 1024)}MB).`);
+      }
+      const attachment = await attachmentService.createAttachment({
+        orgId,
+        userId,
+        campaignId: campaign.id,
+        buffer: file.buffer,
+        mimeType: file.mimetype,
+        originalName: file.originalname,
+        channels: String(req.body?.channels || 'both'),
+      });
+      res.status(201).json({ success: true, data: attachment });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /campaigns/:id/attachments — anexos da campanha (escopo de org).
+  router.get('/campaigns/:id/attachments', async (req, res, next) => {
+    try {
+      const campaign = await loadOrgCampaignLocal(req.studio.orgId, req.params.id);
+      const rows = await prisma.studioAttachment.findMany({
+        where: { orgId: campaign.orgId, campaignId: campaign.id },
+      });
+      rows.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      res.json({ success: true, data: rows, count: rows.length });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // DELETE /campaigns/:id/attachments/:attachmentId — B9: o :id da campanha
+  // É o escopo (anexo de outra campanha/ org → 404); registro sai antes do
+  // arquivo (E10).
+  router.delete('/campaigns/:id/attachments/:attachmentId', async (req, res, next) => {
+    try {
+      const { orgId } = req.studio;
+      const campaign = await loadOrgCampaignLocal(orgId, req.params.id);
+      const attachment = await attachmentService.loadAttachment(orgId, req.params.attachmentId);
+      if (!attachment || attachment.campaignId !== campaign.id) {
+        throw httpError('NOT_FOUND', 404, 'Anexo não encontrado nesta campanha');
+      }
+      const result = await attachmentService.removeAttachment(attachment);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /campaigns/:id/materials — aba Materiais (Story 2.4/FR7/PS1/D7):
+  // materiais da campanha, anexos prontos e, à parte, os materiais da org
+  // (sem campanha) rotulados. Falha de extração NUNCA some (motivo + caminho).
+  router.get('/campaigns/:id/materials', async (req, res, next) => {
+    try {
+      const campaign = await loadOrgCampaignLocal(req.studio.orgId, req.params.id);
+      const byCampaign = await prisma.studioMaterial.findMany({
+        where: { orgId: campaign.orgId, campaignId: campaign.id },
+      });
+      const orgLevel = await prisma.studioMaterial.findMany({
+        where: { orgId: campaign.orgId, campaignId: null },
+      });
+      const attachments = await prisma.studioAttachment.findMany({
+        where: { orgId: campaign.orgId, campaignId: campaign.id },
+      });
+      const sortAsc = (arr) => arr.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      const view = (m) => ({
+        id: m.id,
+        kind: m.kind,
+        sourceRef: m.sourceRef || null,
+        mimeType: m.mimeType || null,
+        sizeBytes: m.sizeBytes || null,
+        extractionStatus: m.extractionStatus,
+        extractionError: m.extractionError || null,
+        confirmedAt: m.confirmedAt || null,
+        scope: 'campaign',
+        createdAt: m.createdAt,
+      });
+      res.json({
+        success: true,
+        data: {
+          campaignMaterials: sortAsc(byCampaign).map(view),
+          attachments: sortAsc(attachments.slice()).map((a) => ({
+            id: a.id,
+            fileName: a.fileName,
+            originalName: a.originalName,
+            mimeType: a.mimeType || null,
+            sizeBytes: a.sizeBytes || 0,
+            channels: a.channels,
+            createdAt: a.createdAt,
+          })),
+          orgMaterials: sortAsc(orgLevel).map((m) => ({ ...view(m), scope: 'org' })),
+        },
+      });
     } catch (err) {
       next(err);
     }

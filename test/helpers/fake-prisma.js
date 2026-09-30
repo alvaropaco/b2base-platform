@@ -182,6 +182,8 @@ function createFakePrisma() {
     studioAudienceMember: makeModel('studioAudienceMember'),
     studioContent: makeModel('studioContent'),
     studioMaterial: makeModel('studioMaterial'),
+    // Onda "criação sem bloqueios" (Story 2.1): anexos que saem na mensagem.
+    studioAttachment: makeModel('studioAttachment'),
     studioPersonalization: makeModel('studioPersonalization'),
     studioJourney: makeModel('studioJourney'),
     studioJourneyLead: makeModel('studioJourneyLead'),

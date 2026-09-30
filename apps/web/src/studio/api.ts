@@ -93,9 +93,21 @@ export async function createCampaign(
   return data.data;
 }
 
+export interface ContentPatchInput {
+  id: string;
+  subject?: string | null;
+  preheader?: string | null;
+  whatsappText?: string | null;
+  linkedinText?: string | null;
+  ctaUrl?: string | null;
+  emailDoc?: { blocks: EmailBlock[] } | null;
+}
+
 export async function patchCampaign(
   id: string,
-  patch: Partial<Omit<CreateCampaignInput, 'origin' | 'templateId' | 'duplicateOf'>>
+  patch: Partial<Omit<CreateCampaignInput, 'origin' | 'templateId' | 'duplicateOf'>> & {
+    contents?: ContentPatchInput[];
+  }
 ): Promise<StudioCampaignDetail> {
   const data = await request<{ data: StudioCampaignDetail }>(
     `/campaigns/${encodeURIComponent(id)}`,
@@ -433,6 +445,79 @@ export interface BatchProgress {
 
 export async function fetchBatchProgress(batchId: string): Promise<BatchProgress> {
   const data = await request<{ data: BatchProgress }>(`/ai-batch/${encodeURIComponent(batchId)}`);
+  return data.data;
+}
+
+// ── Anexos e Materiais da campanha (Stories 2.1/2.4 — onda 2026-09-29) ─────
+
+import type { StudioAttachment } from './types';
+export type { StudioAttachment };
+
+export type AttachmentChannel = 'email' | 'whatsapp' | 'both';
+
+export async function fetchAttachments(campaignId: string): Promise<StudioAttachment[]> {
+  const data = await request<{ data: StudioAttachment[] }>(
+    `/campaigns/${encodeURIComponent(campaignId)}/attachments`
+  );
+  return data.data ?? [];
+}
+
+/** Upload multipart (sem Content-Type manual — boundary é do FormData). */
+export async function uploadAttachment(
+  campaignId: string,
+  file: File,
+  channels: AttachmentChannel = 'both'
+): Promise<StudioAttachment> {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('channels', channels);
+  const res = await fetch(`/api/studio/campaigns/${encodeURIComponent(campaignId)}/attachments`, {
+    method: 'POST',
+    body: form,
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok || !payload.success) {
+    throw new StudioRequestError(payload.error || 'UPLOAD_FAILED', res.status, payload.message);
+  }
+  return payload.data as StudioAttachment;
+}
+
+export async function deleteAttachment(campaignId: string, attachmentId: string): Promise<void> {
+  await request(
+    `/campaigns/${encodeURIComponent(campaignId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    { method: 'DELETE' }
+  );
+}
+
+/** Aba Materiais (Story 2.4/D7): por campanha + anexos + materiais da org. */
+export interface CampaignMaterials {
+  campaignMaterials: Array<{
+    id: string;
+    kind: string;
+    sourceRef?: string | null;
+    extractionStatus: string;
+    extractionError?: string | null;
+    confirmedAt?: string | null;
+    scope: 'campaign' | 'org';
+    createdAt: string;
+  }>;
+  attachments: StudioAttachment[];
+  orgMaterials: Array<{
+    id: string;
+    kind: string;
+    sourceRef?: string | null;
+    extractionStatus: string;
+    extractionError?: string | null;
+    confirmedAt?: string | null;
+    scope: 'campaign' | 'org';
+    createdAt: string;
+  }>;
+}
+
+export async function fetchCampaignMaterials(campaignId: string): Promise<CampaignMaterials> {
+  const data = await request<{ data: CampaignMaterials }>(
+    `/campaigns/${encodeURIComponent(campaignId)}/materials`
+  );
   return data.data;
 }
 

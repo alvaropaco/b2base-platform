@@ -163,9 +163,34 @@ const WAHAWhatsAppProvider = {
     return { providerMessageId: _extractMessageId(response) };
   },
 
-  // Placeholder para os demais tipos de mídia (arquitetura preparada).
-  async sendMedia() {
-    throw new Error('sendMedia não implementado nesta etapa');
+  /**
+   * Mídia pela interface de provider (AD-11; Story 2.3, FR6 da onda
+   * "criação sem bloqueios"): imagem → sendImage, documento → sendFile,
+   * `caption` recebe o texto da peça (sem duplicar mensagem de texto).
+   *
+   * @param {string} sessionName
+   * @param {string} chatId
+   * @param {object} media - { kind: 'image'|'document', data(base64)?, url?,
+   *                          mimetype?, fileName?, caption? }
+   *   bytes em `data` (lidos do storage no send — D8) ou referência em `url`.
+   */
+  async sendMedia(sessionName, chatId, media) {
+    const kind = media && media.kind === 'image' ? 'image' : 'document';
+    const endpoint = kind === 'image' ? '/api/sendImage' : '/api/sendFile';
+    const file = media.url
+      ? media.url
+      : {
+          data: String(media.data || ''),
+          mimetype: media.mimetype || 'application/octet-stream',
+          filename: media.fileName || (kind === 'image' ? 'imagem' : 'arquivo'),
+        };
+    const response = await _request('POST', endpoint, {
+      session: sessionName,
+      chatId,
+      file,
+      ...(media.caption ? { caption: media.caption } : {}),
+    });
+    return { providerMessageId: _extractMessageId(response) };
   },
 
   async getChat(sessionName, chatId) {

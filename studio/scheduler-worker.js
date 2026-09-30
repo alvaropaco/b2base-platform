@@ -24,10 +24,17 @@ const reputationGate = require('./reputation-gate');
 const { autoSelectEmailAccount } = require('./dispatch');
 const metrics = require('../metrics');
 
-function primaryChannel(campaign) {
-  const channels = campaign.channels || [];
-  if (channels.includes('email')) return 'email';
-  if (channels.includes('whatsapp')) return 'whatsapp';
+/**
+ * Canal PRIMÁRIO EFETIVO (onda 2026-09-29, AD-2): primeiro canal declarado
+ * que está CONECTADO na org. Canais conectados moldam O QUE dispara — uma
+ * campanha com e-mail declarado mas só WhatsApp conectado transita para
+ * `running` e dispara WhatsApp (o gate vigia o canal avaliado).
+ */
+async function effectivePrimaryChannel(prisma, campaign) {
+  const declared = campaign.channels || [];
+  const connected = await bridge.connectedSendChannels(prisma, campaign.orgId);
+  if (declared.includes('email') && connected.email) return 'email';
+  if (declared.includes('whatsapp') && connected.whatsapp) return 'whatsapp';
   return null;
 }
 
@@ -51,11 +58,13 @@ async function tickCampaign(prisma, campaign, { now = new Date(), enqueue, overr
 
   // 2.5) specs/011 (AD-5): campanha `scheduled` com startAt vencido transita
   // para `running` VIA GATE — pausa, canal, certificado e saldo decidem.
+  // O canal avaliado é o EFETIVO (declarado ∩ conectado — onda 2026-09-29).
   if (campaign.status === 'scheduled') {
-    const channel = primaryChannel(campaign);
+    const channel = await effectivePrimaryChannel(prisma, campaign);
     if (!channel) {
       return { released: 0, skipped: 'no_channel' };
     }
+    const connected = await bridge.connectedSendChannels(prisma, campaign.orgId);
     const verdict = await reputationGate.evaluate(prisma, {
       orgId: campaign.orgId,
       channel,
@@ -78,9 +87,55 @@ async function tickCampaign(prisma, campaign, { now = new Date(), enqueue, overr
       }
       return { released: 0, skipped: 'gate_blocked', reason: verdict.reason, code: verdict.code };
     }
+    // T-UNLOCK (D5): gate passou e falta execução de um canal DECLARADO E
+    // CONECTADO (aprovou/agendou sem canal, OU o 2º canal foi conectado
+    // depois do voo) → compile NA HORA antes de liberar — `ensure*Execution`
+    // é idempotente por execução existente. Sem isso o tick liberaria de
+    // execuções nulas para sempre ("Em voo" com fila vazia — known-bad G1).
+    // Canal declarado mas NÃO conectado não precisa de compile (o compile o
+    // pularia; o tick abaixo o compila quando for conectado). statusReason
+    // só é limpo com canal de fato (o gate acima já exigiu o canal efetivo).
+    const declaredSendable = (campaign.channels || []).filter((c) => c === 'email' || c === 'whatsapp');
+    const missingExecution = declaredSendable.some((c) => {
+      if (c === 'email') return connected.email && !campaign.emailExecutionId;
+      return connected.whatsapp && !campaign.whatsappExecutionId;
+    });
+    if (missingExecution) {
+      const snapshot = (
+        await prisma.studioAudienceSnapshot.findMany({
+          where: { campaignId: campaign.id, status: 'active' },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        })
+      )[0];
+      // Sem snapshot não há o que matricular: nada transita (nunca "Em voo"
+      // com execuções nulas).
+      if (!snapshot) {
+        return { released: 0, skipped: 'no_snapshot' };
+      }
+      const contents = await prisma.studioContent.findMany({
+        where: { campaignId: campaign.id, kind: 'base', stepIndex: 1 },
+      });
+      const compiled = await bridge.compile(prisma, {
+        campaign,
+        contents,
+        snapshot,
+        channels: campaign.channels || [],
+      });
+      campaign.emailExecutionId = compiled.emailExecution?.id || campaign.emailExecutionId || null;
+      campaign.whatsappExecutionId = compiled.whatsappExecution?.id || campaign.whatsappExecutionId || null;
+      await prisma.studioCampaign.update({
+        where: { id: campaign.id },
+        data: {
+          emailExecutionId: campaign.emailExecutionId,
+          whatsappExecutionId: campaign.whatsappExecutionId,
+          ...(campaign.statusReason === 'NO_CHANNEL_CONNECTED' ? { statusReason: null } : {}),
+        },
+      });
+    }
     await prisma.studioCampaign.update({
       where: { id: campaign.id },
-      data: { status: 'running' },
+      data: { status: 'running', ...(campaign.statusReason === 'NO_CHANNEL_CONNECTED' ? { statusReason: null } : {}) },
     });
     campaign.status = 'running';
     metrics.incStudioSchedulerTick('scheduled_running');

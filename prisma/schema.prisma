@@ -381,6 +381,11 @@ model OutreachCampaign {
   // Follow-ups simples configuráveis (FR-079 010): [{stepIndex, delayDays,
   // condition, maxTouch}]. Vazio = sequência legada [3,5,7].
   sequence Json @default("[]")
+  // ── Onda "criação sem bloqueios" (D8) — anexos por REFERÊNCIA ──────────
+  // Referências [{attachmentId, fileName, originalName, mimeType, sizeBytes}]
+  // re-resolvidas NA LIBERAÇÃO de cada lote (channel-bridge D6); os bytes são
+  // lidos do storage do Studio no send (fail-safe). Nada de base64 em JSONB.
+  studioAttachments Json @default("[]")
   // ── Governança de template (007) ─────────────────────────────────────────
   needsReview  Boolean  @default(false) // retida pelo saneamento (template com texto interno)
   reviewReason String?                  // motivo da retenção (ex.: synthetic_template_leak)
@@ -552,6 +557,11 @@ model WhatsAppCampaign {
   // ── Campaign Studio (specs/010) — colunas aditivas ──────────────────────
   studioCampaignId String? @unique // link reverso da execução WhatsApp → campanha Studio
   guardrails Json @default("{}")   // guard-rails da automação opt-in (clarify 010)
+  // ── Onda "criação sem bloqueios" (D8) — mídia por REFERÊNCIA ───────────
+  // Referência [{attachmentId, fileName, originalName, mimeType, sizeBytes}]
+  // da mídia escolhida (D6: mais antiga por createdAt), re-resolvida NA
+  // LIBERAÇÃO de cada lote; bytes lidos do storage no send. Sem base64.
+  studioAttachments Json @default("[]")
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -1111,6 +1121,8 @@ model StudioCampaign {
 
   audienceSnapshots   StudioAudienceSnapshot[]
   contents            StudioContent[]
+  attachments         StudioAttachment[]
+  materials           StudioMaterial[]
 
   @@index([orgId])
   @@index([status])
@@ -1217,9 +1229,38 @@ model StudioMaterial {
   extractionError  String?
   confirmedAt      DateTime?
   uploadedById     String
+  // ── Onda "criação sem bloqueios" (D7) — material ganha campanha ─────────
+  // Nullable: materiais da org (sem campanha) continuam existindo; quando o
+  // upload/composição acontece no contexto de uma campanha, o vínculo nasce
+  // preenchido (aba Materiais lista por campanha e rotula à parte os da org).
+  campaignId       String?
+  campaign         StudioCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   createdAt        DateTime @default(now())
 
   @@index([orgId])
+  @@index([campaignId])
+}
+
+// Anexo que sai JUNTO na mensagem (FR6 da onda 2026-09-29): e-mail como
+// anexo do provider, WhatsApp como mídia (1 por mensagem). Diferente de
+// StudioMaterial (insumo de IA): o anexo vive no storage do Studio e é
+// resolvido NA LIBERAÇÃO do lote (D6), por REFERÊNCIA (D8 — nada de base64
+// em JSONB). Tamanho/whitelist validados no upload (NFR5).
+model StudioAttachment {
+  id           String   @id @default(cuid())
+  orgId        String
+  campaignId   String?
+  campaign     StudioCampaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  fileName     String   // arquivo em STUDIO_STORAGE_DIR (saveBuffer — SHA-256)
+  originalName String
+  mimeType     String?
+  sizeBytes    Int
+  channels     String   @default("both") // email | whatsapp | both (canal destino)
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  @@index([orgId])
+  @@index([campaignId])
 }
 
 // Personalização por lead (FR-047–051 010): variação sobre o conteúdo base.

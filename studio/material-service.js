@@ -21,7 +21,7 @@ function createMaterialService(prisma, deps = {}) {
   const htmlToText = deps.htmlToText || require('../ava-extract').htmlToText;
   const extractor = deps.extractor || require('./ai/extract').createExtractor(deps).extractFromText;
 
-  async function createMaterial({ orgId, userId, kind, buffer, mimeType, originalName, url, prompt, description, extraction }) {
+  async function createMaterial({ orgId, userId, kind, campaignId, buffer, mimeType, originalName, url, prompt, description, extraction }) {
     let sourceRef = null;
     let sizeBytes = null;
     let mime = mimeType || null;
@@ -36,6 +36,9 @@ function createMaterialService(prisma, deps = {}) {
     return prisma.studioMaterial.create({
       data: {
         orgId,
+        // D7: upload no contexto de uma campanha nasce vinculado a ela
+        // (nullable — materiais da org continuam existindo).
+        campaignId: campaignId || null,
         kind: kind || (buffer ? storage.extFromMime(mimeType, originalName) : url ? 'url' : 'prompt'),
         sourceRef,
         mimeType: mime,

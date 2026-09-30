@@ -25,6 +25,25 @@ const STATUS_LABEL: Record<string, string> = {
   retained: 'Retida',
 };
 
+/** Onda 2026-09-29 (Story 1.5): aprovada sem canal conectado = "pendente de envio". */
+const NO_CHANNEL_CONNECTED = 'NO_CHANNEL_CONNECTED';
+
+export function statusLabel(status: string): string {
+  return STATUS_LABEL[status] || status;
+}
+
+/**
+ * Rótulo visível do estado da campanha (UX-DR5): "pendente de envio" aparece
+ * POR NOME quando a campanha está aprovada OU agendada (a agenda não limpa o
+ * motivo sem canal declarado conectado — D5) mas nenhum canal está conectado.
+ */
+export function displayStatusLabel(c: { status: string; statusReason?: string | null }): string {
+  if ((c.status === 'approved' || c.status === 'scheduled') && c.statusReason === NO_CHANNEL_CONNECTED) {
+    return 'Pendente de envio';
+  }
+  return statusLabel(c.status);
+}
+
 const ORIGIN_LABEL: Record<string, string> = {
   manual: 'Manual',
   ai_prompt: 'IA · prompt',
@@ -35,10 +54,6 @@ const ORIGIN_LABEL: Record<string, string> = {
   template: 'Template',
   agent: 'Agente IA',
 };
-
-export function statusLabel(status: string): string {
-  return STATUS_LABEL[status] || status;
-}
 
 export function originLabel(origin: string): string {
   return ORIGIN_LABEL[origin] || origin;
@@ -162,12 +177,14 @@ export function CampaignsListView({ onOpenCampaign }: CampaignsListViewProps) {
                         ? 'bg-emerald-100 text-emerald-800'
                         : c.status === 'in_review'
                           ? 'bg-amber-100 text-amber-800'
-                          : c.status === 'completed'
-                            ? 'bg-[#160211]/5 text-foreground'
-                            : 'bg-[#160211]/5 text-muted-foreground'
+                          : displayStatusLabel(c) === 'Pendente de envio'
+                            ? 'bg-amber-100 text-amber-800'
+                            : c.status === 'completed'
+                              ? 'bg-[#160211]/5 text-foreground'
+                              : 'bg-[#160211]/5 text-muted-foreground'
                     }`}
                   >
-                    {statusLabel(c.status)}
+                    {displayStatusLabel(c)}
                   </span>
                 </button>
                 <button

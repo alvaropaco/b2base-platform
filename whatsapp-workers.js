@@ -403,8 +403,54 @@ async function processSend(job) {
   // Prefere o JID original da conversa (chats LID/grupo não entregam se o
   // chatId for reconstruído como "<digits>@c.us").
   const chatId = message.conversation.chatId || toChatId(message.conversation.phoneNumber);
+
+  // Mídia do Studio (D6/D8, Story 2.3): a execução guarda a REFERÊNCIA da
+  // mídia determinística; os bytes são lidos do storage AQUI, no send —
+  // SOMENTE no 1º toque (follow-ups nunca levam mídia: stepIndex 0-based do
+  // motor; null = mensagens sem sequência). Falha de leitura é guardada e
+  // vira throw DENTRO do try do envio — o catch de lá marca FAILED e estorna
+  // idempotentemente (E11 — falha segura).
+  let media = null;
+  let mediaError = null;
+  const isFirstTouch = message.stepIndex == null || message.stepIndex === 0;
+  if (message.campaignContactId && isFirstTouch) {
+    try {
+      const campaignContact = await prisma.whatsAppCampaignContact.findUnique({
+        where: { id: message.campaignContactId },
+        select: { campaignId: true },
+      });
+      if (campaignContact) {
+        const campaignModel = prisma.whatsAppCampaign || prisma.whatsappCampaign;
+        const engine = campaignModel
+          ? await campaignModel.findUnique({ where: { id: campaignContact.campaignId } })
+          : null;
+        const ref = Array.isArray(engine?.studioAttachments) ? engine.studioAttachments[0] : null;
+        if (ref) {
+          const buffer = require('./studio/storage').readBuffer(ref.fileName);
+          const isImage = String(ref.mimeType || '').startsWith('image/');
+          media = {
+            kind: isImage ? 'image' : 'document',
+            data: buffer.toString('base64'),
+            mimetype: ref.mimeType || 'application/octet-stream',
+            fileName: ref.originalName || ref.fileName,
+            // Texto da peça como legenda — sem duplicar mensagem de texto.
+            caption: message.content || undefined,
+          };
+        }
+      }
+    } catch (mediaErr) {
+      console.error(`[whatsapp] mídia ilegível para mensagem ${message.id}:`, mediaErr.message);
+      mediaError = mediaErr;
+    }
+  }
+
   try {
-    const result = await wahaProvider.sendText(account.sessionName, chatId, message.content);
+    if (mediaError) {
+      throw new Error(`mídia ilegível: ${mediaError.message}`);
+    }
+    const result = media
+      ? await wahaProvider.sendMedia(account.sessionName, chatId, media)
+      : await wahaProvider.sendText(account.sessionName, chatId, message.content);
     const now = new Date();
 
     await prisma.whatsAppMessage.update({

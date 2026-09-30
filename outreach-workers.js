@@ -530,7 +530,7 @@ async function processSend(job) {
     include: {
       contact: {
         include: {
-          campaign: { select: { tenantId: true } },
+          campaign: { select: { tenantId: true, studioAttachments: true } },
         },
       },
     },
@@ -637,6 +637,26 @@ async function processSend(job) {
 
   // Build MIME and send (provider-agnostic: gmail OAuth, SMTP ou Resend)
   const messageIdHeader = crypto.randomUUID();
+  // Anexos do Studio (D8): a execução guarda REFERÊNCIAS; os bytes são lidos
+  // do storage AQUI, no send, com fail-safe — anexo ilegível/ausente sai da
+  // mensagem com o fato registrado (nunca falha o envio, NFR5).
+  const attachmentRefs = Array.isArray(message.contact?.campaign?.studioAttachments)
+    ? message.contact.campaign.studioAttachments
+    : [];
+  const attachments = [];
+  const attachmentsSkipped = [];
+  for (const ref of attachmentRefs) {
+    try {
+      const buffer = require('./studio/storage').readBuffer(ref.fileName);
+      attachments.push({
+        fileName: ref.originalName || ref.fileName,
+        content: buffer.toString('base64'),
+        contentType: ref.mimeType || 'application/octet-stream',
+      });
+    } catch (attachErr) {
+      attachmentsSkipped.push({ attachmentId: ref.attachmentId, fileName: ref.fileName, reason: `arquivo_ilegivel: ${attachErr.message}` });
+    }
+  }
   let result;
   try {
     result = await emailProvider.sendEmailForAccount(prisma, message.contact.emailAccount_id, {
@@ -645,7 +665,13 @@ async function processSend(job) {
       body: message.body,
       htmlBody: message.htmlBody,
       messageId: messageIdHeader,
+      attachments,
     });
+    if (Array.isArray(result?.attachmentsSkipped)) attachmentsSkipped.push(...result.attachmentsSkipped);
+    if (attachmentsSkipped.length > 0) {
+      // Fato registrado/explicável (E6/E7) — nunca falha o lote inteiro.
+      console.warn(`[send] anexo(s) fora da mensagem ${messageId}: ${JSON.stringify(attachmentsSkipped)}`);
+    }
   } catch (err) {
     const errorMsg = String(err?.message || err);
     console.error(`[send] ✗ failed to ${recipientEmail}:`, errorMsg);

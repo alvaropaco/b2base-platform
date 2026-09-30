@@ -97,14 +97,16 @@ test('actionKey: escopada em org+campanha; actionId do cliente vence; hash deter
   assert.equal(manifest.actionKey({ orgId: 'org-1', campaignId: 'c1', action: 'set_objective', params: {} }), null, 'idempotência none não gera chave');
 });
 
-test('manifest v1: contrato fechado com as 9 actions do orquestrador', () => {
-  // Evolução ADITIVA (2026-09-27): show_balance (leitura pura) e
-  // start_whatsapp_pairing (pareamento WAHA) entraram sem alterar forma,
-  // idempotência ou chaves das 6 originais — consumidores existentes não
-  // quebram. Mudança de forma/semântica das existentes segue exigindo v2.
+test('manifest v1: contrato fechado com as 11 actions do orquestrador', () => {
+  // Evolução ADITIVA: show_balance/start_whatsapp_pairing (2026-09-27) e —
+  // onda "criação sem bloqueios" (2026-09-29) — attach_files (anexos de
+  // mensagem, Story 2.1) e edit_content (edição em voo pelo chat, Story
+  // 3.3/D9) entraram sem alterar forma, idempotência ou chaves das 9
+  // anteriores — consumidores existentes não quebram (AD-6).
   assert.deepEqual(Object.keys(manifest.ACTIONS_V1).sort(), [
-    'attach_url', 'confirm_material', 'generate_content', 'select_leads', 'set_audience',
-    'set_objective', 'set_schedule', 'show_balance', 'start_whatsapp_pairing',
+    'attach_files', 'attach_url', 'confirm_material', 'edit_content', 'generate_content',
+    'select_leads', 'set_audience', 'set_objective', 'set_schedule', 'show_balance',
+    'start_whatsapp_pairing',
   ]);
   for (const spec of Object.values(manifest.ACTIONS_V1)) {
     assert.equal(spec.version, 1);

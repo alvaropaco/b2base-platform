@@ -91,6 +91,24 @@ function nextReplenishAt(now = new Date()) {
   return d;
 }
 
+/**
+ * Hora da próxima reposição em linguagem (pt-BR, horário de Brasília) —
+ * usada pelos textos de prontidão ("a reposição diária libera às HH:MM").
+ * Retorna STRING VAZIA se o fuso não puder ser formatado — a copy omitirá
+ * o horário em vez de inventar "00:00".
+ */
+function nextReplenishLabel(now = new Date()) {
+  try {
+    return new Intl.DateTimeFormat('pt-BR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: 'America/Sao_Paulo',
+    }).format(nextReplenishAt(now));
+  } catch (_err) {
+    return '';
+  }
+}
+
 function dayKey(now = new Date()) {
   return new Date(now).toISOString().slice(0, 10);
 }
@@ -465,6 +483,7 @@ module.exports = {
   effectiveBalance,
   effectiveFloor,
   nextReplenishAt,
+  nextReplenishLabel,
   stableHash,
   _setMetricsForTests(mod) {
     metrics = mod;

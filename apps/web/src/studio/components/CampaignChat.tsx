@@ -51,6 +51,7 @@ interface CampaignState {
     id: string;
     name: string;
     status: string;
+    statusReason?: string | null;
     objective?: string | null;
     offer?: string | null;
     channels: string[];
@@ -66,7 +67,10 @@ interface CampaignState {
 export interface CampaignChatProps {
   campaignId: string;
   onStateChange?: () => void;
+  /** Story 3.2: fim da criação → redirect automático ao Pré-voo (FR9). */
   onApproved?: () => void;
+  /** "Pendente de envio" (Story 1.5/D5): abre o Pré-voo na mesma tela. */
+  onOpenPreflight?: () => void;
   /** "Salvar rascunho e sair": volta ao briefing mantendo a campanha em draft. */
   onExitToHome?: () => void;
   /** Etapa corrente do Rail (ex.: 'audience') — liga painéis contextuais. */
@@ -88,7 +92,7 @@ function nextStepChips(state: CampaignState | null): Array<{ key: string; label:
   return chips.slice(0, 3);
 }
 
-export function CampaignChat({ campaignId, onStateChange, onApproved, onExitToHome, step, onOpenMonitor }: CampaignChatProps) {
+export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPreflight, onExitToHome, step, onOpenMonitor }: CampaignChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [state, setState] = useState<CampaignState | null>(null);
   const [input, setInput] = useState('');
@@ -262,6 +266,7 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onExitToHo
   };
 
   const status: string | undefined = state?.campaign.status;
+  const statusReason: string | null | undefined = state?.campaign.statusReason;
   const isRunning = status === 'running';
   const canFly = status === 'approved' || status === 'scheduled' || status === 'in_review';
 
@@ -278,8 +283,10 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onExitToHo
   // Chips contextuais do PRÓPRIO fluxo (fix 1, 2026-09-28): os chips genéricos
   // de sugestão da home saíram do rodapé do chat — poluíam cada resposta.
   const stepChips = nextStepChips(state);
-  /** Pendência de verdade = bloqueia. Warning (SPF/DKIM) orienta sem travar. */
-  const hasBlocking = certificate ? certificate.items.some((i) => i.level === 'block') : null;
+  // Onda "criação sem bloqueios" (2026-09-29): pendências NUNCA desabilitam o
+  // avanço — o Certificado é checklist de prontidão (estado + caminho + quando
+  // libera). O que impede o disparo segue no gate, na hora do envio (AD-4).
+  const hasPendencies = certificate ? certificate.items.some((i) => i.level !== 'ok') : false;
 
   /** Card do thread: glass padrão; QR do WhatsApp e saldo têm cor própria. */
   const renderCard = (card: ChatCard, i: number) => {
@@ -414,7 +421,10 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onExitToHo
           </div>
         )}
 
-        {/* Certificado de Segurança renderizado como mensagem rica do thread */}
+        {/* Certificado como checklist de prontidão (onda 2026-09-29, UX-DR1):
+            verde = tudo pronto; ÂMBAR quando houver `pending` (B5/B6 — nunca
+            verde com pendências); rosa reservado ao que impede SOMENTE o
+            disparo (nível `block` nunca chega na criação). */}
         {certificate && (
           <div className="cockpit-rise flex justify-start gap-3">
             <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/80 text-foreground shadow-[inset_0_0_0_1px_rgba(22,2,17,0.12)]">
@@ -422,15 +432,21 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onExitToHo
             </div>
             <div
               role="status"
-              aria-label={`Certificado de segurança: ${certificate.level === 'green' ? 'tudo certo' : 'com pendências'}`}
+              aria-label={`Checklist de prontidão: ${certificate.level === 'green' ? 'tudo pronto' : certificate.level === 'amber' ? 'pronto, com pendências' : 'com o que impede o disparo'}`}
               className={`max-w-[85%] rounded-2xl rounded-bl-md border p-3.5 text-sm ${
                 certificate.level === 'green'
                   ? 'border-emerald-300 bg-emerald-50'
-                  : 'border-rose-300 bg-rose-50'
+                  : certificate.level === 'amber'
+                    ? 'border-amber-300 bg-amber-50'
+                    : 'border-rose-300 bg-rose-50'
               }`}
             >
               <p className="font-semibold">
-                {certificate.level === 'green' ? 'Certificado verde — pode voar' : 'Certificado com pendências'}
+                {certificate.level === 'green'
+                  ? 'Tudo pronto — pode seguir'
+                  : certificate.level === 'amber'
+                    ? 'Checklist de prontidão — pode seguir criando'
+                    : 'Checklist de prontidão'}
               </p>
               <ul className="mt-2 space-y-1.5">
                 {certificate.items.map((item) => (
@@ -438,17 +454,31 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onExitToHo
                     <span
                       aria-hidden="true"
                       className={
-                        item.level === 'ok' ? 'text-emerald-600' : item.level === 'warning' ? 'text-amber-600' : 'text-rose-600'
+                        item.level === 'ok'
+                          ? 'text-emerald-600'
+                          : item.level === 'block'
+                            ? 'text-rose-600'
+                            : 'text-amber-600'
                       }
                     >
-                      {item.level === 'ok' ? '●' : item.level === 'warning' ? '▲' : '✕'}
+                      {item.level === 'ok' ? '●' : item.level === 'block' ? '✕' : '▲'}
                     </span>
                     <span>
                       <strong>{item.label}</strong>
                       {item.level !== 'ok' && (
-                        <span className="text-muted-foreground"> ({item.level === 'block' ? 'bloqueia' : 'atenção'})</span>
+                        <span className="text-muted-foreground">
+                          {' '}
+                          ({item.level === 'block' ? 'impede o disparo' : item.level === 'pending' ? 'pendente' : 'atenção'})
+                        </span>
                       )}
                       <span className="block text-muted-foreground">{item.detail}</span>
+                      {(item.howToFix || item.whenUnblocks) && (
+                        <span className="mt-0.5 block text-amber-800">
+                          {item.howToFix ? `Caminho: ${item.howToFix}` : ''}
+                          {item.howToFix && item.whenUnblocks ? ' · ' : ''}
+                          {item.whenUnblocks ? `Quando libera: ${item.whenUnblocks}` : ''}
+                        </span>
+                      )}
                     </span>
                   </li>
                 ))}
@@ -493,7 +523,11 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onExitToHo
                 </li>
                 <li>
                   <strong>Segurança:</strong>{' '}
-                  {certificate?.level === 'green' ? 'Certificado verde ✓' : 'confira o Certificado no chat se algo pendear'}
+                  {certificate?.level === 'green'
+                    ? 'Tudo pronto ✓'
+                    : certificate?.level === 'amber'
+                      ? 'Em voo — pendências de disparo ficam no checklist'
+                      : 'confira o Checklist de prontidão no chat se algo pendear'}
                 </li>
               </ul>
               {onOpenMonitor && (
@@ -551,21 +585,32 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onExitToHo
               ? ` (${state.extras.audienceCount.toLocaleString('pt-BR')})`
               : ''}
           </button>
-          {/* Pendências: botão só existe quando há o que resolver. */}
+          {/* Pendências: botão só existe quando há o que resolver — e é VIVO
+              (B5/B6): reabre o checklist atualizado; a criação segue livre. */}
           {(canFly || status === 'in_review') && certificate === null && (
             <span className="rounded-full border border-[#160211]/10 bg-white/[0.04] px-3.5 py-2 text-xs text-muted-foreground">
               Conferindo pendências…
             </span>
           )}
-          {certificate && hasBlocking && (
+          {certificate && hasPendencies && (
             <button
               type="button"
               onClick={() => void handleCertificate()}
               disabled={certificateLoading}
-              className="rounded-full border border-rose-300 bg-rose-50 px-3.5 py-2 text-xs font-medium text-rose-800 transition-colors hover:bg-rose-100 disabled:opacity-40"
-              title="Há pendências bloqueando o avanço desta campanha"
+              className="rounded-full border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-100 disabled:opacity-40"
+              title="O que falta para o disparo — a criação pode seguir"
             >
               {certificateLoading ? 'Conferindo…' : 'Ver pendências'}
+            </button>
+          )}
+          {status === 'approved' && statusReason === 'NO_CHANNEL_CONNECTED' && onOpenPreflight && (
+            <button
+              type="button"
+              onClick={onOpenPreflight}
+              className="rounded-full border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-100"
+              title="A campanha está pronta — abra o Pré-voo e conecte um canal para disparar"
+            >
+              Pendente de envio — abrir Pré-voo
             </button>
           )}
           {status === 'in_review' && (
@@ -577,9 +622,9 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onExitToHo
                   void send('Gere o conteúdo da campanha para eu revisar.');
                 })();
               }}
-              disabled={Boolean(hasBlocking) || sending}
+              disabled={sending}
               className="rounded-full bg-[#160211] px-3.5 py-2 text-xs font-medium text-white shadow-md disabled:opacity-40"
-              title={hasBlocking ? 'Resolva as pendências antes de seguir' : 'Aprova a audiência e segue para a Mensagem'}
+              title="Aprova a audiência e segue para a Mensagem — pendências não travam a criação"
             >
               Seguir pra Mensagem
             </button>

@@ -6,10 +6,11 @@
 import { useEffect, useState } from 'react';
 import { fetchCampaign, StudioRequestError } from '../api';
 import type { StudioCampaignDetail } from '../types';
-import { statusLabel } from './CampaignsListView';
+import { displayStatusLabel } from './CampaignsListView';
 import { CampaignReview } from '../components/CampaignReview';
 import { AudienceReview } from '../components/AudienceReview';
 import { ScheduleView } from './ScheduleView';
+import { CampaignMaterialsView } from './CampaignMaterialsView';
 import { AiCreateWizard } from '../components/AiCreateWizard';
 import { EmailEditor } from '../components/EmailEditor';
 import { WhatsAppPreview, RepliesReview } from '../components/WhatsAppPreview';
@@ -19,7 +20,7 @@ import { AnalyticsView } from './AnalyticsView';
 import { CampaignChat } from '../components/CampaignChat';
 import { ExperimentPanel } from '../components/ExperimentPanel';
 
-const TABS = ['Configurar', 'Avançado', 'Audiência', 'Agenda', 'Automação', 'Analytics'] as const;
+const TABS = ['Configurar', 'Avançado', 'Audiência', 'Materiais', 'Agenda', 'Automação', 'Analytics'] as const;
 type Tab = (typeof TABS)[number];
 
 export function CampaignDetailView({ campaignId }: { campaignId: string }) {
@@ -56,8 +57,12 @@ export function CampaignDetailView({ campaignId }: { campaignId: string }) {
         <div>
           <h2 className="text-lg font-semibold tracking-tight">{campaign.name}</h2>
           <p className="text-xs text-muted-foreground">
-            {statusLabel(campaign.status)}
-            {campaign.statusReason ? ` · ${campaign.statusReason}` : ''}
+            {displayStatusLabel(campaign)}
+            {(campaign.status === 'approved' || campaign.status === 'scheduled') && campaign.statusReason === 'NO_CHANNEL_CONNECTED'
+              ? ' · conecte um canal de envio para disparar — a campanha está pronta'
+              : campaign.statusReason
+                ? ` · ${campaign.statusReason}`
+                : ''}
           </p>
         </div>
       </div>
@@ -112,6 +117,7 @@ export function CampaignDetailView({ campaignId }: { campaignId: string }) {
         </div>
       )}
       {tab === 'Audiência' && <AudienceReview campaign={campaign} />}
+      {tab === 'Materiais' && <CampaignMaterialsView campaignId={campaign.id} />}
       {tab === 'Agenda' && campaign && (
         <div className="space-y-6">
           <ScheduleView campaign={campaign} onCampaignChange={setCampaign} />

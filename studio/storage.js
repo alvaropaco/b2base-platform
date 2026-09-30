@@ -47,6 +47,12 @@ function readBuffer(relativePath) {
   return fs.readFileSync(path.join(storageDir(), safe));
 }
 
+/** O arquivo existe no storage? (resolução de anexo na liberação — D6) */
+function fileExists(relativePath) {
+  const safe = path.basename(String(relativePath));
+  return fs.existsSync(path.join(storageDir(), safe));
+}
+
 function removeFile(relativePath) {
   const safe = path.basename(String(relativePath));
   const full = path.join(storageDir(), safe);
@@ -76,4 +82,4 @@ function extFromMime(mimeType, originalName) {
   return map[mimeType] || 'bin';
 }
 
-module.exports = { storageDir, ensureDir, saveBuffer, readBuffer, removeFile, extFromMime };
+module.exports = { storageDir, ensureDir, saveBuffer, readBuffer, fileExists, removeFile, extFromMime };

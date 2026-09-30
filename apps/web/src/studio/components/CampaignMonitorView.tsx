@@ -172,7 +172,12 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
   }, [flying, load]);
 
   const summary = campaigns.find((c) => c.id === campaignId);
-  const status = STATUS_LABEL[detail?.status || ''] || { label: detail?.status || '—', cls: 'bg-[#160211]/5 text-muted-foreground' };
+  // UX-DR5: "pendente de envio" aparece POR NOME (approved + NO_CHANNEL_CONNECTED).
+  const pendingShipment =
+    (detail?.status === 'approved' || detail?.status === 'scheduled') && detail?.statusReason === 'NO_CHANNEL_CONNECTED';
+  const status = pendingShipment
+    ? { label: 'Pendente de envio', cls: 'bg-amber-100 text-amber-800' }
+    : STATUS_LABEL[detail?.status || ''] || { label: detail?.status || '—', cls: 'bg-[#160211]/5 text-muted-foreground' };
   const rows = [...(queue?.rows || [])].sort(
     (a, b) => new Date(b.sentAt || b.scheduledAt || 0).getTime() - new Date(a.sentAt || a.scheduledAt || 0).getTime()
   );
@@ -235,6 +240,18 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
                   {channelIcon(ch)} {ch}
                 </span>
               ))}
+              {/* B8/UX-DR4: edição em voo registrada em linguagem leiga — "houve
+                  edição e a partir de quando vale", sem termo técnico. */}
+              {(() => {
+                const edits = (detail?.approval as { contentEdits?: Array<{ at?: string }> } | undefined)?.contentEdits;
+                const last = Array.isArray(edits) && edits.length > 0 ? edits[edits.length - 1] : null;
+                if (!last?.at) return null;
+                return (
+                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+                    Conteúdo editado em voo — vale a partir de {new Date(last.at).toLocaleString('pt-BR')} para o que ainda não saiu
+                  </span>
+                );
+              })()}
               {queue && (
                 <span
                   className={`ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium ${

@@ -87,7 +87,10 @@ function formatMessageId(messageId, fromEmail) {
 function GmailApiProvider(prisma, account) {
   return {
     provider: 'gmail',
-    capabilities: { replySync: true },
+    // Onda 2026-09-29 (Story 2.2): gmail-api não monta MIME multipart —
+    // sem suporte a anexo; a degradação é EXPLICÁVEL (mensagem sai sem o
+    // anexo e o fato é registrado — nunca falha o lote).
+    capabilities: { replySync: true, attachments: false },
 
     async send({ to, subject, body, htmlBody, messageId }) {
       const result = await gmailApi.sendEmail(prisma, account.id, {
@@ -120,9 +123,11 @@ function SMTPEmailProvider(account) {
 
   return {
     provider: 'smtp',
-    capabilities: { replySync: false },
+    // Nodemailer monta MIME multipart nativamente — anexos suportados
+    // ({fileName, content: Buffer, contentType}).
+    capabilities: { replySync: false, attachments: true },
 
-    async send({ to, subject, body, htmlBody, messageId }) {
+    async send({ to, subject, body, htmlBody, messageId, attachments }) {
       const info = await transporter.sendMail({
         from: _formatFrom(account.email, account.fromName),
         to,
@@ -133,6 +138,15 @@ function SMTPEmailProvider(account) {
         // In-Reply-To quando houver leitura de caixa (IMAP) no futuro.
         // Sem id, o próprio nodemailer gera um válido.
         messageId: formatMessageId(messageId, account.email),
+        ...(Array.isArray(attachments) && attachments.length > 0
+          ? {
+              attachments: attachments.map((a) => ({
+                filename: a.fileName,
+                content: Buffer.from(a.content, 'base64'),
+                contentType: a.contentType || 'application/octet-stream',
+              })),
+            }
+          : {}),
       });
 
       return { messageId: info.messageId, threadId: null };
@@ -188,9 +202,10 @@ function ResendEmailProvider(account) {
 
   return {
     provider: 'resend',
-    capabilities: { replySync: false },
+    // Resend aceita anexos base64 no payload da API — suportado (Story 2.2).
+    capabilities: { replySync: false, attachments: true },
 
-    async send({ to, subject, body, htmlBody, messageId }) {
+    async send({ to, subject, body, htmlBody, messageId, attachments }) {
       const mid = formatMessageId(messageId, account.email);
       const res = await fetch(`${RESEND_API_BASE}/emails`, {
         method: 'POST',
@@ -205,6 +220,15 @@ function ResendEmailProvider(account) {
           text: body,
           html: htmlBody || undefined,
           headers: mid ? { 'Message-ID': mid } : undefined,
+          ...(Array.isArray(attachments) && attachments.length > 0
+            ? {
+                attachments: attachments.map((a) => ({
+                  filename: a.fileName,
+                  content: a.content, // base64 (D8: bytes lidos do storage no send)
+                  content_type: a.contentType || 'application/octet-stream',
+                })),
+              }
+            : {}),
         }),
       });
 
@@ -265,8 +289,13 @@ function buildProviderForAccount(prisma, account) {
  *
  * @param {object} prisma - Prisma client
  * @param {string} emailAccount_id - EmailAccount.id que envia
- * @param {object} params - { to, subject, body, htmlBody, messageId }
- * @returns {object} { messageId, threadId } — ids no formato do provider
+ * @param {object} params - { to, subject, body, htmlBody, messageId, attachments? }
+ *   `attachments`: [{fileName, content(base64), contentType}] — Story 2.2.
+ *   Provider sem `capabilities.attachments` → degrada EXPLICÁVEL: a mensagem
+ *   sai SEM os anexos e o resultado traz `attachmentsSkipped` (fato
+ *   registrado; nunca falha o envio por causa de anexo).
+ * @returns {object} { messageId, threadId, attachmentsSkipped? } — ids no
+ *   formato do provider
  */
 async function sendEmailForAccount(prisma, emailAccount_id, params) {
   const account = await prisma.emailAccount.findUnique({
@@ -285,6 +314,18 @@ async function sendEmailForAccount(prisma, emailAccount_id, params) {
 
   const provider = buildProviderForAccount(prisma, account);
   try {
+    const wantsAttachments = Array.isArray(params.attachments) && params.attachments.length > 0;
+    if (wantsAttachments && provider.capabilities?.attachments !== true) {
+      console.warn(
+        `[email-provider] provider "${provider.provider}" sem suporte a anexos — a mensagem sai sem eles (degradação explicável).`
+      );
+      const result = await provider.send({ ...params, attachments: undefined });
+      result.attachmentsSkipped = params.attachments.map((a) => ({
+        fileName: a.fileName,
+        reason: 'provider_sem_suporte',
+      }));
+      return result;
+    }
     return await provider.send(params);
   } catch (err) {
     // Credencial rejeitada → marca a conta para forçar reconexão.

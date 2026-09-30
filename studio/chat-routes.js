@@ -57,6 +57,27 @@ function actionParams(action) {
         add: Array.isArray(action.add) ? action.add.map(String) : null,
         remove: Array.isArray(action.remove) ? action.remove.map(String) : null,
       };
+    case 'attach_files':
+      // B18: ids ordenados — a chave de idempotência não depende da ordem.
+      return { attachmentIds: (Array.isArray(action.attachmentIds) ? action.attachmentIds : []).map(String).sort() };
+    case 'edit_content':
+      // Só os campos que REALMENTE vieram entram nos params (campo ausente
+      // nunca vira null — null não pode apagar subject/emailDoc/ctaUrl) e a
+      // lista é ordenada por id: a chave de idempotência não depende da
+      // ordem (irmão do B18).
+      return {
+        contents: (Array.isArray(action.contents) ? action.contents : [])
+          .filter((c) => c && c.id != null)
+          .map((c) => {
+            const fields = ['subject', 'preheader', 'whatsappText', 'linkedinText', 'ctaUrl', 'emailDoc'];
+            const normalized = { id: String(c.id) };
+            for (const field of fields) {
+              if (c[field] !== undefined) normalized[field] = c[field];
+            }
+            return normalized;
+          })
+          .sort((a, b) => a.id.localeCompare(b.id)),
+      };
     default:
       return {};
   }
@@ -464,6 +485,59 @@ function registerChatRoutes(router, context) {
         };
       }
 
+      case 'attach_files': {
+        // Story 2.1 (B14/B18): TODOS os ids precisam casar na org — sucesso
+        // parcial silencioso não existe (404 com a lista); vincula à campanha.
+        const requestedIds = (Array.isArray(action.attachmentIds) ? action.attachmentIds : []).map(String);
+        const found = [];
+        for (const id of requestedIds) {
+          const attachment = await prisma.studioAttachment.findUnique({ where: { id } });
+          if (!attachment || attachment.orgId !== orgId) {
+            throw httpError('NOT_FOUND', 404, `Anexo não encontrado nesta organização: ${id}`);
+          }
+          if (attachment.campaignId && attachment.campaignId !== campaign.id) {
+            throw httpError('ATTACHMENT_IN_OTHER_CAMPAIGN', 409, `Anexo "${attachment.originalName}" já pertence a outra campanha — remova-o de lá antes de reutilizar.`);
+          }
+          found.push(attachment);
+        }
+        for (const attachment of found) {
+          if (attachment.campaignId !== campaign.id) {
+            await prisma.studioAttachment.update({
+              where: { id: attachment.id },
+              data: { campaignId: campaign.id },
+            });
+          }
+        }
+        return {
+          type: 'attachments',
+          label: 'Anexo(s) vinculado(s) à campanha',
+          detail: `${found.length} anexo(s) saem na mensagem (${found.map((a) => a.originalName).join(', ')}).`,
+          attachmentIds: found.map((a) => a.id),
+        };
+      }
+
+      case 'edit_content': {
+        // Story 3.3/D9: a edição pelo chat REUSA o mesmo serviço do PATCH da
+        // UI (validação, sync em voo, contentEdits — AD-6/AD-13).
+        const result = await campaignService.flow.updateContents(prisma, {
+          campaign,
+          contents: Array.isArray(action.contents) ? action.contents : [],
+          userId,
+        });
+        const synced = result.sync ? [
+          result.sync.email && result.sync.email.synced ? 'e-mail' : null,
+          result.sync.whatsapp && result.sync.whatsapp.synced.length > 0 ? `WhatsApp (${result.sync.whatsapp.synced.length} passo(s))` : null,
+        ].filter(Boolean) : [];
+        return {
+          type: 'content_edited',
+          label: 'Conteúdo atualizado',
+          detail: (result.contentEditRecorded
+            ? `Vale a partir de agora para o que ainda não saiu${synced.length ? ` — sincronizado: ${synced.join(' e ')}` : ''}.`
+            : 'Conteúdo salvo.') + ' O que já foi enviado não muda.',
+          editedCount: result.contents.length,
+        };
+      }
+
       case 'none':
       default:
         return null;
@@ -497,25 +571,30 @@ function buildAudienceCard({ snapshot, baseCount, rationaleText, label = 'Audiê
 }
 
 /**
- * Card do Orçamento de Reputação em linguagem clara (FR-20): status por canal
- * (PRONTO / PENDENTE / BLOQUEADO) + passo a passo numerado de desbloqueio.
+ * Card do Orçamento de Reputação em linguagem clara (FR-20; onda 2026-09-29):
+ * status por canal (PRONTO / PENDENTE / AGUARDANDO REPOSIÇÃO) + passo a passo
+ * numerado. Zero jargão (UX-DR4): NUNCA fala "piso" (o sintoma "piso é 103"
+ * morreu — pendência fala o que destrava e quando libera, nunca "bloqueado").
  */
 async function buildBalanceCard(prisma, orgId) {
   const reputation = require('./reputation');
   const balances = (await reputation.listBalances(prisma, orgId)).filter(Boolean);
+  const replenishAt = reputation.nextReplenishLabel();
   const lines = [];
   for (const b of balances) {
     const channelLabel = b.channel === 'email' ? 'E-mail' : 'WhatsApp';
     const pct = b.ceiling ? Math.round((b.available / b.ceiling) * 100) : null;
-    const blocked = b.available <= b.floor;
+    const noSends = b.available <= 0;
     const pendingDomain = b.channel === 'email' && b.domainAuthStatus !== 'verified';
-    const status = blocked ? 'BLOQUEADO' : pendingDomain ? 'PENDENTE — domínio não autenticado' : 'PRONTO';
+    const status = noSends ? 'AGUARDANDO REPOSIÇÃO' : pendingDomain ? 'PENDENTE — domínio não autenticado' : 'PRONTO';
     const steps = [];
     if (pendingDomain) {
       steps.push('Autenticar o domínio: publicar SPF, DKIM e DMARC no DNS (me peça "listar os registros DNS" que eu mostro cada um)');
     }
-    if (blocked) {
-      steps.push(`Recarregar o saldo: há ${b.available} disponíveis e o piso é ${b.floor} — disparos param abaixo do piso`);
+    if (noSends) {
+      // Horário omitido quando o fuso não formata (nextReplenishLabel '' —
+      // nunca "00:00" inventado).
+      steps.push(`Repor o saldo: a reposição diária libera mais envios${replenishAt ? ` às ${replenishAt}` : ''} — enquanto isso, você já pode criar e aprovar campanhas`);
     }
     if (b.channel === 'whatsapp') {
       steps.push('Manter o WhatsApp pareado — se a sessão cair, me peça "mostrar o QR do WhatsApp"');
@@ -526,7 +605,7 @@ async function buildBalanceCard(prisma, orgId) {
         steps.map((s, i) => `${i + 1}. ${s}`).join(' ')
     );
   }
-  if (lines.length === 0) lines.push('Nenhuma conta de canal configurada ainda.');
+  if (lines.length === 0) lines.push('Nenhuma conta de canal configurada ainda — me peça ajuda para conectar o e-mail ou o WhatsApp.');
   return { type: 'balance', label: 'Orçamento de Reputação — como liberar seus disparos', detail: lines.join('\n') };
 }
 
@@ -560,6 +639,8 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     set_schedule: 'Configurando agendamento…',
     show_balance: 'Consultando o Orçamento de Reputação…',
     start_whatsapp_pairing: 'Preparando o pareamento do WhatsApp…',
+    attach_files: 'Vinculando anexos à campanha…',
+    edit_content: 'Atualizando o conteúdo…',
   };
 
   async function persistChatTrace({ campaignId, orgId, turnIndex, startedAt, llmTelemetry, actionTypes, actionDurationsMs, status = 'succeeded', errorCode = null }) {
@@ -678,7 +759,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     // Ordem canônica: set_audience REMATERIALIZA a seleção — se o modelo
     // emits select_leads antes e set_audience depois, o set apaga a seleção
     // que acabou de ser feita (regressão QA E2E 2026-09-28, estado-consistente).
-    const ACTION_ORDER = { set_objective: 0, set_audience: 1, attach_url: 2, confirm_material: 3, generate_content: 4, select_leads: 5, set_schedule: 6 };
+    const ACTION_ORDER = { set_objective: 0, set_audience: 1, attach_url: 2, confirm_material: 3, generate_content: 4, select_leads: 5, set_schedule: 6, attach_files: 7, edit_content: 8 };
     const orderedActions = [...actions].sort(
       (a, b) => (ACTION_ORDER[a?.type] ?? 9) - (ACTION_ORDER[b?.type] ?? 9)
     );

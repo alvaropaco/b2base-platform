@@ -55,3 +55,6 @@ apps/web/vite.config.d.ts
 
 # Diretório local do OMO
 .omo/
+
+# Storage local do Studio (materiais/anexos em dev e teste)
+.data/

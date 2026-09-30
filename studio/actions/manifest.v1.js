@@ -33,6 +33,10 @@ const ACTIONS_V1 = {
   select_leads: { version: 1, idempotency: 'none', description: 'Ajusta a seleção manual de leads da audiência (set/add/remove por prospectId)' },
   show_balance: { version: 1, idempotency: 'none', description: 'Mostra o Orçamento de Reputação por canal com passo a passo de desbloqueio' },
   start_whatsapp_pairing: { version: 1, idempotency: 'none', description: 'Inicia/retoma o pareamento do WhatsApp (WAHA) e devolve o QR no chat' },
+  // Onda "criação sem bloqueios" (2026-09-29) — ADITIVAS (AD-6), sem tocar
+  // forma/idempotência/chaves das 9 originais:
+  attach_files: { version: 1, idempotency: 'params', description: 'Vincula anexos de mensagem (StudioAttachment) à campanha — ids ordenados na chave de idempotência' },
+  edit_content: { version: 1, idempotency: 'params', description: 'Edita conteúdo da campanha (assunto/texto/emailDoc) pelo serviço único do PATCH — editável em voo no que ainda não saiu' },
 };
 
 /**
@@ -112,6 +116,27 @@ function validate(action, params = {}) {
       const hasAny = lists.some((k) => Array.isArray(params[k]) && params[k].length > 0);
       if (!hasAny) {
         const err = new Error('select_leads exige ao menos uma lista não vazia: set, add ou remove (prospectIds).');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
+    case 'attach_files': {
+      if (!Array.isArray(params.attachmentIds) || params.attachmentIds.length === 0) {
+        const err = new Error('attach_files exige `attachmentIds` (lista não vazia).');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
+    case 'edit_content': {
+      const ok = Array.isArray(params.contents) &&
+        params.contents.length > 0 &&
+        params.contents.every((c) => c && typeof c.id === 'string' && c.id);
+      if (!ok) {
+        const err = new Error('edit_content exige `contents` (lista não vazia de { id, ...campos }).');
         err.code = 'INVALID_ACTION_PARAMS';
         err.status = 400;
         throw err;

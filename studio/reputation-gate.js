@@ -90,11 +90,15 @@ async function precheck(prisma, { orgId, channel, campaign = null, now = new Dat
   }
 
   // 3) Certificado vigente re-avaliado (só para campanhas com selo — AD-7).
+  //    Onda "criação sem bloqueios" (2026-09-29): a re-avaliação é em modo
+  //    DISPARO (`forDispatch`) — a liberdade é na CRIAÇÃO; aqui itens
+  //    'block' continuam bloqueando (fail-closed, AD-4). Pendências
+  //    ('pending') e avisos ('warning') nunca bloqueiam o gate.
   if (campaign && campaign.approval && campaign.approval.certificate) {
     const certificate = require('./certificate');
-    const verdict = await certificate.evaluate(prisma, campaign, { now, skipPersist: true });
-    if (verdict.level !== 'green') {
-      const blocked = verdict.items.filter((i) => i.level === 'block');
+    const verdict = await certificate.evaluate(prisma, campaign, { now, skipPersist: true, forDispatch: true });
+    const blocked = verdict.items.filter((i) => i.level === 'block');
+    if (blocked.length > 0) {
       return {
         allow: false,
         code: BLOCK_CODES.CERTIFICATE,
