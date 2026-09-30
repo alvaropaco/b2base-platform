@@ -12,6 +12,7 @@
  * referenciado na conversa.
  */
 
+const crypto = require('crypto');
 const { httpError } = require('./errors');
 const { createChatAgent } = require('./ai/chat-agent');
 const { createComposer } = require('./ai/compose');
@@ -22,6 +23,7 @@ const campaignService = require('./campaign-service');
 const { createMaterialService } = require('./material-service');
 const scheduleService = require('./schedule-service');
 const manifest = require('./actions/manifest.v1');
+const { normalizeText } = require('../search-text');
 
 const URL_RE = /(https?:\/\/[^\s,;)"]+)/g;
 
@@ -30,8 +32,15 @@ function actionParams(action) {
   switch (action.type) {
     case 'set_objective':
       return { objective: action.objective || null, offer: action.offer || null };
-    case 'set_audience':
-      return { description: action.description || null };
+    case 'set_audience': {
+      // Hash de idempotência COMPATÍVEL com o pré-deploy (AD-6): `criteria`
+      // entra nos params SÓ quando veio (chips de recuperação, FR6) — sem
+      // ele, a chave é a LEGADA ({description} apenas) e replays de rows
+      // gravadas antes do deploy continuam sendo replay (não re-executam).
+      const params = { description: action.description || null };
+      if (action.criteria) params.criteria = action.criteria;
+      return params;
+    }
     case 'attach_url':
       return { url: action.url || null };
     case 'confirm_material':
@@ -108,6 +117,43 @@ async function currentExtras(prisma, campaign) {
     })),
   };
 
+  // Memória de decisão (Epic 1, FR2): FATO ("audienciaDecidida") SOMENTE
+  // quando o segmento MATERIALIZOU >0 (lastCount gravado no set_audience) E
+  // ESTA campanha tem snapshot ativo — 0-match, segmento manual ou decisão
+  // de outra campanha entram como "histórico recente", sem a regra de nunca
+  // re-perguntar.
+  try {
+    const decided = await prisma.studioSegment.findFirst({
+      where: { orgId: campaign.orgId, lastCount: { gt: 0 } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (decided) {
+      const decision = {
+        pedido: decided.naturalLanguageInput || null,
+        criterios: decided.criteria || null,
+        decididoEm: decided.createdAt,
+        leadsIncluidos: snapshotRows[0]?.includedCount ?? null,
+      };
+      if (snapshotRows[0]) extras.audienceCriteria = decision;
+      else extras.audienceHistory = decision;
+    } else {
+      const anySegment = await prisma.studioSegment.findFirst({
+        where: { orgId: campaign.orgId },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (anySegment) {
+        extras.audienceHistory = {
+          pedido: anySegment.naturalLanguageInput || null,
+          criterios: anySegment.criteria || null,
+          decididoEm: anySegment.createdAt,
+          leadsIncluidos: snapshotRows[0]?.includedCount ?? null,
+        };
+      }
+    }
+  } catch (_e) {
+    console.error('[studio/chat] extras: decisão de audiência indisponível:', _e);
+  }
+
   // Amostra da seleção vigente: o agente cita e manipula leads por nome/id
   // (action select_leads) — mesma fonte do painel lateral de leads.
   try {
@@ -133,8 +179,10 @@ async function currentExtras(prisma, campaign) {
       orderBy: { createdAt: 'desc' },
       take: 40,
     });
-    extras.audienceAvailableSample = foraDaSelecao.map((p) => ({ id: p.id, empresa: p.companyName || 'lead' }));
-  } catch (_e) { /* base ilegível: segue sem amostras */ }
+      extras.audienceAvailableSample = foraDaSelecao.map((p) => ({ id: p.id, empresa: p.companyName || 'lead' }));
+  } catch (_e) {
+    console.error('[studio/chat] extras: amostras de leads indisponíveis:', _e);
+  }
 
   // Canais para o agente explicar limites/bloqueios com passo a passo:
   // saldo por canal + status da sessão WhatsApp + domínio do e-mail.
@@ -150,7 +198,9 @@ async function currentExtras(prisma, campaign) {
       if (account) whatsapp = account.status;
     } catch (_e) { /* modelo ausente em alguns harnesses */ }
     extras.canais = { reputacao: channels, whatsapp };
-  } catch (_e) { /* sem reputação configurada */ }
+  } catch (_e) {
+    console.error('[studio/chat] extras: saldo de canais indisponível:', _e);
+  }
 
   // Respostas quentes recentes: o agente cita QUEM respondeu e rascunha a
   // próxima mensagem — o chip "mostre e responda" vira ação real, não promessa.
@@ -178,7 +228,9 @@ async function currentExtras(prisma, campaign) {
         };
       });
     }
-  } catch (_e) { /* sem classificações no workspace */ }
+  } catch (_e) {
+    console.error('[studio/chat] extras: respostas quentes indisponíveis:', _e);
+  }
 
   // Marca: diretriz de voz + assets de contexto (txt/md lidos, limitados).
   try {
@@ -201,7 +253,9 @@ async function currentExtras(prisma, campaign) {
         .join('\n---\n');
       if (contextText) extras.marca.contexto = contextText.slice(0, 4000);
     }
-  } catch (_e) { /* sem marca configurada */ }
+  } catch (_e) {
+    console.error('[studio/chat] extras: marca do workspace indisponível:', _e);
+  }
 
   return extras;
 }
@@ -214,6 +268,41 @@ function registerChatRoutes(router, context) {
   const materialService = createMaterialService(prisma, aiDeps);
 
   /**
+   * Epic 1 (FR15/F2): resolve a referência do material DENTRO da org — id
+   * exato, senão nome normalizado sobre `sourceRef` e `extraction.product`.
+   * Determinístico: match único resolve; ambíguo NUNCA resolve sozinho
+   * (vira card de desambiguação); nada casando devolve 'missing' (o handler
+   * transforma em 404 explicável).
+   */
+  function materialRefLabel(material) {
+    return material.extraction?.product || material.sourceRef || material.kind || material.id;
+  }
+
+  async function resolveMaterialRef(orgId, ref) {
+    const raw = String(ref || '').trim();
+    if (!raw) return { status: 'missing', ref: raw };
+    const byId = await prisma.studioMaterial.findUnique({ where: { id: raw } }).catch(() => null);
+    if (byId && byId.orgId === orgId) return { status: 'resolved', material: byId };
+    const key = normalizeText(raw);
+    const materials = await prisma.studioMaterial.findMany({ where: { orgId } });
+    const matches = materials.filter((m) => {
+      const refs = [m.sourceRef, m.extraction?.product].map((v) => normalizeText(v)).filter(Boolean);
+      return refs.some(
+        (v) => v === key || (v.length >= 4 && v.includes(key)) || (key.length >= 4 && key.includes(v))
+      );
+    });
+    if (matches.length === 1) return { status: 'resolved', material: matches[0] };
+    if (matches.length > 1) {
+      return {
+        status: 'ambiguous',
+        ref: raw,
+        candidates: matches.map((m) => ({ id: m.id, label: String(materialRefLabel(m)) })),
+      };
+    }
+    return { status: 'missing', ref: raw };
+  }
+
+  /**
    * Executa uma action com IDEMPOTÊNCIA (specs/011, AD-6/FR-9): a primeira
    * execução roda o handler e registra o card em StudioActionRun (unique na
    * chave estável); re-execução (mesmo actionId/params) devolve o MESMO
@@ -222,7 +311,34 @@ function registerChatRoutes(router, context) {
   async function runAction(action, { campaign, cards, orgId, userId }) {
     if (!action || !action.type || action.type === 'none') return null;
     if (!manifest.ACTIONS_V1[action.type]) return null;
-    const params = actionParams(action);
+    let params = actionParams(action);
+    let effective = action;
+    // F2 (FR15): nome em vez de id resolve ANTES do hash de idempotência —
+    // a chave continua { materialId }, agora com o id RESOLVIDO (estável).
+    // Ambiguidade vira card de desambiguação, nunca falha.
+    if (action.type === 'confirm_material') {
+      const resolution = await resolveMaterialRef(orgId, action.materialId || action.materialName);
+      if (resolution.status === 'ambiguous') {
+        return {
+          type: 'material_ambiguous',
+          label: 'Qual material você quer confirmar?',
+          detail: `"${resolution.ref}" casa com mais de um material — me diga qual: ${resolution.candidates
+            .map((c) => `"${c.label}"`)
+            .join(', ')}.`,
+          candidates: resolution.candidates,
+        };
+      }
+      if (resolution.status === 'resolved') {
+        effective = { ...action, materialId: resolution.material.id };
+        params = { ...params, materialId: resolution.material.id };
+      }
+      if (resolution.status === 'missing' && !params.materialId && resolution.ref) {
+        // Nome que não casou com nada: segue com a referência crua — o handler
+        // vira 404 explicável ("Material não encontrado"), não 400 de schema.
+        effective = { ...action, materialId: resolution.ref };
+        params = { ...params, materialId: resolution.ref };
+      }
+    }
     manifest.validate(action.type, params);
     const { result, replayed } = await manifest.runIdempotent(prisma, {
       orgId,
@@ -230,7 +346,7 @@ function registerChatRoutes(router, context) {
       action: action.type,
       params,
       actionId: action.actionId || null,
-      run: () => executeAction(action, { campaign, cards, orgId, userId }),
+      run: () => executeAction(effective, { campaign, cards, orgId, userId }),
     });
     if (replayed && result) return { ...result, replayed: true };
     return result;
@@ -254,7 +370,23 @@ function registerChatRoutes(router, context) {
 
       case 'set_audience': {
         const segmentNl = require('./ai/segment-nl').createSegmentNl(aiDeps);
-        const { criteria, rationale } = await segmentNl.fromPrompt(String(action.description || ''));
+        let criteria;
+        let rationale;
+        if (action.criteria) {
+          // Chip de recuperação (FR6): critério pronto, sem passar pelo LLM.
+          criteria = action.criteria;
+          segmentService.validateCriteria(criteria);
+          rationale = criteriaDescription(criteria);
+        } else {
+          // FR5: tradução NL→critérios ancorada na base real — amostra dos
+          // valores da org entra como few-shot no prompt do segment-nl.
+          const { criteria: translated, rationale: why } = await segmentNl.fromPrompt(
+            String(action.description || ''),
+            { samples: await orgBaseSamples(prisma, orgId) }
+          );
+          criteria = translated;
+          rationale = why;
+        }
         const where = segmentService.buildWhere(orgId, criteria);
         const prospects = await prisma.prospect.findMany({ where });
         const baseCount = await prisma.prospect.count({ where: { orgId } });
@@ -278,6 +410,10 @@ function registerChatRoutes(router, context) {
               name: segmentName,
               criteria,
               naturalLanguageInput: String(action.description || ''),
+              // FR2: contagem materializada na decisão — o guard de memória
+              // (lastCount > 0) separa FATO de 0-match/segmento manual.
+              lastCount: snapshot.includedCount,
+              lastCountAt: new Date(),
               createdBy: userId,
             },
           }).catch((err) => {
@@ -288,7 +424,13 @@ function registerChatRoutes(router, context) {
         // Audiência vazia com base populada é o ponto cego nº 1 do chat (QA
         // 2026-09-28, F3): o card nomeia o problema e o total da base para o
         // usuário decidir entre ajustar o segmento ou importar leads.
-        return buildAudienceCard({ snapshot, baseCount, rationaleText: rationale || criteriaDescription(criteria) });
+        const card = buildAudienceCard({ snapshot, baseCount, rationaleText: rationale || criteriaDescription(criteria) });
+        // FR6: 0-match NUNCA é beco sem saída — diagnóstico do porquê +
+        // proposta materialmente diferente como ação de 1 clique no card.
+        if (card.emptyMatch) {
+          Object.assign(card, await buildZeroMatchRecovery(prisma, { orgId, criteria, baseCount }));
+        }
+        return card;
       }
 
       case 'select_leads': {
@@ -570,6 +712,224 @@ function buildAudienceCard({ snapshot, baseCount, rationaleText, label = 'Audiê
   };
 }
 
+// ── Epic 1 (FR6): recuperação determinística de audiência 0-match ───────────
+// 0 leads com base populada não é beco sem saída: o card ganha diagnóstico do
+// porquê (campo consultado × amostra real da org) e proposta de critério
+// MATERIAMENTE diferente — "materialmente diferente" é computável (Design
+// Notes): hash sha256 do `where` comparado a TODAS as tentativas anteriores;
+// o mesmo `where` nunca volta 2× e guard-rails (saldo/consentimento) ficam
+// intocados — a proposta só sugere, quem aplica é o vendedor em 1 clique.
+
+function hashWhere(where) {
+  return crypto.createHash('sha256').update(JSON.stringify(where)).digest('hex');
+}
+
+/** Amostra real da base da org — insumo do diagnóstico e das propostas. */
+async function orgTextSample(prisma, orgId) {
+  const rows = await prisma.prospect.findMany({
+    where: { orgId },
+    select: { industry: true, companyName: true, tradeName: true, searchText: true },
+    orderBy: { createdAt: 'asc' }, // amostra ESTÁVEL: mesma base → mesmo diagnóstico
+    take: 1000,
+  });
+  const industryCounts = new Map();
+  const tokens = new Set();
+  for (const row of rows) {
+    const industry = String(row.industry || '').trim();
+    if (industry) industryCounts.set(industry, (industryCounts.get(industry) || 0) + 1);
+    const text =
+      row.searchText || [row.industry, row.companyName, row.tradeName].filter(Boolean).join(' ');
+    for (const token of normalizeText(text).split(/[^a-z0-9]+/)) {
+      if (token.length >= 4) tokens.add(token);
+    }
+  }
+  const ranked = [...industryCounts.entries()].sort((a, b) => b[1] - a[1]);
+  return {
+    total: rows.length,
+    rankedIndustries: ranked.slice(0, 5),
+    topIndustry: ranked[0] ? ranked[0][0] : null,
+    tokens: [...tokens],
+  };
+}
+
+/**
+ * Amostra (≤30 valores) de `industry`/`companyName` da org — few-shot do
+ * segment-nl (Epic 1, FR5): a tradução NL→critérios fica ancorada nos
+ * valores reais da base, não em setores inventados.
+ */
+async function orgBaseSamples(prisma, orgId) {
+  try {
+    const rows = await prisma.prospect.findMany({
+      where: { orgId },
+      select: { industry: true, companyName: true },
+      take: 300,
+    });
+    const industries = [...new Set(rows.map((r) => String(r.industry || '').trim()).filter(Boolean))].slice(0, 30);
+    const companies = [...new Set(rows.map((r) => String(r.companyName || '').trim()).filter(Boolean))].slice(0, 30);
+    return { industries, companies };
+  } catch (_e) {
+    console.error('[studio/chat] segment-nl: amostra da base indisponível:', _e);
+    return { industries: [], companies: [] };
+  }
+}
+
+/** Hashes dos `where` das tentativas anteriores (segmentos da org). */
+async function previousWhereHashes(prisma, orgId) {
+  const segments = await prisma.studioSegment.findMany({
+    where: { orgId },
+    orderBy: { createdAt: 'desc' },
+    take: 200,
+  });
+  const hashes = new Set();
+  for (const segment of segments) {
+    try {
+      hashes.add(hashWhere(segmentService.buildWhere(orgId, segment.criteria)));
+    } catch (_e) { /* critério legado fora do catálogo: ignora */ }
+  }
+  return hashes;
+}
+
+function isTextSearchField(field) {
+  return segmentService.SEARCHTEXT_FIELDS.has(field);
+}
+
+/** Termos atômicos normalizados pedidos nas condições de texto do critério. */
+function collectTerms(criteria) {
+  const terms = new Set();
+  for (const group of (criteria && criteria.groups) || []) {
+    for (const condition of group.conditions || []) {
+      if (isTextSearchField(condition.field) && condition.op === 'contains') {
+        for (const term of segmentService.termVariants(condition.value)) terms.add(term);
+      }
+    }
+  }
+  return [...terms];
+}
+
+/** Critério sem as condições de texto (mantém região/porte/score/etc.). */
+function stripTextConditions(criteria) {
+  const groups = (criteria && criteria.groups) || [];
+  const kept = groups
+    .map((group) => ({
+      ...group,
+      conditions: (group.conditions || []).filter((c) => !isTextSearchField(c.field)),
+    }))
+    .filter((group) => group.conditions.length > 0);
+  return { version: 1, groups: kept };
+}
+
+function sectorCriteria(value) {
+  return {
+    version: 1,
+    groups: [
+      {
+        op: 'OR',
+        conditions: [
+          { field: 'industry', op: 'contains', value },
+          { field: 'companyName', op: 'contains', value },
+        ],
+      },
+    ],
+  };
+}
+
+/** Tokens REAIS da base lexicalmente próximos dos termos buscados. */
+function similarTokens(terms, baseTokens) {
+  const out = [];
+  for (const token of baseTokens) {
+    for (const term of terms) {
+      const size = Math.min(4, term.length, token.length);
+      if (size >= 4 && (token.startsWith(term.slice(0, 4)) || term.startsWith(token.slice(0, 4)))) {
+        out.push(token);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** Propostas em ordem determinística: do mais próximo ao mais amplo. */
+function zeroMatchProposals({ criteria, sample }) {
+  const proposals = [];
+  const terms = collectTerms(criteria);
+  for (const token of similarTokens(terms, sample.tokens).slice(0, 2)) {
+    proposals.push({
+      description: `setor "${token}" — parecido com o que você buscou`,
+      criteria: sectorCriteria(token),
+    });
+  }
+  const structured = stripTextConditions(criteria);
+  if (structured.groups.length > 0) {
+    proposals.push({
+      description: 'seus filtros sem o setor que não casou',
+      criteria: structured,
+    });
+  }
+  if (sample.topIndustry) {
+    proposals.push({
+      description: `o setor mais comum da sua base ("${sample.topIndustry}")`,
+      criteria: sectorCriteria(sample.topIndustry),
+    });
+  }
+  return proposals;
+}
+
+/**
+ * Diagnóstico do porquê do 0-match + proposta de 1 clique (FR6). A proposta
+ * só vale com hash de `where` distinto de todas as tentativas anteriores —
+ * se a 2ª proposta também casar 0, a próxima sai diferente (sem loop).
+ */
+async function buildZeroMatchRecovery(prisma, { orgId, criteria, baseCount }) {
+  let sample = { total: 0, rankedIndustries: [], topIndustry: null, tokens: [] };
+  try {
+    sample = await orgTextSample(prisma, orgId);
+  } catch (_e) {
+    console.error('[studio/chat] 0-match: amostra da base indisponível:', _e);
+  }
+  const terms = collectTerms(criteria);
+  // Total REAL da base (baseCount do card), não o teto da amostra — copy honesta.
+  const totalCopy = baseCount != null ? baseCount : sample.total;
+  const diagnosis = [
+    terms.length
+      ? `Busquei os termos ${terms.map((t) => `"${t}"`).join(', ')} no setor e no nome das empresas.`
+      : 'Nenhum lead da sua base casou com os filtros.',
+    totalCopy > 0
+      ? `Sua base tem ${totalCopy} lead(s)` +
+        (sample.rankedIndustries.length
+          ? ` e os setores mais comuns na amostra são ${sample.rankedIndustries.map(([name, n]) => `${name} (${n})`).join(', ')}.`
+          : '.')
+      : 'Sua base está sem leads para casar.',
+  ].join(' ');
+
+  let previous = new Set();
+  try {
+    previous = await previousWhereHashes(prisma, orgId);
+  } catch (_e) {
+    console.error('[studio/chat] 0-match: histórico de tentativas indisponível:', _e);
+  }
+  for (const proposal of zeroMatchProposals({ criteria, sample })) {
+    let where;
+    try {
+      segmentService.validateCriteria(proposal.criteria);
+      where = segmentService.buildWhere(orgId, proposal.criteria);
+    } catch (_e) {
+      continue; // proposta inválida nunca vai para o card
+    }
+    if (previous.has(hashWhere(where))) continue; // nunca repetir o where
+    const matchedCount = await prisma.prospect.count({ where });
+    if (matchedCount === 0) continue; // só proposta que CASA — "parecido" não basta
+    return {
+      diagnosis,
+      suggestedFilter: {
+        description: proposal.description,
+        criteria: proposal.criteria,
+        matchedCount,
+      },
+    };
+  }
+  return { diagnosis, suggestedFilter: null };
+}
+
 /**
  * Card do Orçamento de Reputação em linguagem clara (FR-20; onda 2026-09-29):
  * status por canal (PRONTO / PENDENTE / AGUARDANDO REPOSIÇÃO) + passo a passo
@@ -643,7 +1003,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     edit_content: 'Atualizando o conteúdo…',
   };
 
-  async function persistChatTrace({ campaignId, orgId, turnIndex, startedAt, llmTelemetry, actionTypes, actionDurationsMs, status = 'succeeded', errorCode = null }) {
+  async function persistChatTrace({ campaignId, orgId, turnIndex, startedAt, llmTelemetry, actionTypes, actionDurationsMs, status = 'succeeded', errorCode = null, errorStack = null }) {
     const llm = llmTelemetry[llmTelemetry.length - 1] || {};
     const usage = llm.usage || {};
     const trace = {
@@ -663,7 +1023,10 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
       llmFallbackUsed: Boolean(llm.fallbackUsed),
       llmTruncated: Boolean(llm.truncated),
       status,
+      // FR3 (Epic 1): falha NUNCA é anônima — errorCode + stack do erro real
+      // nos caminhos failed e degraded, consultável em GET .../traces.
       errorCode,
+      errorStack,
       actionTypes,
       actionDurationsMs,
     };
@@ -731,15 +1094,25 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     const extras = await currentExtras(prismaClient, campaign);
     let reply;
     let actions;
+    let degradation = null;
     try {
-      ({ reply, actions } = await chatAgent.orchestrate({
+      const orchestrated = await chatAgent.orchestrate({
         campaign,
         history: [...history, userMessage],
         userMessage: message,
         extras,
         onLlmCall: (telemetry) => llmTelemetry.push(telemetry),
-      }));
+      });
+      reply = orchestrated.reply;
+      actions = orchestrated.actions;
+      // FR1 (Epic 1): esgotados os retries, o turno DEGRADA com resposta
+      // honesta (o que NÃO foi alterado + próximo passo) — e o trace leva
+      // errorCode+errorStack da causa real.
+      if (orchestrated.degraded) {
+        degradation = { errorCode: orchestrated.errorCode || null, errorStack: orchestrated.errorStack || null };
+      }
     } catch (error) {
+      console.error('[studio/chat] orchestrate threw:', error.stack || String(error));
       await persistChatTrace({
         campaignId: campaign.id,
         orgId,
@@ -750,6 +1123,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
         actionDurationsMs,
         status: 'failed',
         errorCode: error.code || null,
+        errorStack: String(error.stack || error),
       });
       throw error;
     }
@@ -775,10 +1149,31 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
           emit({ type: 'card', card });
         }
       } catch (err) {
-        // Ação falha não derruba a conversa — vira card de erro.
-        const errorCard = { type: 'error', label: `Ação "${action.type}" falhou`, detail: err.message };
-        cards.push(errorCard);
-        emit({ type: 'card_error', card: errorCard });
+        // Ação falha não derruba a conversa. Erro visível (NFR4): a stack da
+        // causa fica no log do servidor, nunca descartada.
+        console.error(`[studio/chat] action "${action.type}" failed:`, err.stack || String(err));
+        if (['LLM_JSON_FAILED', 'LLM_TIMEOUT', 'LLM_HTTP_ERROR'].includes(err.code)) {
+          // Falha de LLM DENTRO da action (set_audience/generate_content):
+          // zero jargão (UX-DR4) — card mordomo e o turno DEGRA no trace.
+          const untouchedCopy = {
+            set_audience: 'sua audiência não foi alterada ✓',
+            generate_content: 'seus conteúdos continuam do mesmo jeito ✓',
+          };
+          const degradedCard = {
+            type: 'degraded',
+            label: 'Não deu para concluir agora',
+            detail: `Não consegui processar isso agora — ${
+              untouchedCopy[action.type] || 'nada foi alterado ✓'
+            } · tenta de novo em 1 minuto.`,
+          };
+          cards.push(degradedCard);
+          emit({ type: 'card', card: degradedCard });
+          degradation = { errorCode: err.code, errorStack: String(err.stack || err) };
+        } else {
+          const errorCard = { type: 'error', label: `Ação "${action.type}" falhou`, detail: err.message };
+          cards.push(errorCard);
+          emit({ type: 'card_error', card: errorCard });
+        }
       } finally {
         if (action && action.type && action.type !== 'none') {
           actionDurationsMs[action.type] = (actionDurationsMs[action.type] || 0) + (Date.now() - actionStartedAt);
@@ -813,6 +1208,9 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
       llmTelemetry,
       actionTypes,
       actionDurationsMs,
+      status: degradation ? 'degraded' : 'succeeded',
+      errorCode: degradation ? degradation.errorCode : null,
+      errorStack: degradation ? degradation.errorStack : null,
     });
     emit({ type: 'done', cards, campaignStatus: campaign.status });
     return { reply, cards, campaignStatus: campaign.status };
@@ -923,6 +1321,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
           llmTruncated: trace.llmTruncated,
           status: trace.status,
           errorCode: trace.errorCode,
+          errorStack: trace.errorStack,
           actionTypes: trace.actionTypes,
           actionDurationsMs: trace.actionDurationsMs,
           createdAt: trace.createdAt,

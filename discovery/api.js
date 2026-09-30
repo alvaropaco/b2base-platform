@@ -13,6 +13,8 @@ const { buildCorporateProfile } = require('./enrichers/corporate');
 const { buildFinancialProfile } = require('./enrichers/financial');
 const { buildLegalProfile } = require('./enrichers/legal');
 const { buildOwnershipProfile } = require('./enrichers/ownership');
+// Epic 1 (FR4): searchText normalizado do Prospect mantido na importação.
+const { withSearchText } = require('../search-text');
 
 const HTTP_CODE_BY_ERROR = {
   DISCOVERY_NOT_FOUND: 404,
@@ -156,6 +158,11 @@ function createDiscoveryApi({ app, prisma, engine, requireRequestOrgId, now = ()
             state: location.state || null,
             industry: (candidate.location || {}).industry || null,
             importKey,
+            // Epic 1 (FR4): searchText normalizado p/ matching de segmento.
+            ...withSearchText({
+              companyName: candidate.name || (candidate.cnpj ? normalizer.formatCnpj(candidate.cnpj) : 'Candidato de discovery'),
+              industry: (candidate.location || {}).industry || null,
+            }),
             status: 'prospect',
           },
         });

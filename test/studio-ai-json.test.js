@@ -81,3 +81,58 @@ test('extractor: usa o modelo premium (AI_CAMPAIGN_LLM_MODEL) na extração', as
   delete process.env.AI_CAMPAIGN_LLM_MODEL;
   assert.equal(usedModel, 'deepseek-test', 'extração roda no modelo premium');
 });
+
+// ── Revisão Epic 1: só infraestrutura consome orçamento de retry ────────────
+
+test('callLlmJson: erro NÃO-infra (bug de código/401) vai direto — sem consumir retry', async () => {
+  const { callLlmJson } = require('../studio/ai/json');
+  let calls = 0;
+  await assert.rejects(
+    () => callLlmJson(
+      async () => {
+        calls += 1;
+        const err = new Error('Cannot read property of undefined');
+        err.code = 'CODE_BUG';
+        throw err;
+      },
+      { buildUser: () => 'x', validate: () => null }
+    ),
+    (e) => e.code === 'CODE_BUG'
+  );
+  assert.equal(calls, 1, 'throw imediato — re-tentar não conserta bug');
+});
+
+test('callLlmJson: erro de autenticação com status (401/403) também não re-tenta', async () => {
+  const { callLlmJson } = require('../studio/ai/json');
+  let calls = 0;
+  await assert.rejects(
+    () => callLlmJson(
+      async () => {
+        calls += 1;
+        const err = new Error('Invalid API key');
+        err.status = 401;
+        throw err;
+      },
+      { buildUser: () => 'x', validate: () => null }
+    ),
+    (e) => e.status === 401
+  );
+  assert.equal(calls, 1);
+});
+
+test('callLlmJson: erro de rede cru (fetch failed) é infra — consome retry de parse', async () => {
+  const { callLlmJson } = require('../studio/ai/json');
+  let calls = 0;
+  await assert.rejects(
+    () => callLlmJson(
+      async () => {
+        calls += 1;
+        throw new Error('fetch failed');
+      },
+      { buildUser: () => 'x', validate: () => null, parseAttempts: 2 }
+    ),
+    (e) => e.code === 'LLM_JSON_FAILED'
+  );
+  assert.equal(calls, 2, 'infra re-tenta antes de degradar');
+  assert.match(String(calls), /2/);
+});

@@ -120,6 +120,10 @@ model Prospect {
   revenueEstimate       Int?
   employees             Int?
   industry              String?
+  // Epic 1 (FR4): industry+companyName+tradeName em caixa baixa e SEM acento
+  // (search-text.js) — matching de segmento tolerante a acento/grafia.
+  // Backfill idempotente na migração; mantido nos hooks de escrita.
+  searchText            String?
   city                  String?
   state                 String?
   cnpjEmail             String?
@@ -1486,8 +1490,10 @@ model StudioChatTrace {
   llmTotalTokens      Int?
   llmFallbackUsed    Boolean  @default(false)
   llmTruncated       Boolean  @default(false)
-  status              String   @default("succeeded") // succeeded | failed
+  status              String   @default("succeeded") // succeeded | failed | degraded
   errorCode           String?
+  // Epic 1 (FR3): stack do erro real (nenhum catch descarta a causa — NFR4).
+  errorStack          String?
   actionTypes         Json     @default("[]")
   actionDurationsMs   Json     @default("{}")
   createdAt           DateTime @default(now())

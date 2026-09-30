@@ -2,6 +2,8 @@ const BRASIL_API_BASE_URL = 'https://brasilapi.com.br/api/cnpj/v1';
 // Feature 005: roteamento do card pós-enriquecimento (premium → Análise profunda).
 const { getOrgPlan } = require('./plan');
 const pipelineTransitions = require('./pipeline-transitions');
+// Epic 1 (FR4): searchText normalizado do Prospect mantido no enriquecimento.
+const { withSearchText } = require('./search-text');
 
 function normalizeCnpj(cnpj) {
   return String(cnpj || '').replace(/\D/g, '');
@@ -158,6 +160,9 @@ async function enrichProspectWithCnpj(prisma, prospectOrId) {
       enrichedAt: enrichment.enrichedAt,
     });
     data.enrichmentError = null;
+    // Epic 1 (FR4): o enriquecimento gravou identidade/setor — searchText
+    // recalculado da LINHA FINAL (patch ∪ linha) para o matching de segmento.
+    Object.assign(data, withSearchText(data, prospect));
 
     // Feature 005: premium pousa em "Análise profunda" (análise de IA dispara
     // no gatilho de entrada do estágio); demais planos seguem para "Prontas

@@ -68,30 +68,79 @@ function parseModelJson(content) {
 module.exports = { parseModelJson, balancedObjectSlice };
 
 /**
- * Chamada LLM com expectativa de JSON + reparo (US chat/compose/segment-nl).
+ * Chamada LLM com expectativa de JSON + reparo POR ESTÁGIO (Epic 1, FR1).
  * `buildUser(previousRaw)` recebe null na 1ª tentativa e a resposta inválida
  * nas seguintes (prompt de reparo). `validate` decide se o JSON serve.
  * Resposta truncada (finish_reason=length) vira pedido explícito de concisão
  * no retry — truncado nunca parseia, então o reparo precisa encurtar.
+ *
+ * Dois orçamentos INDEPENDENTES (retry por estágio):
+ *   - `parseAttempts` (default 3): tentativas cuja saída NÃO virou JSON
+ *     utilizável — inclui falhas de infraestrutura do LLM (timeout/HTTP,
+ *     err.code LLM_TIMEOUT/LLM_HTTP_ERROR), que nunca produziram JSON.
+ *   - `validateAttempts` (default 2): tentativas que parsearam mas foram
+ *     rejeitadas pelo `validate` (ex.: critérios fora do catálogo).
+ * O loop segue enquanto sobrar orçamento nos DOIS estágios; o erro final
+ * informa qual estágio esgotou (o trace carrega o errorCode).
  */
-async function callLlmJson(llm, { system, buildUser, validate, maxTokens = 1200, temperature = 0.4, model, tag, attempts = 2 }) {
+/**
+ * Só INFRAESTRUTURA consome orçamento de parse (Epic 1): timeout/HTTP do
+ * gateway e erro de rede cru (undici "fetch failed", ECONN*). Bug de código,
+ * 401/403 de autenticação (têm status) ou qualquer outra exceção vai DIRETO
+ * sem retry — re-tentar não conserta e queima o deadline.
+ */
+function isInfraLlmError(err) {
+  if (!err || typeof err !== 'object') return false;
+  if (err.code === 'LLM_TIMEOUT' || err.code === 'LLM_HTTP_ERROR') return true;
+  if (err.status != null || err.response != null) return false;
+  return /fetch failed|network|econn|etimedout|socket|eai_again|abort/i.test(
+    String(err.message || err.code || '')
+  );
+}
+
+/** Deadline suave: esgotado, nenhum retry NOVO começa (o turno degrada). */
+const RETRY_DEADLINE_MS = 75_000;
+
+async function callLlmJson(llm, { system, buildUser, validate, maxTokens = 1200, temperature = 0.4, model, tag, parseAttempts = 3, validateAttempts = 2 }) {
   let lastRaw = null;
   let lastProblem = null;
   let lastTruncated = false;
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    let user = buildUser(attempt === 1 ? null : lastRaw);
-    if (attempt > 1 && lastTruncated) {
+  let lastLlmError = null;
+  let parseFailures = 0; // saída não virou JSON utilizável (ou LLM falhou)
+  let validateFailures = 0; // parseou, mas o validate rejeitou
+  const startedAt = Date.now();
+
+  while (parseFailures < parseAttempts && validateFailures < validateAttempts) {
+    if (parseFailures + validateFailures > 0 && Date.now() - startedAt > RETRY_DEADLINE_MS) {
+      lastProblem = lastProblem || 'deadline de retry esgotado';
+      break;
+    }
+    const isFirst = parseFailures === 0 && validateFailures === 0;
+    let user = buildUser(isFirst ? null : lastRaw);
+    if (!isFirst && lastTruncated) {
       user += '\n\nIMPORTANTE: sua resposta anterior foi CORTADA por limite de tamanho e ficou um JSON inválido. Responda de forma muito mais concisa (texts curtos, rationale em até 2 frases) garantindo que o JSON feche.';
     }
-    const result = await llm({
-      system,
-      user,
-      jsonMode: true,
-      temperature: attempt === 1 ? temperature : 0,
-      maxTokens,
-      model,
-      tag,
-    });
+    let result;
+    try {
+      result = await llm({
+        system,
+        user,
+        jsonMode: true,
+        temperature: isFirst ? temperature : 0,
+        maxTokens,
+        model,
+        tag,
+      });
+    } catch (err) {
+      // Timeout/HTTP/rede do gateway conta no orçamento do estágio de parse
+      // (nunca produziu JSON) — o retry por estágio cobre gateway instável
+      // antes de degradar o turno. Qualquer outro erro é throw imediato.
+      if (!isInfraLlmError(err)) throw err;
+      parseFailures += 1;
+      lastLlmError = err;
+      lastProblem = `falha de LLM (${err.code || err.message})`;
+      continue;
+    }
     lastRaw = result.content;
     lastTruncated = Boolean(result.truncated);
     const parsed = parseModelJson(result.content);
@@ -100,15 +149,25 @@ async function callLlmJson(llm, { system, buildUser, validate, maxTokens = 1200,
       const problem = validate(parsed);
       if (!problem) return parsed;
       lastProblem = problem;
-    } else if (lastTruncated) {
-      lastProblem = 'resposta truncada por limite de tokens';
+      validateFailures += 1;
     } else {
-      lastProblem = 'resposta não é JSON';
+      parseFailures += 1;
+      lastProblem = lastTruncated ? 'resposta truncada por limite de tokens' : 'resposta não é JSON';
     }
   }
-  const err = new Error(`Resposta não é JSON utilizável após ${attempts} tentativas${lastProblem ? ` (${lastProblem})` : ''}.`);
+
+  const stage = validateFailures >= validateAttempts ? 'validação' : 'parse';
+  const err = new Error(
+    `Resposta não é JSON utilizável — estágio ${stage} esgotado ` +
+      `(${parseFailures} tentativa(s) de parse, ${validateFailures} de validação)` +
+      `${lastProblem ? ` (${lastProblem})` : ''}.` +
+      // A causa raiz de infra (quando houve) vai na mensagem — erro visível.
+      (lastLlmError ? ` Causa raiz: [${lastLlmError.code || 'sem código'}] ${lastLlmError.message}` : '')
+  );
   err.code = 'LLM_JSON_FAILED';
   err.status = 502;
+  err.stage = stage;
+  err.llmCode = lastLlmError ? lastLlmError.code || null : null;
   throw err;
 }
 

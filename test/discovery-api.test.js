@@ -123,6 +123,9 @@ test('import de candidato é idempotente e cria Prospect uma única vez', async 
   assert.strictEqual(firstBody.data.prospectId, secondBody.data.prospectId);
   assert.strictEqual(prisma.prospect.rows.length, 1);
   assert.strictEqual(prisma.prospect.rows[0].cnpj, COMPANY_CNPJ);
+  // Epic 1 (FR4): prospect importado do discovery já nasce com searchText
+  // normalizado (matching de segmento tolerante a acento desde o 1º dia).
+  assert.ok(prisma.prospect.rows[0].searchText, 'prospect importado nasce com searchText');
 });
 
 test('POST /api/prospects/:id/discovery cria job com seed do prospect', async (t) => {

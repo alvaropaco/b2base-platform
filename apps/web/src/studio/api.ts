@@ -765,10 +765,12 @@ export async function grantLeadConsent(
   return data.data;
 }
 
-/** Chip-ação: executa uma action semântica idempotente (FR-9). */
+/** Chip-ação: executa uma action semântica idempotente (FR-9). `actionId` é
+ *  opcional — sem ele, a idempotência é por hash de params (chips de
+ *  recuperação do chat, Epic 1 FR6/FR15: duplo toque é replay no backend). */
 export async function runCampaignAction(
   id: string,
-  input: { type: string; actionId: string; params?: Record<string, unknown> }
+  input: { type: string; actionId?: string; params?: Record<string, unknown> }
 ): Promise<{ card: { type: string; label: string; detail?: string }; campaignStatus: string }> {
   const data = await request<{ data: { card: { type: string; label: string; detail?: string }; campaignStatus: string } }>(
     `/campaigns/${encodeURIComponent(id)}/actions`,

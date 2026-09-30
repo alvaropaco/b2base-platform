@@ -20,9 +20,13 @@ const REGIONS = {
   Sul: ['PR', 'RS', 'SC'],
 };
 
+const { normalizeText } = require('../search-text');
+
 /** Catálogo fechado: campo → operadores permitidos. */
 const FIELD_CATALOG = {
   industry: ['contains', 'equals'],
+  companyName: ['contains', 'equals'], // razão social (Epic 1, FR4)
+  tradeName: ['contains', 'equals'], // nome fantasia (Epic 1, FR4)
   city: ['contains', 'equals'],
   state: ['equals', 'in'],
   region: ['equals', 'in'], // derivada do estado (REGIONS)
@@ -37,6 +41,34 @@ const FIELD_CATALOG = {
   lastContact: ['gte', 'lte'], // datas ISO
   createdAt: ['gte', 'lte'],
 };
+
+/**
+ * Campos de texto livre que compõem `Prospect.searchText` (Epic 1, FR4).
+ * Só eles ganham a busca normalizada por `searchText contains` — `contains`
+ * nos demais campos (status etc.) mantém a semântica literal de sempre.
+ */
+const SEARCHTEXT_FIELDS = new Set(['industry', 'companyName', 'tradeName']);
+
+/**
+ * Termos atômicos normalizados de um valor de busca (Epic 1, FR4/FR6):
+ * frase composta vira lista de termos ("indústrias metalmecânicas" →
+ * ["industrias", "industria", "metalmecanicas", "metalmecanica"]), já em
+ * caixa baixa e sem acento — igual ao searchText do Prospect. Plural simples
+ * gera variantes extras (OR — só aumenta recall, nunca inventa lead).
+ */
+function termVariants(value) {
+  const normalized = normalizeText(value);
+  if (!normalized) return [];
+  // Mínimo 2 caracteres: siglas reais da base ("TI", "RH") não podem sumir.
+  const terms = normalized.split(/[^a-z0-9]+/).filter((t) => t.length >= 2);
+  const variants = new Set();
+  for (const term of terms) {
+    variants.add(term);
+    if (term.length > 4 && term.endsWith('es')) variants.add(term.slice(0, -2));
+    if (term.length > 3 && term.endsWith('s')) variants.add(term.slice(0, -1));
+  }
+  return [...variants];
+}
 
 function badRequest(message) {
   const err = new Error(message);
@@ -83,7 +115,24 @@ function translateCondition({ field, op, value }) {
   // Contains é insensível a caixa: o LLM e o usuário escrevem "tecnologia",
   // a base tem "Tecnologia" — casar sempre (Postgres default é sensível).
   if (op === 'contains') {
-    return { [field]: { contains: value, mode: 'insensitive' } };
+    const literal = { [field]: { contains: value, mode: 'insensitive' } };
+    // Epic 1 (FR4): nos campos do searchText, o termo é normalizado
+    // (lower + sem acento) e quebrado em termos atômicos consultando
+    // `Prospect.searchText` — acento/grafia/frase composta deixam de
+    // impedir o casamento. O OR com o campo estrutural preserva o caso
+    // antigo (linhas ainda sem backfill do searchText).
+    if (!SEARCHTEXT_FIELDS.has(field)) return literal;
+    const branches = [literal];
+    for (const term of termVariants(value)) {
+      branches.push({ searchText: { contains: term } });
+    }
+    return branches.length === 1 ? literal : { OR: branches };
+  }
+  // Epic 1 (FR4): `equals` nos campos do searchText também é tolerante a
+  // acento — o OR com o searchText normalizado casa "Metalúrgica" a partir
+  // de "metalurgica" (o literal preserva linhas ainda sem backfill).
+  if (op === 'equals' && SEARCHTEXT_FIELDS.has(field)) {
+    return { OR: [{ [field]: { equals: value } }, { searchText: { equals: normalizeText(value) } }] };
   }
   return { [field]: { [op]: value } };
 }
@@ -93,6 +142,18 @@ function translateCriteria(criteria) {
   validateCriteria(criteria);
   const AND = criteria.groups.map((group) => {
     const conds = group.conditions.map(translateCondition);
+    // Epic 1 (FR4): condições de texto viram {OR:[...]} cada uma — num grupo
+    // AND com 2+ delas, o assign plano MESCLARIA a chave `OR` e a primeira
+    // condição DESAPARECERIA do where (audiência inflada). Nesse caso o nest
+    // correto é {AND: conds}. Grupo OR não mescla (cada cond já é um ramo) e
+    // uma condição só mantém a forma de sempre.
+    if (
+      group.op === 'AND' &&
+      conds.length > 1 &&
+      conds.some((c) => Object.prototype.hasOwnProperty.call(c, 'OR'))
+    ) {
+      return { AND: conds };
+    }
     return group.op === 'AND' ? Object.assign({}, ...conds) : { OR: conds };
   });
   return { AND };
@@ -189,6 +250,9 @@ async function resolveList(prisma, orgId, items) {
 module.exports = {
   REGIONS,
   FIELD_CATALOG,
+  SEARCHTEXT_FIELDS,
+  normalizeText,
+  termVariants,
   validateCriteria,
   translateCriteria,
   buildWhere,

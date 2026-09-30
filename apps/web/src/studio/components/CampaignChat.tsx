@@ -20,7 +20,7 @@ import { AudiencePanel } from './AudiencePanel';
 import { StudioRequestError, fetchCertificate, runCampaignAction } from '../api';
 import type { CertificateVerdict } from '../types';
 
-interface ChatCard {
+export interface ChatCard {
   type: string;
   label: string;
   detail?: string;
@@ -30,6 +30,42 @@ interface ChatCard {
   /** Card de pareamento WhatsApp: QR como data-url + estado da sessão. */
   qrCode?: string;
   status?: string;
+  /** Epic 1 (FR6): diagnóstico do porquê da audiência ter casado 0 leads. */
+  diagnosis?: string;
+  /** Epic 1 (FR6): proposta materialmente diferente — ação de 1 clique. */
+  suggestedFilter?: { description: string; criteria: unknown; matchedCount: number } | null;
+  /** Epic 1 (FR15/F2): candidatos quando a confirmação de material é ambígua. */
+  candidates?: Array<{ id: string; label: string }>;
+}
+
+/** Chip-ação derivada do card de 0-match (FR6): aplicar o filtro sugerido. */
+export interface RecoveryChip {
+  key: string;
+  label: string;
+  action: { type: string; params: Record<string, unknown> };
+}
+
+/** Decisão de render PURA: botão "Usar este filtro (N leads)" do 0-match. */
+export function zeroMatchFilterChip(card: ChatCard): RecoveryChip | null {
+  if (card.type !== 'audience' || !card.suggestedFilter || !card.suggestedFilter.criteria) return null;
+  const filter = card.suggestedFilter;
+  return {
+    key: 'use-suggested-filter',
+    label: `Usar este filtro (${filter.matchedCount.toLocaleString('pt-BR')} leads)`,
+    action: { type: 'set_audience', params: { description: filter.description, criteria: filter.criteria } },
+  };
+}
+
+/** Decisão de render PURA: chips de desambiguação do material (FR15/F2). */
+export function ambiguousMaterialChips(card: ChatCard): RecoveryChip[] {
+  if (card.type !== 'material_ambiguous' || !Array.isArray(card.candidates)) return [];
+  return card.candidates
+    .filter((c) => c && c.id)
+    .map((c) => ({
+      key: `confirm-material-${c.id}`,
+      label: c.label,
+      action: { type: 'confirm_material', params: { materialId: c.id } },
+    }));
 }
 
 interface ChatMessage {
@@ -265,6 +301,20 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
     }
   };
 
+  /** Chips de recuperação (Epic 1 FR6/FR15): mesmo caminho idempotente dos
+   *  chips-ação (POST /actions). Sem actionId: duplo toque é protegido pelo
+   *  hash de params no backend. */
+  const applyRecoveryChip = async (chip: RecoveryChip) => {
+    setError(null);
+    try {
+      await runCampaignAction(campaignId, { type: chip.action.type, params: chip.action.params });
+      await load();
+      onStateChange?.();
+    } catch (err) {
+      setError(err instanceof StudioRequestError ? err.message : 'Falha ao aplicar a ação');
+    }
+  };
+
   const status: string | undefined = state?.campaign.status;
   const statusReason: string | null | undefined = state?.campaign.statusReason;
   const isRunning = status === 'running';
@@ -333,6 +383,8 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
         </div>
       );
     }
+    const filterChip = zeroMatchFilterChip(card);
+    const materialChips = ambiguousMaterialChips(card);
     return (
       <div key={i} className="cockpit-glass rounded-xl p-3 text-xs">
         <p className="font-semibold text-foreground">
@@ -340,6 +392,33 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
           {card.replayed && <span className="ml-1 font-normal text-muted-foreground">(já feito — nada duplicado)</span>}
         </p>
         {card.detail && <p className="mt-0.5 text-muted-foreground">{card.detail}</p>}
+        {/* Epic 1 (FR6): diagnóstico do 0-match em linguagem simples. */}
+        {card.diagnosis && <p className="mt-1.5 leading-relaxed text-muted-foreground">{card.diagnosis}</p>}
+        {/* Epic 1 (FR6): proposta materialmente diferente — 1 clique aplica. */}
+        {filterChip && (
+          <button
+            type="button"
+            onClick={() => void applyRecoveryChip(filterChip)}
+            className="mt-2 rounded-full bg-[#160211] px-3 py-1.5 text-[11px] font-medium text-white shadow-md transition-transform hover:brightness-110"
+          >
+            {filterChip.label}
+          </button>
+        )}
+        {/* Epic 1 (FR15/F2): desambiguação — cada candidato é um chip vivo. */}
+        {materialChips.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {materialChips.map((chip) => (
+              <button
+                key={chip.key}
+                type="button"
+                onClick={() => void applyRecoveryChip(chip)}
+                className="rounded-full border border-[#160211]/10 bg-white px-3 py-1.5 text-[11px] font-medium text-foreground shadow-sm transition-colors hover:bg-accent"
+              >
+                {chip.label}
+              </button>
+            ))}
+          </div>
+        )}
         {card.sources && card.sources.length > 0 && (
           <p className="mt-1.5 text-muted-foreground">
             <span className="font-medium text-foreground/70">Fontes dos dados:</span> {card.sources.join(' · ')}

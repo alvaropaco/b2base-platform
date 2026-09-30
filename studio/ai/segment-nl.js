@@ -15,16 +15,38 @@ const segmentService = require('../segment-service');
 function createSegmentNl({ callLlm } = {}) {
   const llm = callLlm || require('../../llm-client').callLlm;
 
-  async function fromPrompt(prompt) {
+  /**
+   * `samples` = { industries: [...], companies: [...] } — amostra (≤30
+   * valores) dos valores REAIS da org (Epic 1, FR5): o prompt fica ancorado
+   * na base em vez de inventar setores que não existem nela.
+   */
+  async function fromPrompt(prompt, { samples = {} } = {}) {
     const fields = Object.entries(segmentService.FIELD_CATALOG)
       .map(([field, ops]) => `- ${field}: ${ops.join(', ')}`)
       .join('\n');
+
+    const sampleLines = [];
+    if (Array.isArray(samples.industries) && samples.industries.length > 0) {
+      sampleLines.push(
+        `SETORES REAIS desta base (amostra): ${samples.industries.map((v) => String(v).slice(0, 60)).join(' | ')}`.slice(0, 1600)
+      );
+    }
+    if (Array.isArray(samples.companies) && samples.companies.length > 0) {
+      sampleLines.push(
+        `EMPRESAS REAIS desta base (amostra): ${samples.companies.map((v) => String(v).slice(0, 60)).join(' | ')}`.slice(0, 1600)
+      );
+    }
 
     const buildUser = (previousRaw) => {
       const base = [
         'Traduza o pedido abaixo para critérios de segmento. Campos/operadores PERMITIDOS (use somente estes):',
         fields,
         'Regiões do Brasil válidas para o campo "region": Norte, Nordeste, Centro-Oeste, Sudeste, Sul.',
+        ...(sampleLines.length ? sampleLines : []),
+        'TERMOS ATÔMICOS (Epic 1, FR4): NUNCA use frase composta num único `value` — quebre o pedido em',
+        'palavras individuais, uma condição por termo, combinadas com OR (grupo op "OR"). Ex.: "indústrias',
+        'metalmecânicas" vira condições com "metalúrgica", "metalmecânica" (cada uma num `value` próprio).',
+        'Prefira a grafia dos valores reais da base quando ela tiver algo parecido com o pedido.',
         'Responda SOMENTE com JSON:',
         '{"criteria":{"version":1,"groups":[{"op":"AND","conditions":[{"field":"...","op":"...","value":"..."}]}]},"rationale":"em NO MÁXIMO 2 frases, por que estes critérios representam o pedido"}',
         'Pedido:',

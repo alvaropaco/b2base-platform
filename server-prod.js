@@ -56,6 +56,8 @@ const natsEnrichment = require('./nats-enrichment');
 const csvImport = require('./csv-import');
 const leadEnrichment = require('./lead-enrichment');
 const enrichmentGraph = require('./enrichment-graph');
+// Epic 1 (FR4): searchText normalizado do Prospect mantido em toda escrita.
+const { withSearchText } = require('./search-text');
 const { computeContactDecision } = require('./contact-decision');
 // Regras de transição do pipeline (feature 005) — módulo puro testável.
 const pipelineTransitions = require('./pipeline-transitions');
@@ -1489,6 +1491,8 @@ app.post('/api/prospects', async (req, res) => {
         employees: employees || 0,
         revenueEstimate: revenueEstimate || 0,
         opportunityScore: 65,
+        // Epic 1 (FR4): searchText normalizado p/ matching de segmento.
+        ...withSearchText({ companyName, industry: industry || '' }),
         orgId: targetOrgId
       }
     });
@@ -1805,7 +1809,9 @@ app.put('/api/prospects/:id', async (req, res) => {
 
     const prospect = await prisma.prospect.update({
       where: { id: req.params.id },
-      data: body
+      // Epic 1 (FR4): searchText recalculado da LINHA FINAL (patch ∪ linha) —
+      // updates parciais nunca deixam o searchText defasado.
+      data: { ...body, ...withSearchText(body, previous) }
     });
 
     // Dispara enriquecimento quando o lead entra na esteira de "Em Qualificação"
@@ -2109,6 +2115,13 @@ app.post('/api/prospects/import-csv', async (req, res) => {
             ...(record.cnpjPhones ? { cnpjPhones: record.cnpjPhones } : {}),
             employees: record.employees,
             revenueEstimate: record.revenueEstimate,
+            // Epic 1 (FR4): import CSV já nasce com searchText normalizado —
+            // a audiência descrita no chat casa desde o primeiro dia.
+            ...withSearchText({
+              industry: record.industry,
+              companyName: record.companyName,
+              tradeName: record.tradeName,
+            }),
             // Feature 005 (FR-002): todo lead importado entra em "Em
             // Qualificação" — o estágio 'lead' não existe mais. Sem CNPJ,
             // fica com enrichmentStatus 'unavailable' até a chave ser
@@ -3245,6 +3258,12 @@ async function importDiscoveredCompanyForOrg(orgId, data) {
       cnpjEmail: importEmail || null,
       cnpjOpenedAt: importOpeningDate ? new Date(importOpeningDate) : null,
       cnpjLegalNature: importLegalNature || null,
+      // Epic 1 (FR4): searchText normalizado já na importação de discovery.
+      ...withSearchText({
+        companyName: legalName || tradeName || normalizedCnpj,
+        tradeName: tradeName || null,
+        industry: industry || null,
+      }),
       // Feature 005 (FR-002): todo lead novo entra em "Em Qualificação",
       // independentemente do status da empresa descoberta.
       status: 'prospect',
@@ -3383,6 +3402,16 @@ app.post('/api/prospects/:id/enrich-mcp', async (req, res) => {
         cnpjEmail: company.email || prospect.cnpjEmail,
         cnpjOpenedAt: company.openingDate ? new Date(company.openingDate) : prospect.cnpjOpenedAt,
         cnpjLegalNature: company.legalNature || prospect.cnpjLegalNature,
+        // Epic 1 (FR4): enriquecimento muda identidade/setor → searchText
+        // recalculado da linha final.
+        ...withSearchText(
+          {
+            companyName: company.legalName || prospect.companyName,
+            tradeName: company.tradeName || prospect.tradeName,
+            industry: company.industry || prospect.industry,
+          },
+          prospect
+        ),
         enrichmentStatus: 'enriched',
         enrichmentSource: 'mcp.cnpj',
         enrichmentError: null,

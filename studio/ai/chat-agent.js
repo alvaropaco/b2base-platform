@@ -46,6 +46,11 @@ const SYSTEM_PROMPT = [
   'Se mensagens ANTERIORES da conversa (suas ou do usuário) mencionarem interesse, engajamento ou percentuais',
   'de leads, trate como inválido: não repita nem confirme esses números — o estado atual é a única fonte.',
   '',
+  'DECISÃO FECHADA (Epic 1, FR2): o bloco audienciaDecidida do estado é UM FATO decidido pelo usuário —',
+  'critérios de audiência já fechados, com contagem do snapshot ativo. NUNCA re-pergunte o que já está',
+  'decidido ali; referencie os critérios quando for relevante e só proponha mudança se o usuário pedir.',
+  'Pergunte uma vez, nunca mais.',
+  '',
   'LIMITES E BLOQUEIOS DE ENVIO (Orçamento de Reputação): cada canal (e-mail, WhatsApp) tem um saldo de envios',
   'com piso e teto. Abaixo do piso, disparos ficam BLOQUEADOS. E-mail também exige domínio autenticado',
   '(SPF/DKIM/DMARC); WhatsApp exige pareamento por QR. Quando o usuário perguntar sobre limites, saldo,',
@@ -80,6 +85,11 @@ function buildStateBlock(campaign, extras = {}) {
       oferta: campaign.offer || null,
       canais: campaign.channels,
       audiencia: extras.audienceCount ?? null,
+      // FATO decidido pelo usuário (FR2) — nunca re-perguntar (ver SYSTEM_PROMPT).
+      // Só entra quando materializou >0 com snapshot ativo (chat-routes);
+      // decisões sem contagem válida vão como HISTÓRICO, sem a regra.
+      audienciaDecidida: extras.audienceCriteria || null,
+      audienciaHistorico: extras.audienceHistory || null,
       audienciaLeads: extras.audienceLeadSample || [],
       audienciaDisponiveis: extras.audienceAvailableSample || [],
       conteudos: extras.contentSummary || [],
@@ -117,6 +127,37 @@ function buildHistoryBlock(history) {
     .join('\n')}`;
 }
 
+/**
+ * Degradação honesta (Epic 1, FR1/UX-DR4): a resposta explica o que NÃO foi
+ * alterado (chips leigos, zero jargão) e dá o próximo passo — nunca o
+ * "problema técnico" seco que virava beco sem saída. Stack fica só no
+ * servidor/trace, nunca ao usuário.
+ */
+function buildDegradedReply(unchanged) {
+  const chips = {
+    leads: 'seus leads não foram tocados ✓',
+    conteudos: 'seus conteúdos continuam do mesmo jeito ✓',
+    materiais: 'seus materiais continuam guardados ✓',
+    agenda: 'o agendamento não foi alterado ✓',
+  };
+  const parts = unchanged.map((phase) => chips[phase]).filter(Boolean);
+  return [
+    'Não consegui concluir o processamento da sua última mensagem agora — tive um problema técnico do meu lado.',
+    ...(parts.length ? parts : ['a campanha segue exatamente como estava ✓']),
+    'Tenta de novo em 1 minuto — se persistir, me diga com outras palavras.',
+  ].join(' ');
+}
+
+/** Fases que existem na campanha e que o turno NÃO conseguiu concluir. */
+function unchangedPhases(campaign, extras = {}) {
+  const unchanged = ['leads'];
+  if (Array.isArray(extras.contentSummary) && extras.contentSummary.length > 0) unchanged.push('conteudos');
+  if (Array.isArray(extras.materials) && extras.materials.some((m) => m.confirmed)) unchanged.push('materiais');
+  const schedule = campaign.schedule || {};
+  if (schedule.mode || (Array.isArray(schedule.windows) && schedule.windows.length > 0)) unchanged.push('agenda');
+  return unchanged;
+}
+
 function createChatAgent({ callLlm } = {}) {
   const llm = callLlm || require('../../llm-client').callLlm;
 
@@ -133,9 +174,10 @@ function createChatAgent({ callLlm } = {}) {
       .join('\n\n');
 
     // Telemetria por tentativa (StudioChatTrace via onLlmCall) + reparo de
-    // JSON em 2 tentativas (truncado → pedido de concisão; inválido → a
-    // resposta anterior volta no prompt). Falhar aqui é falha do MODELO, não
-    // do usuário — o fallback final diz isso honestamente.
+    // JSON POR ESTÁGIO (3 tentativas de parse + 2 de validação, com deadline
+    // suave — json.js): truncado → pedido de concisão; inválido → a resposta
+    // anterior volta no prompt. Falhar aqui é falha do MODELO, não do
+    // usuário — o fallback final diz isso honestamente.
     const instrumented = async (opts) => {
       const startedAt = Date.now();
       try {
@@ -179,12 +221,23 @@ function createChatAgent({ callLlm } = {}) {
       return {
         reply: parsed.reply,
         actions: Array.isArray(parsed.actions) ? parsed.actions.filter((a) => a && a.type) : [],
+        degraded: false,
       };
-    } catch (_err) {
+    } catch (err) {
+      // Erro visível (NFR4/FR3): a causa NUNCA é descartada — log com stack
+      // no servidor e errorCode+errorStack no retorno (viram trace
+      // persistido pelo chat-routes). A resposta é degradação explicável,
+      // não beco sem saída.
+      console.error('[studio/chat] orchestrator failed:', err.stack || String(err));
+      const unchanged = unchangedPhases(campaign, extras);
       return {
-        reply:
-          'Tive um problema técnico para processar sua mensagem agora — nada foi alterado na campanha. Pode enviar de novo? Se persistir, me diga com outras palavras.',
+        reply: buildDegradedReply(unchanged),
         actions: [{ type: 'none' }],
+        degraded: true,
+        errorCode: err.code || 'LLM_TURN_FAILED',
+        errorStack: String(err.stack || err),
+        unchanged,
+        nextStep: 'tente de novo em 1 minuto',
       };
     }
   }

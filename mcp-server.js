@@ -31,6 +31,7 @@ const {
   listEnrichedProspects,
   formatEnrichedProspect,
 } = require("./cnpj-enrichment");
+const { withSearchText } = require("./search-text");
 
 // Initialize Prisma client
 const prisma = new PrismaClient();
@@ -524,6 +525,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           employees: employees || 0,
           revenueEstimate: revenue_estimate || 0,
           opportunityScore: 65, // Default score
+          // Epic 1 (FR4): searchText normalizado — irmão do server-prod.js e
+          // do cnpj-enrichment.js (matching de segmento tolerante a acento).
+          ...withSearchText({ companyName: company_name, industry }),
           orgId,
         },
       });

@@ -130,7 +130,16 @@ async function _chatCompletion({ system, user, temperature, maxTokens, jsonMode,
       }),
     });
   } catch (err) {
-    if (err.name === 'AbortError') throw new Error(`llm_timeout_${timeoutMs}ms`);
+    // Epic 1 (FR3): abort E timeouts de rede do undici (TypeError com code
+    // UND_ERR_SOCKET/UND_ERR_CONNECT_TIMEOUT/UND_ERR_ABORTED — NÃO AbortError)
+    // viram LLM_TIMEOUT; sem isso o errorCode do StudioChatTrace nascia null
+    // e a telemetria escondia a causa.
+    const errCode = String((err && err.code) || '');
+    if (err.name === 'AbortError' || errCode.startsWith('UND_ERR_')) {
+      const timeoutErr = new Error(`llm_timeout_${timeoutMs || DEFAULT_TIMEOUT_MS}ms`);
+      timeoutErr.code = 'LLM_TIMEOUT';
+      throw timeoutErr;
+    }
     throw err;
   } finally {
     clearTimeout(timer);
@@ -142,7 +151,10 @@ async function _chatCompletion({ system, user, temperature, maxTokens, jsonMode,
       const body = await res.json();
       detail = body && body.error && body.error.message ? `: ${body.error.message}` : '';
     } catch (_) { /* corpo não-JSON */ }
-    throw new Error(`LiteLLM HTTP ${res.status}${detail}`);
+    const httpErr = new Error(`LiteLLM HTTP ${res.status}${detail}`);
+    httpErr.code = 'LLM_HTTP_ERROR';
+    httpErr.status = res.status;
+    throw httpErr;
   }
 
   const json = await res.json();
