@@ -22,6 +22,7 @@
 const nodemailer = require('nodemailer');
 const { encrypt, decrypt } = require('./gmail-auth');
 const gmailApi = require('./gmail-api');
+const reputation = require('./studio/reputation');
 
 const PROVIDERS = ['gmail', 'smtp', 'resend'];
 
@@ -314,6 +315,7 @@ async function connectEmailAccount(
     throw new Error(provider === 'smtp' ? 'Senha/App Password obrigatória.' : 'API key obrigatória.');
   }
 
+  let resendDomain = null;
   if (provider === 'smtp') {
     await verifySMTPCredentials({ host: smtpHost, port: smtpPort, secure: smtpSecure, user: email, password: secret });
   } else {
@@ -321,11 +323,11 @@ async function connectEmailAccount(
     // O Resend só entrega "from" de domínios verificados — falha cedo,
     // na conexão, em vez de falhar silenciosamente em cada envio.
     const verified = domains.filter((d) => d.status === 'verified').map((d) => d.name.toLowerCase());
-    const fromDomain = email.split('@')[1]?.toLowerCase();
-    if (!verified.includes(fromDomain)) {
+    resendDomain = email.split('@')[1]?.toLowerCase();
+    if (!verified.includes(resendDomain)) {
       const options = verified.length ? verified.join(', ') : 'nenhum domínio verificado';
       throw new Error(
-        `O domínio "${fromDomain}" não está verificado no Resend (verificados: ${options}). ` +
+        `O domínio "${resendDomain}" não está verificado no Resend (verificados: ${options}). ` +
         'Configure SPF/DKIM do domínio no painel do Resend ou use um endereço em domínio verificado.'
       );
     }
@@ -345,6 +347,25 @@ async function connectEmailAccount(
           smtpSecure: Boolean(smtpSecure) || smtpPort === 465,
         }
       : {}),
+    // Domínio verificado NO PROVEDOR: o Resend só ativa um domínio depois de
+    // SPF/DKIM confirmados no DNS dele. Registrar na conexão evita o falso
+    // "0 envios disponíveis" (piso efetivo engolindo o saldo inteiro) para
+    // quem conecta via Resend; a revalidação de fundo segue no job diário.
+    ...(provider === 'resend' && resendDomain
+      ? {
+          sendingDomain: resendDomain,
+          domainAuthStatus: 'verified',
+          domainAuthDetail: {
+            domain: resendDomain,
+            spf: true,
+            dkim: true,
+            dmarc: false,
+            verified: true,
+            source: 'resend-connect',
+          },
+          domainAuthVerifiedAt: new Date(),
+        }
+      : {}),
     ...(fromName ? { fromName } : {}),
   };
 
@@ -361,15 +382,34 @@ async function connectEmailAccount(
   });
   const tenantId = owner?.orgId || userId; // fallback defensivo
 
-  if (existing) {
-    return prisma.emailAccount.update({
-      where: { id: existing.id },
-      data: { ...data, tenantId },
-    });
+  const account = existing
+    ? await prisma.emailAccount.update({
+        where: { id: existing.id },
+        data: { ...data, tenantId },
+      })
+    : await prisma.emailAccount.create({
+        data: { ...data, userId, tenantId },
+      });
+
+  // Espelha na conta de reputação do Studio (writer único do saldo) para o
+  // piso efetivo voltar a valer sem esperar o job diário de DNS. Falha aqui
+  // não desfaz a conexão — o job diário reconcilia; a causa fica logada.
+  if (provider === 'resend' && resendDomain) {
+    try {
+      await reputation.recordDomainAuth(prisma, tenantId, {
+        status: 'verified',
+        checkedAt: account.domainAuthVerifiedAt,
+        detail: account.domainAuthDetail,
+      });
+    } catch (_err) {
+      console.error(
+        '[email-provider] conta conectada, mas falhou ao registrar domínio autenticado na conta de reputação',
+        _err
+      );
+    }
   }
-  return prisma.emailAccount.create({
-    data: { ...data, userId, tenantId },
-  });
+
+  return account;
 }
 
 module.exports = {

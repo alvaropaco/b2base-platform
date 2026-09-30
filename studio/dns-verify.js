@@ -30,9 +30,10 @@ function hasSpf(records) {
 
 /**
  * DKIM: procura um seletor comum sob `._domainkey.<domain>` — gmail usa
- * `google._domainkey`. Verifica qualquer um dos seletores padrão.
+ * `google._domainkey`, Resend publica `resend._domainkey`. Verifica qualquer
+ * um dos seletores padrão.
  */
-const DKIM_SELECTORS = ['google', 'default', 'selector1', 's1', 'k1', 'dkim'];
+const DKIM_SELECTORS = ['google', 'default', 'selector1', 's1', 'k1', 'dkim', 'resend'];
 
 async function checkDomain(domain, resolver = RESOLVER) {
   const detail = { domain, spf: false, dkim: false, dmarc: false };

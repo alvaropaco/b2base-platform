@@ -67,6 +67,19 @@ test('checkDomain: DKIM legítimo sem "dkim" no valor (só "p=") NÃO é falso-n
   assert.equal(result.verified, true);
 });
 
+test('checkDomain: DKIM do Resend (seletor resend._domainkey) é reconhecido', async () => {
+  const RESOLVER_RESEND = {
+    resolveTxt: async (name) => {
+      if (name === 'resend._domainkey.empresa.com') return [['v=DKIM1; k=rsa; p=MIIBIjANBg']];
+      if (name === 'empresa.com') return [['v=spf1 include:amazonses.com ~all']];
+      return [];
+    },
+  };
+  const result = await dnsVerify.checkDomain('empresa.com', RESOLVER_RESEND);
+  assert.equal(result.dkim, true, 'domínio configurado no Resend publica resend._domainkey');
+  assert.equal(result.verified, true, 'revalidação diária não derruba o que a conexão registrou');
+});
+
 test('verifyOrgDomain: verifica, persiste no EmailAccount e na account de saldo', async () => {
   const prisma = seedOrg(createFakePrisma());
   const result = await dnsVerify.verifyOrgDomain(prisma, 'org-1', { resolver: RESOLVER_OK });
