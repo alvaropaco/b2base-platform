@@ -69,6 +69,18 @@ function actionParams(action) {
     case 'attach_files':
       // B18: ids ordenados — a chave de idempotência não depende da ordem.
       return { attachmentIds: (Array.isArray(action.attachmentIds) ? action.attachmentIds : []).map(String).sort() };
+    case 'capture_leads':
+      // Epic 2 (FR7): o pedido INTEIRO entra no hash de idempotência — repetir
+      // a mesma captura devolve o MESMO card sem re-executar (AD-6). query só
+      // passa quando é string: coerção aqui esconderia o typeof check do
+      // manifest ("[object Object]" nunca vira busca).
+      return {
+        query: typeof action.query === 'string' ? action.query : null,
+        state: typeof action.state === 'string' ? action.state : null,
+        city: typeof action.city === 'string' ? action.city : null,
+        cnae: typeof action.cnae === 'string' ? action.cnae : null,
+        limit: Number(action.limit) || null,
+      };
     case 'edit_content':
       // Só os campos que REALMENTE vieram entram nos params (campo ausente
       // nunca vira null — null não pode apagar subject/emailDoc/ctaUrl) e a
@@ -266,6 +278,13 @@ function registerChatRoutes(router, context) {
   const chatAgent = createChatAgent(aiDeps);
   const composer = createComposer(aiDeps);
   const materialService = createMaterialService(prisma, aiDeps);
+  // Epic 2 (FR7/D1): captura híbrida — dependências injetáveis para os testes
+  // (fake-prisma não suporta $queryRaw: `vectorSearch` real vive atrás dela).
+  const captureService = require('./capture-service').createCaptureService(prisma, {
+    embedTexts: overrides.embedTexts,
+    vectorSearch: overrides.vectorSearch,
+    mcp: overrides.mcpCnpj,
+  });
 
   /**
    * Epic 1 (FR15/F2): resolve a referência do material DENTRO da org — id
@@ -340,6 +359,55 @@ function registerChatRoutes(router, context) {
       }
     }
     manifest.validate(action.type, params);
+    // Epic 2: recusa/limite/sem-resultado da captura NUNCA persistem replay —
+    // gravar a recusa como run 'succeeded' faria a MESMA params devolver a
+    // recusa velha para sempre (mesmo depois de configurar o token). Então a
+    // captura executa FORA do runIdempotent e SÓ 'captured' grava run; replay
+    // de captura feita continua valendo (chave params idêntica → card replayed).
+    if (action.type === 'capture_leads') {
+      const key = manifest.actionKey({ orgId, campaignId: campaign.id, action: action.type, params, actionId: action.actionId || null });
+      const prior = key && prisma.studioActionRun
+        ? await prisma.studioActionRun.findFirst({ where: { actionKey: key } })
+        : null;
+      if (prior && prior.status === 'succeeded' && prior.result && prior.result.status === 'captured') {
+        return { ...prior.result, replayed: true };
+      }
+      const captureResult = await captureService.captureLeads({
+        orgId,
+        query: action.query,
+        state: action.state,
+        city: action.city,
+        cnae: action.cnae,
+        limit: action.limit,
+      });
+      const captureCard = buildCaptureCard(captureResult);
+      if (captureResult.status === 'captured' && key && prisma.studioActionRun) {
+        // Mesmo padrão do runIdempotent: run gravada succeeded com o card.
+        if (prior) {
+          await prisma.studioActionRun.updateMany({
+            where: { actionKey: key },
+            data: { status: 'succeeded', result: captureCard },
+          });
+        } else {
+          try {
+            await prisma.studioActionRun.create({
+              data: { orgId, campaignId: campaign.id, action: action.type, actionKey: key, status: 'succeeded', result: captureCard },
+            });
+          } catch (err) {
+            if (err && err.code === 'P2002') {
+              // Corrida: outra execução criou a run — atualiza a do vencedor.
+              await prisma.studioActionRun.updateMany({
+                where: { actionKey: key },
+                data: { status: 'succeeded', result: captureCard },
+              }).catch(() => {});
+            } else {
+              throw err;
+            }
+          }
+        }
+      }
+      return captureCard;
+    }
     const { result, replayed } = await manifest.runIdempotent(prisma, {
       orgId,
       campaignId: campaign.id,
@@ -712,6 +780,90 @@ function buildAudienceCard({ snapshot, baseCount, rationaleText, label = 'Audiê
   };
 }
 
+/**
+ * Card de captura (Epic 2, FR7/FR9/UX-DR3): tom mordomo, contagem e
+ * PROVENIÊNCIA POR LOTE ("da sua base" / "encontrado via CNPJ") — confiança
+ * visível. Chip de 1 clique (padrão suggestedFilter do Epic 1) materializa a
+ * audiência com os capturados. Recusas/limite são explicáveis com quando-libera.
+ */
+function buildCaptureCard(result) {
+  const base = { type: 'capture' };
+  // Zero-framing: MCP consultado mas nada virou lead (só duplicados/inválidos
+  // ou base 0 + MCP 0) — card PRÓPRIO e honesto, nunca "Leads capturados" vazio.
+  if (result.status === 'no_results') {
+    return {
+      ...base,
+      status: 'no_results',
+      label: 'Não encontrei leads novos agora',
+      detail:
+        `Não encontrei leads novos para "${result.query}" — o que veio já estava na sua base ou não tinha dados suficientes ` +
+        `para virar lead. Tente outro termo (setor mais amplo ou outra palavra) ou me diga estado/cidade para eu variar a busca. ` +
+        `Nada foi criado.`,
+      mode: result.mode,
+      duplicates: result.duplicates || 0,
+      suggestedFilter: null,
+    };
+  }
+  if (result.status === 'captured') {
+    const lots = [];
+    if (result.baseOwnCount > 0) lots.push(`${result.baseOwnCount} da sua base`);
+    if (result.mcpCount > 0) lots.push(`${result.mcpCount} encontrado(s) via CNPJ`);
+    const modeNote = result.mode === 'lexical-only'
+      ? ' A busca por significado está indisponível agora — usei a busca por palavras, que já encontra pelo setor e pelo nome.'
+      : '';
+    const dupNote = result.duplicates > 0 ? ` ${result.duplicates} já estavam na sua base e não foram duplicados.` : '';
+    return {
+      ...base,
+      status: 'captured',
+      label: 'Leads capturados',
+      detail: `${lots.join(' + ')}. Nada foi enviado — os leads ficam prontos para você usar.${dupNote}${modeNote}`,
+      captureSource: result.source,
+      mode: result.mode,
+      baseOwnCount: result.baseOwnCount,
+      mcpCount: result.mcpCount,
+      duplicates: result.duplicates || 0,
+      // Contador do dia TAL COMO a contagem DB reproduz (re-contagem do
+      // capture-service) — o card nunca reporta número que o banco não confirma.
+      capturedToday: result.capturedToday,
+      dailyLimit: result.dailyLimit,
+      suggestedFilter: Array.isArray(result.prospectIds) && result.prospectIds.length
+        ? { description: 'audiência com os leads capturados agora', prospectIds: result.prospectIds, matchedCount: result.prospectIds.length }
+        : null,
+    };
+  }
+  if (result.status === 'limit_reached') {
+    return {
+      ...base,
+      status: 'limit_reached',
+      label: 'Limite do dia atingido — amanhã libera mais',
+      detail:
+        `Você capturou ${result.capturedToday} lead(s) novo(s) hoje e o limite diário é ${result.dailyLimit} — ` +
+        `a meia-noite o contador zera e você pode capturar de novo. Nada foi criado além do que já estava pronto; ` +
+        `enquanto isso, posso montar a audiência com quem você já tem — é só pedir.`,
+      capturedToday: result.capturedToday,
+      dailyLimit: result.dailyLimit,
+    };
+  }
+  // Recusa explicável (FR9): sem token MCP (ou erro dele) — NENHUM lead criado,
+  // e o card diz o que falta. Zero invenção: a base própria segue como está.
+  // Copy NUNCA cita env interna (o vendedor não age sobre variável de ambiente).
+  const why = result.reason === 'mcp_error'
+    ? 'A consulta pública de CNPJ não respondeu agora.'
+    : 'A busca fora da sua base ainda não está conectada neste workspace.';
+  return {
+    ...base,
+    status: 'refused',
+    label: 'Não consegui trazer leads novos agora',
+    detail:
+      `${why} Sua base tem ${result.ownCount} lead(s) parecido(s) com o que você pediu — abaixo do mínimo (${result.minOwn}) ` +
+      `para um lote útil, então NENHUM lead foi criado. Peça ao administrador para configurar o acesso ao CNPJ e tente de novo ` +
+      `— ou trabalhe com a sua base atual.`,
+    reason: result.reason,
+    mode: result.mode,
+    ownCount: result.ownCount,
+  };
+}
+
 // ── Epic 1 (FR6): recuperação determinística de audiência 0-match ───────────
 // 0 leads com base populada não é beco sem saída: o card ganha diagnóstico do
 // porquê (campo consultado × amostra real da org) e proposta de critério
@@ -1001,6 +1153,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     start_whatsapp_pairing: 'Preparando o pareamento do WhatsApp…',
     attach_files: 'Vinculando anexos à campanha…',
     edit_content: 'Atualizando o conteúdo…',
+    capture_leads: 'Capturando leads…',
   };
 
   async function persistChatTrace({ campaignId, orgId, turnIndex, startedAt, llmTelemetry, actionTypes, actionDurationsMs, status = 'succeeded', errorCode = null, errorStack = null }) {
@@ -1133,7 +1286,9 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     // Ordem canônica: set_audience REMATERIALIZA a seleção — se o modelo
     // emits select_leads antes e set_audience depois, o set apaga a seleção
     // que acabou de ser feita (regressão QA E2E 2026-09-28, estado-consistente).
-    const ACTION_ORDER = { set_objective: 0, set_audience: 1, attach_url: 2, confirm_material: 3, generate_content: 4, select_leads: 5, set_schedule: 6, attach_files: 7, edit_content: 8 };
+    // Epic 2: capture_leads por ÚLTIMO (9) — a captura existe para os turnos
+    // que pedem leads novos; nunca reordena as fases canônicas anteriores.
+    const ACTION_ORDER = { set_objective: 0, set_audience: 1, attach_url: 2, confirm_material: 3, generate_content: 4, select_leads: 5, set_schedule: 6, attach_files: 7, edit_content: 8, capture_leads: 9 };
     const orderedActions = [...actions].sort(
       (a, b) => (ACTION_ORDER[a?.type] ?? 9) - (ACTION_ORDER[b?.type] ?? 9)
     );
@@ -1350,7 +1505,13 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
   router.post('/campaigns/:id/actions', async (req, res, next) => {
     try {
       const { orgId, userId } = req.studio;
-      await context.requirePremiumOrg(orgId);
+      // D2 (Epic 2): capture_leads E select_leads (o chip do card de captura
+      // materializa a audiência — audiência é core, não premium) ficam FORA do
+      // gate premium; as demais ações mantêm o gating de sempre.
+      const actionType = String((req.body || {}).type || '');
+      if (actionType !== 'capture_leads' && actionType !== 'select_leads') {
+        await context.requirePremiumOrg(orgId);
+      }
       const campaign = await loadCampaign(prisma, orgId, req.params.id);
       const body = req.body || {};
       const action = {

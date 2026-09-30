@@ -17,6 +17,7 @@
  *  - set_schedule    {mode, windows?, hourlyLimit?, dailyLimit?, timezone?}
  *  - show_balance    {}                       → card do Orçamento de Reputação com passo a passo
  *  - start_whatsapp_pairing {}                → QR do WAHA no próprio chat
+ *  - capture_leads   {query, state?, city?, cnae?, limit?} → captura híbrida de leads (Epic 2)
  *  - none
  */
 
@@ -46,6 +47,13 @@ const SYSTEM_PROMPT = [
   'Se mensagens ANTERIORES da conversa (suas ou do usuário) mencionarem interesse, engajamento ou percentuais',
   'de leads, trate como inválido: não repita nem confirme esses números — o estado atual é a única fonte.',
   '',
+  'CAPTURA DE LEADS (Epic 2): quando o usuário pedir MAIS leads ("capture mais leads", "capture leads da base",',
+  '"encontre empresas novas de X"), inclua a action capture_leads: {"type":"capture_leads","query":"<termo curto do setor>"}',
+  '  - query é OBRIGATÓRIA e é um TERMO DE SETOR curto (ex.: "equipamentos agrícolas"), não a frase do usuário inteira;',
+  '  - filtros opcionais: "state" (UF), "city", "cnae" (termo do ramo), "limit" (quantidade, default 25);',
+  '  - a captura busca PRIMEIRO na base do próprio usuário e, se não bastar, no CNPJ público — nunca prometa',
+  '    leads que não vieram no card; apresente contagem e proveniência (da base dele / via CNPJ).',
+  '',
   'DECISÃO FECHADA (Epic 1, FR2): o bloco audienciaDecidida do estado é UM FATO decidido pelo usuário —',
   'critérios de audiência já fechados, com contagem do snapshot ativo. NUNCA re-pergunte o que já está',
   'decidido ali; referencie os critérios quando for relevante e só proponha mudança se o usuário pedir.',
@@ -68,6 +76,7 @@ const SYSTEM_PROMPT = [
   '            {"type":"attach_url","url":"https://..."},',
   '            {"type":"confirm_material","materialId":"..."},',
   '            {"type":"generate_content","tones":["formal","comercial"]},',
+  '            {"type":"capture_leads","query":"equipamentos agrícolas","limit":25},',
   '            {"type":"set_schedule","mode":"scheduled","windows":[{"days":[1,2,3,4,5],"startHour":9,"endHour":18}],"hourlyLimit":20,"dailyLimit":100,"timezone":"America/Sao_Paulo"},',
   '            {"type":"show_balance"},',
   '            {"type":"start_whatsapp_pairing"},',

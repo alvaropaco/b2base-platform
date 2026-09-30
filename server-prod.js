@@ -5738,6 +5738,18 @@ if (process.env.SANITIZE_LEGACY_CAMPAIGNS !== 'off') {
   });
 }
 
+// Epic 2 (FR7/D1): backfill dos embeddings de captura no boot — fire-and-forget,
+// idempotente/resumável (só linhas NULL) e NÃO fatal (gateway de embeddings
+// fora não pode derrubar o servidor; a captura segue lexical-only). Teto por
+// execução; o próximo boot retoma. Desativar com STUDIO_EMBEDDINGS_BACKFILL=off.
+if (process.env.STUDIO_EMBEDDINGS_BACKFILL !== 'off') {
+  setImmediate(() => {
+    require('./jobs/embeddings-backfill').runEmbeddingsBackfill(prisma)
+      .then((result) => console.log('[embeddings-backfill] concluído:', JSON.stringify(result)))
+      .catch((err) => console.error('[embeddings-backfill] falhou (não fatal):', err.message));
+  });
+}
+
 process.on('SIGINT', async () => {
   console.log('\nShutting down...');
   await natsEnrichment.shutdown();

@@ -124,6 +124,18 @@ model Prospect {
   // (search-text.js) — matching de segmento tolerante a acento/grafia.
   // Backfill idempotente na migração; mantido nos hooks de escrita.
   searchText            String?
+  // Epic 2 (FR7/FR9): proveniência da CAPTURA — 'base-propria' | 'mcp-cnpj'.
+  // Coluna, não convenção (Design Notes do plano): auditável e consultável
+  // para o limite diário por org (índice orgId+captureSource+createdAt).
+  // Leads importados/enriquecidos fora da captura ficam null.
+  captureSource         String?
+  // Epic 2 (FR7/D1): embedding do searchText (pgvector, 1536 dims — mesmo
+  // padrão do cnpj-data-publisher: LiteLLM 'gemini-embedding', 1536).
+  // `Unsupported` porque Prisma não consulta coluna vetorial: leitura/escrita
+  // SEMPRE via $queryRaw/$executeRaw parametrizado (capture-service,
+  // jobs/embeddings-backfill). Índice ANN (HNSW) é deferred — base pequena
+  // faz varredura com `<=>` (Design Notes: só a partir de ~100k+ linhas).
+  captureEmbedding      Unsupported("vector(1536)")?
   city                  String?
   state                 String?
   cnpjEmail             String?
@@ -168,6 +180,9 @@ model Prospect {
   @@index([createdAt])
   @@index([enrichedAt])
   @@index([enrichmentStatus])
+  // Epic 2 (FR9/D2): contagem do limite diário de captura por org —
+  // captureSource + createdAt>=início do dia (Design Notes do plano).
+  @@index([orgId, captureSource, createdAt])
 }
 
 // Análise profunda de lead por IA (feature 005): UMA LINHA POR EXECUÇÃO.

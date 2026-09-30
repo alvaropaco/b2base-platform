@@ -33,7 +33,13 @@ export interface ChatCard {
   /** Epic 1 (FR6): diagnóstico do porquê da audiência ter casado 0 leads. */
   diagnosis?: string;
   /** Epic 1 (FR6): proposta materialmente diferente — ação de 1 clique. */
-  suggestedFilter?: { description: string; criteria: unknown; matchedCount: number } | null;
+  suggestedFilter?: {
+    description: string;
+    criteria?: unknown;
+    /** Epic 2 (FR7): card de captura — ids dos leads capturados no lote. */
+    prospectIds?: string[];
+    matchedCount?: number;
+  } | null;
   /** Epic 1 (FR15/F2): candidatos quando a confirmação de material é ambígua. */
   candidates?: Array<{ id: string; label: string }>;
 }
@@ -49,10 +55,29 @@ export interface RecoveryChip {
 export function zeroMatchFilterChip(card: ChatCard): RecoveryChip | null {
   if (card.type !== 'audience' || !card.suggestedFilter || !card.suggestedFilter.criteria) return null;
   const filter = card.suggestedFilter;
+  // Sem contagem confiável, o label não inventa número.
+  const count = typeof filter.matchedCount === 'number' ? ` (${filter.matchedCount.toLocaleString('pt-BR')} leads)` : '';
   return {
     key: 'use-suggested-filter',
-    label: `Usar este filtro (${filter.matchedCount.toLocaleString('pt-BR')} leads)`,
+    label: `Usar este filtro${count}`,
     action: { type: 'set_audience', params: { description: filter.description, criteria: filter.criteria } },
+  };
+}
+
+/**
+ * Epic 2 (UX-DR3): chip "Materializar audiência" do card de captura — 1 clique
+ * coloca os leads capturados no lote na audiência (mesma porta idempotente
+ * select_leads do chat e do painel).
+ */
+export function captureLeadsChip(card: ChatCard): RecoveryChip | null {
+  if (card.type !== 'capture' || card.status !== 'captured') return null;
+  const raw = card.suggestedFilter?.prospectIds;
+  const ids = Array.isArray(raw) ? raw.filter(Boolean) : [];
+  if (ids.length === 0) return null;
+  return {
+    key: 'use-captured-leads',
+    label: `Materializar audiência com os capturados (${ids.length.toLocaleString('pt-BR')} leads)`,
+    action: { type: 'select_leads', params: { set: ids } },
   };
 }
 
@@ -385,6 +410,9 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
     }
     const filterChip = zeroMatchFilterChip(card);
     const materialChips = ambiguousMaterialChips(card);
+    // Epic 2 (UX-DR3): chip do card de captura — 1 clique materializa a
+    // audiência com o lote capturado.
+    const captureChip = captureLeadsChip(card);
     return (
       <div key={i} className="cockpit-glass rounded-xl p-3 text-xs">
         <p className="font-semibold text-foreground">
@@ -402,6 +430,16 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
             className="mt-2 rounded-full bg-[#160211] px-3 py-1.5 text-[11px] font-medium text-white shadow-md transition-transform hover:brightness-110"
           >
             {filterChip.label}
+          </button>
+        )}
+        {/* Epic 2 (FR7): lote capturado — 1 clique vira audiência. */}
+        {captureChip && (
+          <button
+            type="button"
+            onClick={() => void applyRecoveryChip(captureChip)}
+            className="mt-2 rounded-full bg-[#160211] px-3 py-1.5 text-[11px] font-medium text-white shadow-md transition-transform hover:brightness-110"
+          >
+            {captureChip.label}
           </button>
         )}
         {/* Epic 1 (FR15/F2): desambiguação — cada candidato é um chip vivo. */}

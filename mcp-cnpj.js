@@ -304,15 +304,41 @@ function clampLimit(value, min, max) {
  * throwing on every call when the token is missing.
  */
 function isMcpConfigured() {
+  if (_testOverrides && _testOverrides.isMcpConfigured) return _testOverrides.isMcpConfigured();
   return Boolean(MCP_URL && MCP_TOKEN);
 }
 
+// ── Stub para testes (Epic 2, captura via MCP sem rede) ─────────────────────
+// Padrão _setBullForTests (outreach-queues.js): override POR FUNÇÃO, checado
+// DENTRO de cada export — destructure no import-time não burla o stub.
+let _testOverrides = null;
+
+function _setMcpForTests(overrides = {}) {
+  _testOverrides = { ...overrides };
+}
+
+function _resetMcpForTests() {
+  _testOverrides = null;
+}
+
+/** Envolve um export async com o override de teste, quando presente. */
+function withOverride(impl) {
+  return async (...args) => {
+    if (_testOverrides && _testOverrides[impl.name]) {
+      return _testOverrides[impl.name](...args);
+    }
+    return impl(...args);
+  };
+}
+
 module.exports = {
-  searchCompanies,
-  filterCompanies,
-  getCompanyByCnpj,
-  getDatasetStats,
+  searchCompanies: withOverride(searchCompanies),
+  filterCompanies: withOverride(filterCompanies),
+  getCompanyByCnpj: withOverride(getCompanyByCnpj),
+  getDatasetStats: withOverride(getDatasetStats),
   mapMcpCompany,
   formatCnpj,
   isMcpConfigured,
+  _setMcpForTests,
+  _resetMcpForTests,
 };

@@ -40,6 +40,22 @@ describe('chip "Usar este filtro" do card de 0-match (FR6)', () => {
     expect(zeroMatchFilterChip(card)).toBeNull();
   });
 
+  it('matchedCount ausente → label SEM número inventado ("Usar este filtro")', () => {
+    const card: ChatCard = {
+      type: 'audience',
+      label: 'Audiência montada — nenhum lead casou',
+      suggestedFilter: {
+        description: 'setor "metalurgia"',
+        criteria: { version: 1, groups: [] },
+        matchedCount: undefined,
+      },
+    } as ChatCard;
+    const chip = zeroMatchFilterChip(card);
+    expect(chip).not.toBeNull();
+    expect(chip!.label).toMatch(/usar este filtro$/i);
+    expect(chip!.label).not.toContain('(');
+  });
+
   it('outros cards de audiência (com leads) não ganham chip', () => {
     expect(zeroMatchFilterChip({ type: 'audience', label: 'Audiência montada' })).toBeNull();
   });

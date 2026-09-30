@@ -37,6 +37,11 @@ const ACTIONS_V1 = {
   // forma/idempotência/chaves das 9 originais:
   attach_files: { version: 1, idempotency: 'params', description: 'Vincula anexos de mensagem (StudioAttachment) à campanha — ids ordenados na chave de idempotência' },
   edit_content: { version: 1, idempotency: 'params', description: 'Edita conteúdo da campanha (assunto/texto/emailDoc) pelo serviço único do PATCH — editável em voo no que ainda não saiu' },
+  // Epic 2 (FR7, D1/D2; 2026-09-30) — ADITIVA (AD-6): captura híbrida de
+  // leads (base própria + fallback MCP CNPJ). Idempotente por params: repetir
+  // o MESMO pedido devolve o MESMO card sem re-executar (FR8/AD-6). Disponível
+  // para trial e premium (D2) — o handler NUNCA chama requirePremiumOrg.
+  capture_leads: { version: 1, idempotency: 'params', description: 'Captura leads por busca híbrida na base própria e, se não bastar, via MCP CNPJ — com proveniência e limite diário' },
 };
 
 /**
@@ -143,6 +148,16 @@ function validate(action, params = {}) {
       }
       return true;
     }
+    case 'capture_leads':
+      // typeof string EXIGIDO: objeto/number viraria String() do handler
+      // ("[object Object]" como busca). Trim não vazio corta espaços.
+      if (typeof params.query !== 'string' || !params.query.trim()) {
+        const err = new Error('capture_leads exige `query` (texto do setor, ex.: "equipamentos agrícolas").');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
     default:
       return true;
   }
