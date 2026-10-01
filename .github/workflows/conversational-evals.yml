@@ -65,6 +65,20 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
+      # Os secrets de eval são fornecidos pelo dono (política: senha da conta
+      # QA nunca versionada). Sem eles o job PULA com aviso — o gate ativa
+      # assim que B2BASE_EVAL_EMAIL/_PASSWORD forem configurados.
+      - name: Check eval credentials
+        id: creds
+        env:
+          EVAL_EMAIL: ${{ secrets.B2BASE_EVAL_EMAIL }}
+        run: |
+          if [ -z "$EVAL_EMAIL" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::B2BASE_EVAL_EMAIL/B2BASE_EVAL_PASSWORD ausentes — eval de release PULADO. Configure os secrets para ativar o gate bloqueante (journey-e2e)."
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Resolve dataset
         id: dataset
         run: |
@@ -78,7 +92,7 @@ jobs:
       # Dispatch manual mantém os datasets completos à mão (all = core +
       # journey + reliability em sequência).
       - name: Run conversational evaluation (all)
-        if: ${{ steps.dataset.outputs.path == '' }}
+        if: ${{ steps.creds.outputs.available == 'true' && steps.dataset.outputs.path == '' }}
         env:
           B2BASE_EVAL_URL: ${{ inputs.eval_url || 'https://www.b2base.net' }}
           B2BASE_EVAL_THRESHOLD: ${{ inputs.threshold }}
@@ -103,7 +117,7 @@ jobs:
             echo "::endgroup::"
           done
       - name: Run conversational evaluation (dataset)
-        if: ${{ steps.dataset.outputs.path != '' }}
+        if: ${{ steps.creds.outputs.available == 'true' && steps.dataset.outputs.path != '' }}
         env:
           B2BASE_EVAL_URL: ${{ inputs.eval_url || 'https://www.b2base.net' }}
           B2BASE_EVAL_THRESHOLD: ${{ inputs.threshold }}
