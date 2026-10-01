@@ -205,6 +205,9 @@ test('chat: agendamento configurado por conversa com previsão de conclusão', a
   const { server, prisma, api } = await startServer();
   try {
     const { body: c } = await api('POST', '/campaigns', { name: 'Agenda', channels: ['email'] });
+    // Epic 3 (jornada): conteúdo existe antes do agendamento — sem conteúdo o
+    // guard recusa o atalho (ver test/journey-state.test.js).
+    prisma.studioContent.rows.push({ id: 'cnt-1', orgId: 'org-1', campaignId: c.data.id, channel: 'email', kind: 'base', stepIndex: 1, status: 'in_review' });
     const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
       message: 'dispara 20 por hora em horário comercial',
     });

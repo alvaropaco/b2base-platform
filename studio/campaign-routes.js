@@ -359,7 +359,38 @@ function registerCampaignRoutes(router, context) {
           row.retainedReason = flowStatus === 'flowing' ? null : flowStatus;
         }
       }
-      res.json({ success: true, data: rows, count: rows.length, flowStatus });
+      // Epic 3 (Story 3.3): divergência audiência×fila — contatos ainda não
+      // enviados que JÁ SAÍRAM da seleção vigente (janela de sincronização).
+      // Computada viva: some sozinha quando a conta fecha (sync zera a fila).
+      const divergence = { count: 0, byChannel: {}, reason: null };
+      // Sem SENDING (review E3-L4): divergência = o que a sincronização vai
+      // remover; quem está em envio neste instante vai receber (copy honesta).
+      const inflightStatuses = ['SELECTED', 'QUEUED', 'GENERATING', 'SCHEDULED'];
+      const inflight = rows.filter((r) => inflightStatuses.includes(r.status));
+      if (inflight.length > 0) {
+        const snapRows = await prisma.studioAudienceSnapshot.findMany({
+          where: { campaignId: campaign.id, status: 'active' },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        });
+        if (snapRows[0]) {
+          const members = await prisma.studioAudienceMember.findMany({
+            where: { snapshotId: snapRows[0].id, included: true },
+            select: { prospectId: true },
+          });
+          const included = new Set(members.map((m) => m.prospectId));
+          for (const row of inflight) {
+            if (!included.has(row.prospectId)) {
+              divergence.count += 1;
+              divergence.byChannel[row.channel] = (divergence.byChannel[row.channel] || 0) + 1;
+            }
+          }
+          if (divergence.count > 0) {
+            divergence.reason = 'contatos na fila que saíram da sua seleção — eles não recebem nada';
+          }
+        }
+      }
+      res.json({ success: true, data: rows, count: rows.length, flowStatus, divergence });
     } catch (err) {
       next(err);
     }

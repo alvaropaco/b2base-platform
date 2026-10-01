@@ -518,6 +518,36 @@ async function _refundForMessage(prisma, message, reason) {
   }
 }
 
+/**
+ * Epic 3 (review E3-M2): estorno de contato terminal. Quando o cancelamento
+ * veio da SINCRONIZAÇÃO de fila (cancelReason 'removido_da_selecao'), usa o
+ * MESMO refId determinístico do sync (`sync:{studioCampaignId}:email:{contactId}`),
+ * fechando a corrida sync×worker pela unique (type, refId) do ledger. Demais
+ * terminais seguem o padrão AD-13 por messageId.
+ */
+async function _refundForTerminalContact(prisma, message, reason) {
+  const contact = message?.contact;
+  const studioCampaignId = contact?.campaign?.studioCampaignId;
+  if (contact?.status === 'CANCELLED' && contact?.cancelReason === 'removido_da_selecao' && studioCampaignId) {
+    try {
+      const orgId = contact?.campaign?.tenantId;
+      if (!orgId) return null;
+      const reputation = require('./studio/reputation');
+      return await reputation.refundBatch(prisma, {
+        orgId,
+        channel: 'email',
+        batchId: `sync:${studioCampaignId}:email:${contact.id}`,
+        units: 1,
+        reason,
+      });
+    } catch (err) {
+      console.error('[send] estorno de contato sincronizado falhou (ignorado):', err.message);
+      return null;
+    }
+  }
+  return _refundForMessage(prisma, message, reason);
+}
+
 async function processSend(job) {
   const { messageId } = job.data;
 
@@ -530,7 +560,8 @@ async function processSend(job) {
     include: {
       contact: {
         include: {
-          campaign: { select: { tenantId: true, studioAttachments: true } },
+          // studioCampaignId: refId compartilhado com o sync de fila (Epic 3).
+          campaign: { select: { tenantId: true, studioAttachments: true, studioCampaignId: true } },
         },
       },
     },
@@ -551,7 +582,10 @@ async function processSend(job) {
   if (message.contact.status === 'REPLIED' || message.contact.status === 'UNSUBSCRIBED' || message.contact.status === 'CANCELLED') {
     console.log(`[send] ✗ contact ${message.contactId} in terminal state ${message.contact.status}, cancelling`);
     // specs/011 (AD-13): falha definitiva antes do envio → estorno idempotente.
-    await _refundForMessage(prisma, message, `contato em estado terminal (${message.contact.status})`);
+    // Epic 3 (review E3-M2): contato cancelado pela SINCRONIZAÇÃO de fila
+    // compartilha o refId determinístico do sync — a unique (type, refId) do
+    // ledger deduplica entre os dois caminhos (nunca 2 créditos por 1 débito).
+    await _refundForTerminalContact(prisma, message, `contato em estado terminal (${message.contact.status})`);
     return { cancelled: true, reason: message.contact.status };
   }
 

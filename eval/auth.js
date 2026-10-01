@@ -176,6 +176,17 @@ async function createAuthenticatedEvalClient({
     getHistory(campaignId) {
       return json(`/api/studio/campaigns/${campaignId}/chat`);
     },
+    /** Certificado de Segurança (checklist de prontidão) — Epic 3/4. */
+    getCertificate(campaignId) {
+      return json(`/api/studio/campaigns/${campaignId}/certificate`);
+    },
+    /**
+     * Chamada genérica na porta da UI (Epic 3 `calls`: submit-review/
+     * approve/schedule da zona de decisão). Reusa o json() com re-login.
+     */
+    callJson(path, opts = {}) {
+      return json(path, opts);
+    },
     /** Telemetria operacional — 404 vira null (nem todo deploy tem traces). */
     async getTraces(campaignId) {
       const res = await request(`/api/studio/campaigns/${campaignId}/traces`);

@@ -91,7 +91,7 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
   const [campaignId, setCampaignId] = useState<string | null>(initialCampaignId || null);
   const [detail, setDetail] = useState<StudioCampaignDetail | null>(null);
   const [funnel, setFunnel] = useState<CampaignFunnel | null>(null);
-  const [queue, setQueue] = useState<{ rows: QueueRow[]; flowStatus: string } | null>(null);
+  const [queue, setQueue] = useState<Awaited<ReturnType<typeof fetchQueue>> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [historyLead, setHistoryLead] = useState<{ prospectId: string; companyName: string | null } | null>(null);
@@ -181,6 +181,8 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
   const rows = [...(queue?.rows || [])].sort(
     (a, b) => new Date(b.sentAt || b.scheduledAt || 0).getTime() - new Date(a.sentAt || a.scheduledAt || 0).getTime()
   );
+  // Epic 3 (Story 3.3): divergência audiência×fila na janela de sincronização.
+  const divergence = queue?.divergence && queue.divergence.count > 0 ? queue.divergence : null;
 
   return (
     <div className="space-y-4">
@@ -287,6 +289,16 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
               ) : null}
             </div>
           </section>
+
+          {/* Epic 3 (Story 3.3): divergência audiência×fila — quantos e por
+              quê, sem jargão; some quando a conta fecha (a fila sincronizada
+              zera a divergência). */}
+          {divergence && (
+            <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              {divergence.count} contato(s) da fila saíram da sua seleção — {divergence.reason || 'eles não recebem nada'}. A
+              sincronização remove quem ainda não recebeu.
+            </p>
+          )}
 
           {/* Funil — cada etapa do disparo com número grande e taxa de apoio. */}
           <section>

@@ -285,6 +285,8 @@ function registerChatRoutes(router, context) {
     vectorSearch: overrides.vectorSearch,
     mcp: overrides.mcpCnpj,
   });
+  // Epic 3 (Story 3.1): estado/guard da jornada de criação.
+  const journey = require('./journey');
 
   /**
    * Epic 1 (FR15/F2): resolve a referência do material DENTRO da org — id
@@ -359,6 +361,12 @@ function registerChatRoutes(router, context) {
       }
     }
     manifest.validate(action.type, params);
+    // Epic 3 (Story 3.1): guard da jornada — salto À FRENTE com pré-requisito
+    // ausente vira card explicável (o que falta + próximo passo), NUNCA run
+    // gravada (replay de bloqueio esconderia o avanço seguinte). Ações da
+    // fase corrente/anterior nunca chegam aqui bloqueadas.
+    const journeyGuard = journey.guardAction(action.type, await journey.guardState(prisma, campaign));
+    if (!journeyGuard.ok) return journeyGuard.card;
     // Epic 2: recusa/limite/sem-resultado da captura NUNCA persistem replay —
     // gravar a recusa como run 'succeeded' faria a MESMA params devolver a
     // recusa velha para sempre (mesmo depois de configurar o token). Então a
@@ -433,6 +441,9 @@ function registerChatRoutes(router, context) {
           },
         });
         campaign.objective = action.objective || campaign.objective;
+        // Epic 3 (review E3-L6): a fase corrente fica persistida desde o
+        // primeiro passo (AC 3.1) — objetivo concluído entra no Json aqui.
+        await journey.syncJourney(prisma, campaign, { mark: campaign.objective ? 'objetivo' : null });
         return { type: 'objective', label: 'Objetivo definido', detail: String(action.objective || '') };
       }
 
@@ -461,6 +472,12 @@ function registerChatRoutes(router, context) {
         const { snapshot } = await campaignService.flow.materializeAudience(prisma, {
           campaign,
           prospectIds: prospects.map((p) => p.id),
+        });
+        // Epic 3 (Story 3.1): a DECISÃO FECHADA (FR2 — materialização com
+        // contagem > 0) marca a fase de audiência como concluída.
+        await journey.syncJourney(prisma, campaign, {
+          mark: snapshot.includedCount > 0 ? 'audiencia' : null,
+          audienceDecided: snapshot.includedCount > 0,
         });
         // O registro do segmento é auxiliar (o snapshot já materializou a
         // audiência): o nome é único por (orgId, nome) e inclui data +
@@ -527,6 +544,11 @@ function registerChatRoutes(router, context) {
           campaign,
           prospectIds: owned,
         });
+        // Epic 3: seleção explícita com leads também é decisão fechada.
+        await journey.syncJourney(prisma, campaign, {
+          mark: snapshot.includedCount > 0 ? 'audiencia' : null,
+          audienceDecided: snapshot.includedCount > 0,
+        });
         const removed = (Array.isArray(action.remove) ? action.remove : []).length;
         const added = (Array.isArray(action.add) ? action.add : []).length;
         const rationaleText = Array.isArray(action.set) && action.set.length
@@ -572,6 +594,8 @@ function registerChatRoutes(router, context) {
           orgId,
           orgContext: settings ? `${settings.companyName || ''} vende ${settings.productDescription || '?'}` : null,
         });
+        // Epic 3 (Story 3.1): conteúdo materializado conclui a fase de conteúdo.
+        if (created.length > 0) await journey.syncJourney(prisma, campaign, { mark: 'conteudo' });
         // FR-26: origem dos dados citada no card — o vendedor vê de onde veio
         // cada campo antes de aprovar. Derivado da fonte usada na geração.
         const sources = confirmed
@@ -616,6 +640,11 @@ function registerChatRoutes(router, context) {
         }
         const updated = await prisma.studioCampaign.update({ where: { id: campaign.id }, data });
         Object.assign(campaign, updated);
+        // Epic 3 (Story 3.1): agenda configurada conclui a fase; voo marcado
+        // (status scheduled) conclui também a certificação (Pré-voo verde).
+        await journey.syncJourney(prisma, campaign, {
+          mark: data.status === 'scheduled' ? ['agenda', 'certificado'] : 'agenda',
+        });
         // Previsão de conclusão só faz sentido com audiência definida.
         const audienceCount = (await currentExtras(prisma, campaign)).audienceCount || 0;
         const forecast = audienceCount > 0 ? scheduleService.forecast(schedule, audienceCount) : null;
@@ -1245,6 +1274,9 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     });
 
     const extras = await currentExtras(prismaClient, campaign);
+    // Epic 3 (Story 3.1): a fase da jornada entra no estado do orchestrate —
+    // o modelo avança a próxima fase pendente (o guard server-side é a rede).
+    extras.journey = journey.previewFromExtras(campaign, extras);
     let reply;
     let actions;
     let degradation = null;

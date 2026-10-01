@@ -47,7 +47,7 @@ const TURN_TIMEOUT_MS = 150_000; // turnos de produção já observados em até 
 async function runCase(client, caseDef, judgeDeps) {
   const stamp = new Date().toISOString().slice(0, 10);
   const campaignName = `[AI-EVAL] ${stamp} ${caseDef.id}`;
-  const campaign = await client.createCampaign({ name: campaignName, channels: ['email'] });
+  const campaign = await client.createCampaign({ name: campaignName, channels: caseDef.channels || ['email'] });
   const turns = [];
   for (const message of caseDef.turns) {
     const t0 = Date.now();
@@ -67,9 +67,26 @@ async function runCase(client, caseDef, judgeDeps) {
     });
   }
 
+  // Epic 3 (Story 3.4): passos de HTTP da jornada (ex.: aprovar/agendar pela
+  // mesma porta que a zona de decisão da UI usa) — `calls` roda DEPOIS dos
+  // turnos, na ordem; falha vira httpError do caso, não exceção do runner.
+  const callErrors = [];
+  for (const call of caseDef.calls || []) {
+    try {
+      await client.callJson(String(call.path).replaceAll(':campaignId', campaign.id), {
+        method: call.method || 'POST',
+        body: call.body || {},
+      });
+    } catch (err) {
+      callErrors.push(`${call.method || 'POST'} ${call.path}: ${String(err.message)}`);
+    }
+  }
+
+  const wantsCertificate = (caseDef.expect || []).some((e) => e.type === 'certificateGreen');
   const state = await client.getState(campaign.id).catch(() => null);
   const traces = await client.getTraces(campaign.id).catch(() => null);
-  const ctx = { turns, state };
+  const certificate = wantsCertificate ? await client.getCertificate(campaign.id).catch(() => null) : null;
+  const ctx = { turns, state, traces: Array.isArray(traces) ? traces : null, certificate };
   const outcome = evaluateCase(caseDef, ctx);
 
   // Telemetria operacional (StudioChatTrace) — métricas sem conteúdo.
@@ -111,7 +128,7 @@ async function runCase(client, caseDef, judgeDeps) {
     failures: outcome.failures,
     turns: outcome.turns,
     latencyMs: turns.map((t) => t.latencyMs),
-    httpErrors: turns.filter((t) => t.streamError && !llmGatewayErrors.includes(t.streamError)).map((t) => t.streamError),
+    httpErrors: [...callErrors, ...turns.filter((t) => t.streamError && !llmGatewayErrors.includes(t.streamError)).map((t) => t.streamError)],
     llmGatewayErrors,
     traces: tracesSummary,
     tracesAvailable: traces !== null,

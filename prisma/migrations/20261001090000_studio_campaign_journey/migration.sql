@@ -1,0 +1,11 @@
+-- Epic 3 (Story 3.1): estado explícito da jornada de criação de campanha.
+--
+-- journey — fase corrente + fases concluídas da jornada
+-- (objetivo→audiência→conteúdo→agenda→certificado), persistida como
+-- explicitação da derivação já existente (client-side `currentRailStep`):
+-- { phase: 'objetivo'|'audiencia'|'conteudo'|'agenda'|'certificado',
+--   completed: { <fase>: <ISO-8601> },  -- decisão fechada FR2 marca audiência
+--   updatedAt: <ISO-8601> }
+-- O guard server-side usa SEMPRE o estado materializado (objetivo, snapshot,
+-- conteúdos) — este Json nunca é fonte única de verdade.
+ALTER TABLE "StudioCampaign" ADD COLUMN "journey" JSONB;

@@ -88,6 +88,64 @@ function evaluateAssertion(exp, ctx) {
         replies.some((r) => warningRe.test(r));
       return pass(warned, 'audiência 0 leads precisa de aviso explícito (card ou reply)');
     }
+    /**
+     * Epic 3 (Story 3.4): ordem canônica dos cards da jornada — a lista
+     * `cards` deve aparecer COMO SUBSEQUÊNCIA na sequência de cards emitidos
+     * (turnos extras/intermediários não quebram; ausência ou inversão quebra).
+     */
+    case 'cardOrder': {
+      const expected = (exp.cards || []).map(String);
+      const actual = allCards.map((c) => c && c.type).filter(Boolean);
+      let i = 0;
+      for (const type of actual) {
+        if (type === expected[i]) i += 1;
+        if (i >= expected.length) break;
+      }
+      return pass(
+        i >= expected.length,
+        `cards deveriam aparecer na ordem ${expected.join(' → ')} (vista: ${actual.join(', ') || 'nenhum'})`
+      );
+    }
+    /** F5 (Epic 4): card presente SEM duplicidade — exatamente 1 ocorrência. */
+    case 'cardPresentUnique': {
+      const expected = String(exp.card);
+      const count = allCards.filter((c) => c && c.type === expected).length;
+      return pass(count === 1, `card "${expected}" deveria aparecer exatamente 1× (viu ${count})`);
+    }
+    /** Epic 3 (D5): a audiência materializada casa o mínimo da base fixada. */
+    case 'audienceCountAtLeast':
+      return pass(
+        Number(ctx.state?.extras?.audienceCount) >= Number(exp.value),
+        `audiência deveria ter ≥ ${exp.value} lead(s) (viu ${ctx.state?.extras?.audienceCount ?? '—'})`
+      );
+    /**
+     * Epic 3 (Story 3.4): certificado avaliado e pronto para voo. Default
+     * (`strict:false`): nível green|amber SEM item de bloqueio — pendência
+     * informativa não reprova (conta QA tem envios pausados/consents
+     * parciais por design). `strict:true` exige nível 'green'.
+     */
+    case 'certificateGreen': {
+      const cert = ctx.certificate;
+      if (!cert || !cert.level) return pass(false, 'certificado indisponível (GET /certificate falhou)');
+      if (exp.strict) return pass(cert.level === 'green', `certificado deveria estar green (veio ${cert.level})`);
+      const blocked = (cert.items || []).some((i) => i.level === 'block');
+      return pass(
+        !blocked && cert.level !== 'blocked',
+        `certificado não deveria ter bloqueio (nível ${cert.level}${blocked ? ' + item block' : ''})`
+      );
+    }
+    /**
+     * Epic 3/4 (nao-re-pergunta, CAP-1): decisão tomada NÃO vira nova ação —
+     * via traces (actionTypes por turno), a action deveria ocorrer no máximo
+     * 1× em toda a conversa.
+     */
+    case 'actionNotRepeated': {
+      const action = String(exp.action || '');
+      const traces = Array.isArray(ctx.traces) ? ctx.traces : null;
+      if (!traces) return pass(false, 'traces indisponíveis para validar repetição de ação');
+      const turnsWith = traces.filter((t) => Array.isArray(t.actionTypes) && t.actionTypes.includes(action)).length;
+      return pass(turnsWith <= 1, `action "${action}" deveria ocorrer no máximo 1× (ocorreu ${turnsWith}×)`);
+    }
     default:
       return pass(false, `asserção desconhecida: ${exp.type}`);
   }

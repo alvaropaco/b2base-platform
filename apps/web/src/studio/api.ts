@@ -328,11 +328,18 @@ export interface QueueRow {
   companyName?: string | null;
 }
 
-export async function fetchQueue(id: string): Promise<{ rows: QueueRow[]; flowStatus: string }> {
-  const data = await request<{ data: QueueRow[]; flowStatus: string }>(
+/** Divergência audiência×fila (Epic 3): contatos em voo fora da seleção vigente. */
+export interface QueueDivergence {
+  count: number;
+  byChannel: Record<string, number>;
+  reason: string | null;
+}
+
+export async function fetchQueue(id: string): Promise<{ rows: QueueRow[]; flowStatus: string; divergence?: QueueDivergence }> {
+  const data = await request<{ data: QueueRow[]; flowStatus: string; divergence?: QueueDivergence }>(
     `/campaigns/${encodeURIComponent(id)}/queue`
   );
-  return { rows: data.data, flowStatus: data.flowStatus };
+  return { rows: data.data, flowStatus: data.flowStatus, divergence: data.divergence };
 }
 
 /** Funil agregado da campanha (StudioMetricDaily rollup) — monitor. */

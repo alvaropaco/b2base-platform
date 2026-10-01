@@ -1,0 +1,28 @@
+{
+  "version": "journey-v1",
+  "cases": [
+    {
+      "id": "journey-e2e",
+      "title": "Jornada completa: objetivo → audiência industrial (>0) → conteúdo 2 canais → agenda → certificado pronto para voo",
+      "channels": ["email", "whatsapp"],
+      "turns": [
+        "Quero criar uma campanha para vender consultoria industrial para indústrias metalmecânicas",
+        "Gere o conteúdo para os dois canais",
+        "Agende de segunda a sexta das 9h às 18h, no máximo 20 por hora e 100 por dia",
+        "Só confirma: para quem está indo essa campanha?"
+      ],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "cardOrder", "cards": ["objective", "audience", "content", "schedule"] },
+        { "type": "audienceCountAtLeast", "value": 50 },
+        { "type": "scheduleHourlyLimit", "value": 20 },
+        { "type": "certificateGreen" },
+        { "type": "actionNotRepeated", "action": "set_audience" },
+        { "type": "cardAbsent", "card": "journey_block" },
+        { "type": "cardAbsent", "card": "error" },
+        { "type": "cardAbsent", "card": "degraded" }
+      ],
+      "notes": "Conta QA (leads Repro*, envios pausados). certificateGreen default: pronto para voo (sem bloqueio) — pendências informativas não reprovam. Turno 4 é o proxy de não-re-pergunta: decisão tomada no turno 1 não vira nova set_audience (actionNotRepeated via traces)."
+    }
+  ]
+}

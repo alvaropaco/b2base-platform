@@ -378,7 +378,14 @@ async function processSend(job) {
         data: { status: 'FAILED', error: 'contact_terminal_state', failedAt: new Date() },
       });
       // specs/011 (AD-13): falha definitiva antes do envio → estorno.
-      await _refundForMessage(prisma, message, `contato em estado terminal (${contact.status})`);
+      // Epic 3 (review E3-M2): cancelado pela SINCRONIZAÇÃO de fila → mesmo
+      // refId determinístico do sync (unique (type, refId) deduplica entre os
+      // caminhos); demais terminais seguem o padrão por messageId.
+      if (contact.status === CONTACT_STATUS.CANCELLED && contact.cancelReason === 'removido_da_selecao') {
+        await _refundForSyncedContact(prisma, message, contact, `contato em estado terminal (${contact.status})`);
+      } else {
+        await _refundForMessage(prisma, message, `contato em estado terminal (${contact.status})`);
+      }
       return { cancelled: true, reason: contact.status };
     }
   }
@@ -556,6 +563,33 @@ async function _refundForMessage(prisma, message, reason) {
     return await reputation.refundSend(prisma, { orgId: message.orgId, channel: 'whatsapp', messageId: message.id, reason });
   } catch (err) {
     console.error('[whatsapp] estorno de saldo falhou (ignorado):', err.message);
+    return null;
+  }
+}
+
+/**
+ * Epic 3 (review E3-M2): estorno de contato cancelado pela sincronização de
+ * fila com o MESMO refId determinístico do sync — a unique (type, refId) do
+ * ledger fecha a corrida sync×worker (nunca 2 créditos por 1 débito).
+ */
+async function _refundForSyncedContact(prisma, message, contact, reason) {
+  try {
+    if (!message?.orgId || !contact?.id) return null;
+    const campaign = await prisma.whatsAppCampaign.findUnique({
+      where: { id: contact.campaignId },
+      select: { studioCampaignId: true },
+    });
+    if (!campaign?.studioCampaignId) return _refundForMessage(prisma, message, reason);
+    const reputation = require('./studio/reputation');
+    return await reputation.refundBatch(prisma, {
+      orgId: message.orgId,
+      channel: 'whatsapp',
+      batchId: `sync:${campaign.studioCampaignId}:whatsapp:${contact.id}`,
+      units: 1,
+      reason,
+    });
+  } catch (err) {
+    console.error('[whatsapp] estorno de contato sincronizado falhou (ignorado):', err.message);
     return null;
   }
 }

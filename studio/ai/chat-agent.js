@@ -59,6 +59,11 @@ const SYSTEM_PROMPT = [
   'decidido ali; referencie os critérios quando for relevante e só proponha mudança se o usuário pedir.',
   'Pergunte uma vez, nunca mais.',
   '',
+  'JORNADA (Epic 3): a campanha avança em ordem — objetivo → audiência → conteúdo → agenda → certificado.',
+  'O bloco jornada do estado mostra a FASE CORRENTE e o que já foi concluído: avance a próxima fase pendente.',
+  'Nunca emita ação de uma fase À FRENTE do que já existe (ex.: agendar sem conteúdo) — o servidor recusa',
+  'com explicação e o usuário fica sem o que pediu. Conteúdo/materiais podem ser ajustados a qualquer momento.',
+  '',
   'LIMITES E BLOQUEIOS DE ENVIO (Orçamento de Reputação): cada canal (e-mail, WhatsApp) tem um saldo de envios',
   'com piso e teto. Abaixo do piso, disparos ficam BLOQUEADOS. E-mail também exige domínio autenticado',
   '(SPF/DKIM/DMARC); WhatsApp exige pareamento por QR. Quando o usuário perguntar sobre limites, saldo,',
@@ -104,6 +109,9 @@ function buildStateBlock(campaign, extras = {}) {
       conteudos: extras.contentSummary || [],
       agenda: campaign.schedule || {},
       materiais: extras.materials || [],
+      // Jornada explícita (Epic 3): fase corrente + fases concluídas — o
+      // modelo avança a próxima fase pendente; atalho é recusado server-side.
+      jornada: extras.journey || null,
     }),
   ].join('\n');
 }

@@ -1135,6 +1135,7 @@ model StudioCampaign {
   emailExecutionId    String?                    // → OutreachCampaign (channel-bridge)
   whatsappExecutionId String?                    // → WhatsAppCampaign
   journeyEnabled Boolean @default(false)
+  journey     Json?                            // jornada de criação (Epic 3): {phase, completed:{fase: ISO}, updatedAt}
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

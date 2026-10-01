@@ -168,7 +168,98 @@ async function materializeAudience(prisma, { campaign, prospectIds }) {
       },
     });
   }
-  return { snapshot, members };
+  // Epic 3 (Story 3.2/D4): toda mudança de seleção passa por aqui — a fila
+  // de execução sincroniza na mesma request (ninguém removido recebe).
+  let queueSync = null;
+  try {
+    queueSync = await syncQueueWithAudience(
+      prisma,
+      campaign,
+      members.filter((m) => m.included).map((m) => m.prospectId)
+    );
+  } catch (err) {
+    console.error('[studio:sync] sincronização da fila falhou (materialização preservada):', err.stack || String(err));
+  }
+  return { snapshot, members, queueSync };
+}
+
+/**
+ * Epic 3 (Story 3.2/D4): sincroniza a fila de execução com a seleção atual —
+ * contatos matriculados que SAÍRAM da seleção são cancelados antes de enviar.
+ *
+ * Ledger íntegro (o débito acontece na LIBERAÇÃO do lote — channel-bridge
+ * `enqueueBatch`): estorno unitário só para contato LIBERADO e SEM mensagem
+ * própria; quando já há mensagem, o worker estorna por messageId ao ver o
+ * contato CANCELLED (refId diferente — a unique (type, refId) do ledger
+ * impede duplo estorno por caminho). Contato não liberado nunca foi debitado.
+ * Falha de estorno é logada, não quebra a sincronização.
+ */
+async function syncQueueWithAudience(prisma, campaign, includedProspectIds) {
+  const included = new Set(includedProspectIds || []);
+  const reputation = require('./reputation');
+  const UNSENT = ['SELECTED', 'QUEUED', 'GENERATING', 'SCHEDULED'];
+  const contactModel = (prismaClient, channel) =>
+    channel === 'email' ? prismaClient.outreachContact : bridge.waContactModel(prismaClient);
+  const messageModel = (prismaClient, channel) =>
+    channel === 'email' ? prismaClient.outreachMessage : prismaClient.whatsAppMessage;
+  const out = {};
+  const syncChannel = async ({ channel, contacts, releasedField, cancelUpdate, messageFilter }) => {
+    const removed = contacts.filter((c) => !included.has(c.prospectId));
+    if (removed.length === 0) return { cancelled: 0, refunded: 0 };
+    let refunded = 0;
+    for (const contact of removed) {
+      // Review E3-H1: entre o findMany e a escrita o contato pode ter caído em
+      // SENDING/SENT — quem mudou de estado NÃO é mexido nem estornado (o
+      // motor cuida do que estava em voo; sync não reescreve história).
+      const cancelled = await contactModel(prisma, channel).updateMany({
+        where: { id: contact.id, status: { in: UNSENT } },
+        data: cancelUpdate,
+      });
+      if (!cancelled.count) continue;
+      const released = Boolean(contact[releasedField]);
+      const hasOwnRefundPath = messageFilter
+        ? Boolean(await messageModel(prisma, channel).findFirst({ where: messageFilter(contact), select: { id: true } }))
+        : false;
+      if (released && !hasOwnRefundPath) {
+        try {
+          await reputation.refundBatch(prisma, {
+            orgId: campaign.orgId,
+            channel,
+            batchId: `sync:${campaign.id}:${channel}:${contact.id}`,
+            units: 1,
+            reason: 'contato saiu da seleção — sincronização da fila',
+          });
+          refunded += 1;
+        } catch (err) {
+          console.error(`[studio:sync] estorno do contato ${contact.id} falhou (fila segue sincronizada):`, err.stack || String(err));
+        }
+      }
+    }
+    return { cancelled: removed.length, refunded };
+  };
+  if (campaign.emailExecutionId) {
+    out.email = await syncChannel({
+      channel: 'email',
+      contacts: await prisma.outreachContact.findMany({
+        where: { campaignId: campaign.emailExecutionId, status: { in: UNSENT } },
+      }),
+      releasedField: 'scheduledAt',
+      cancelUpdate: { status: 'CANCELLED', cancelReason: 'removido_da_selecao' },
+      messageFilter: (contact) => ({ contactId: contact.id }),
+    });
+  }
+  if (campaign.whatsappExecutionId) {
+    out.whatsapp = await syncChannel({
+      channel: 'whatsapp',
+      contacts: await bridge.waContactModel(prisma).findMany({
+        where: { campaignId: campaign.whatsappExecutionId, status: { in: UNSENT } },
+      }),
+      releasedField: 'nextSendAt',
+      cancelUpdate: { status: 'CANCELLED', cancelReason: 'removido_da_selecao' },
+      messageFilter: (contact) => ({ campaignContactId: contact.id }),
+    });
+  }
+  return out;
 }
 
 /** Snapshot ativo da campanha (ou null). */
@@ -522,4 +613,5 @@ module.exports.flow = {
   runImmediateDispatch,
   updateContents,
   refundUnsentOnCancel,
+  syncQueueWithAudience,
 };
