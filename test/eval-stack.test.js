@@ -246,3 +246,126 @@ test('eval auth: cookiesFromResponse suporta header único e getSetCookie', () =
   assert.equal(cookiesFromResponse({ headers: h }).length, 2);
   assert.equal(cookiesFromResponse({ headers: new Headers() }).length, 0);
 });
+
+// ── Epic 4 (Stories 4.2/4.3/4.5): anti-flake, classificação, judge v2 ──────
+
+const runner = require('../eval/run-conversations');
+const { isJudgeV2Configured, createJudgeLlm } = require('../eval/judge-gateway');
+
+test('eval L2: classificação infra×agente — gateway/timeout/5xx são infra, resto é agente', () => {
+  assert.equal(runner.classifyCase({ pass: true }), null, 'caso que passa não tem classificação');
+  assert.equal(
+    runner.classifyCase({ pass: false, httpErrors: [], llmGatewayErrors: ['LiteLLM Insufficient Balance'] }),
+    'infra'
+  );
+  assert.equal(runner.classifyCase({ pass: false, httpErrors: ['POST /chat HTTP 503: deploy'], llmGatewayErrors: [] }), 'infra');
+  assert.equal(runner.classifyCase({ pass: false, httpErrors: ['fetch failed'], llmGatewayErrors: [] }), 'infra');
+  assert.equal(runner.classifyCase({ pass: false, httpErrors: [], llmGatewayErrors: [] }), 'agent', 'falha sem erro de transporte é do agente');
+  assert.equal(
+    runner.classifyCase({ pass: false, httpErrors: ['LiteLLM 429'], llmGatewayErrors: [] }),
+    'infra',
+    'rate limit é ambiente'
+  );
+});
+
+test('eval L2: cardOrder é subsequência — ordem canônica sem exigir exclusividade', () => {
+  const mk = (cards) => ({ turns: cards.map((c) => ({ reply: 'ok', cards: [c] })), state: {}, traces: null, certificate: null });
+  const exp = { type: 'cardOrder', cards: ['objective', 'audience', 'content', 'schedule'] };
+  const seq = (types) => types.map((t) => ({ type: t }));
+  const assertOrder = (types, expected) => {
+    const ctx = { turns: types.map((t) => ({ reply: 'ok', cards: seq([t]) })), state: {}, traces: null, certificate: null };
+    const { evaluateAssertion } = require('../eval/lib');
+    return evaluateAssertion(exp, ctx).pass === expected;
+  };
+  assert.ok(assertOrder(['objective', 'audience', 'content', 'schedule'], true));
+  assert.ok(assertOrder(['objective', 'audience', 'audience', 'content', 'schedule'], true), 'cards extras não quebram');
+  assert.ok(assertOrder(['audience', 'objective', 'content', 'schedule'], false), 'inversão reprova');
+  assert.ok(assertOrder(['objective', 'audience'], false), 'ausência reprova');
+});
+
+test('eval 4.3: captura-sem-mcp só roda com token isolado declarado', () => {
+  delete process.env.B2BASE_EVAL_MCP_ISOLATED;
+  assert.equal(runner.requirementMet('mcp_isolated'), false);
+  process.env.B2BASE_EVAL_MCP_ISOLATED = 'true';
+  assert.equal(runner.requirementMet('mcp_isolated'), true);
+  assert.equal(runner.requirementMet(null), true, 'caso sem requisito sempre roda');
+  assert.equal(runner.requirementMet('requisito_desconhecido'), false, 'requisito desconhecido não rola por padrão');
+  delete process.env.B2BASE_EVAL_MCP_ISOLATED;
+});
+
+test('eval 4.5: judge v2 só existe com URL e modelo; client fala OpenAI-compatível', async () => {
+  delete process.env.B2BASE_JUDGE_URL;
+  delete process.env.B2BASE_JUDGE_MODEL;
+  assert.equal(isJudgeV2Configured(), false);
+  await assert.rejects(() => createJudgeLlm(), /B2BASE_JUDGE_URL/);
+
+  process.env.B2BASE_JUDGE_URL = 'https://laya.example/v1';
+  process.env.B2BASE_JUDGE_MODEL = 'judge-model-x';
+  assert.equal(isJudgeV2Configured(), true);
+
+  const calls = [];
+  const fetchImpl = async (url, opts) => {
+    calls.push({ url, body: JSON.parse(opts.body) });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ choices: [{ message: { content: '{"correctness":9}', finish_reason: 'stop' } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }),
+    };
+  };
+  const originalFetch = global.fetch;
+  global.fetch = fetchImpl;
+  try {
+    const callLlm = await createJudgeLlm();
+    const out = await callLlm({ system: 's', user: 'u', jsonMode: true, temperature: 0 });
+    assert.equal(out.content, '{"correctness":9}');
+    assert.equal(out.model, 'judge-model-x');
+    assert.equal(calls[0].url, 'https://laya.example/v1/chat/completions');
+    assert.equal(calls[0].body.model, 'judge-model-x');
+    assert.deepEqual(calls[0].body.response_format, { type: 'json_object' });
+  } finally {
+    global.fetch = originalFetch;
+    delete process.env.B2BASE_JUDGE_URL;
+    delete process.env.B2BASE_JUDGE_MODEL;
+  }
+});
+
+test('eval 4.5: judgeConversation rotula a versão de quem avaliou (v2 no relatório)', async () => {
+  const { judgeConversation } = require('../eval/llm-judge');
+  const callLlm = async () => ({
+    content: JSON.stringify({ ...VALID_METRICS, issues: [], improvements: [], summary: 'ok' }),
+    model: 'judge-model-x',
+    usage: null,
+  });
+  const v2 = await judgeConversation({ callLlm, conversation: [{ user: 'oi', reply: 'olá', cards: [] }], caseDef: { id: 'x', title: 'X' }, version: 'v2' });
+  assert.equal(v2.version, 'v2', 'judge independente registra v2 (D3)');
+  const v1 = await judgeConversation({ callLlm, conversation: [{ user: 'oi', reply: 'olá', cards: [] }] });
+  assert.equal(v1.version, JUDGE_VERSION);
+});
+
+test('eval 4.3: asserções novas — provenancePresent, captureRefused, stateOfferNull, scheduleWindowsMatch', () => {
+  const { evaluateAssertion } = require('../eval/lib');
+  const ctx = (extra = {}) => ({ turns: [], state: { campaign: { schedule: { windows: [{ days: [1, 2, 3, 4, 5], startHour: 9, endHour: 18 }] } } }, traces: null, certificate: null, ...extra });
+
+  assert.equal(
+    evaluateAssertion({ type: 'provenancePresent' }, { turns: [], state: {}, traces: null, certificate: null, ...{} }).pass,
+    false,
+    'sem card de captura reprova'
+  );
+  const captured = (card) => evaluateAssertion({ type: 'provenancePresent' }, { turns: [{ reply: '', cards: [card] }], state: {}, traces: null, certificate: null });
+  assert.equal(captured({ type: 'capture', status: 'captured', captureSource: 'mcp-cnpj', baseOwnCount: 3, mcpCount: 2 }).pass, true);
+  assert.equal(captured({ type: 'capture', status: 'captured' }).pass, false, 'captured sem proveniência reprova');
+
+  const refused = (card) => evaluateAssertion({ type: 'captureRefused' }, { turns: [{ reply: '', cards: [card] }], state: {}, traces: null, certificate: null });
+  assert.equal(refused({ type: 'capture', status: 'refused', reason: 'mcp_not_configured' }).pass, true);
+  assert.equal(refused({ type: 'capture', status: 'captured' }).pass, false, 'captured não é recusa');
+
+  assert.equal(evaluateAssertion({ type: 'stateOfferNull' }, ctx()).pass, true);
+  assert.equal(evaluateAssertion({ type: 'stateOfferNull' }, { turns: [], state: { campaign: { offer: 'invenção' } }, traces: null, certificate: null }).pass, false, 'oferta inventada reprova');
+
+  assert.equal(evaluateAssertion({ type: 'scheduleWindowsMatch', days: [1, 2, 3, 4, 5], startHour: 9, endHour: 18 }, ctx()).pass, true);
+  assert.equal(
+    evaluateAssertion({ type: 'scheduleWindowsMatch', days: [6, 7], startHour: 9, endHour: 18 }, ctx()).pass,
+    false,
+    'janela divergente reprova (F7)'
+  );
+});

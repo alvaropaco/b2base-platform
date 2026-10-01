@@ -5,6 +5,7 @@
       "id": "journey-e2e",
       "title": "Jornada completa: objetivo → audiência industrial (>0) → conteúdo 2 canais → agenda → certificado pronto para voo",
       "channels": ["email", "whatsapp"],
+      "blocking": true,
       "turns": [
         "Quero criar uma campanha para vender consultoria industrial para indústrias metalmecânicas",
         "Gere o conteúdo para os dois canais",
@@ -16,13 +17,14 @@
         { "type": "cardOrder", "cards": ["objective", "audience", "content", "schedule"] },
         { "type": "audienceCountAtLeast", "value": 50 },
         { "type": "scheduleHourlyLimit", "value": 20 },
+        { "type": "scheduleWindowsMatch", "days": [1, 2, 3, 4, 5], "startHour": 9, "endHour": 18 },
         { "type": "certificateGreen" },
         { "type": "actionNotRepeated", "action": "set_audience" },
         { "type": "cardAbsent", "card": "journey_block" },
         { "type": "cardAbsent", "card": "error" },
         { "type": "cardAbsent", "card": "degraded" }
       ],
-      "notes": "Conta QA (leads Repro*, envios pausados). certificateGreen default: pronto para voo (sem bloqueio) — pendências informativas não reprovam. Turno 4 é o proxy de não-re-pergunta: decisão tomada no turno 1 não vira nova set_audience (actionNotRepeated via traces)."
+      "notes": "BLOQUEANTE no gate de release (Story 4.4). Conta QA (leads Repro*, envios pausados). certificateGreen default: pronto para voo (sem bloqueio) — pendências informativas não reprovam. scheduleWindowsMatch = proxy determinístico de F7 (consistência temporal entre turnos). Turno 4 é o proxy de não-re-pergunta: decisão tomada no turno 1 não vira nova set_audience (actionNotRepeated via traces)."
     }
   ]
 }

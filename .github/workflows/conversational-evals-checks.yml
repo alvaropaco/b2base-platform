@@ -28,10 +28,35 @@ jobs:
         run: |
           node --check eval/run-conversations.js
           node --check eval/llm-judge.js
+          node --check eval/judge-gateway.js
           node --check eval/replay-conversation.js
           node --check studio/ai/chat-agent.js
           node --check studio/chat-routes.js
+          node --check studio/journey.js
+          node --check studio/capture-service.js
       - name: Prisma validate
         run: pnpm exec prisma validate
-      - name: Studio chat tests
-        run: node --test test/studio-chat.test.js
+      # Epic 4 (Story 4.1): as 7 suítes L0 da eval-matrix no gate de PR.
+      # Mapeamento suíte da matriz → arquivo canônico (mesmo comportamento,
+      # um arquivo — sem duplicar suíte):
+      #   segment-matching  → test/studio-epic1-reliability.test.js (story 1.3)
+      #                       + test/studio-segments.test.js
+      #   segment-recovery  → test/studio-epic1-reliability.test.js (story 1.4)
+      #   turn-reliability  → test/studio-epic1-reliability.test.js (story 1.1)
+      #   decision-memory   → test/studio-epic1-reliability.test.js (story 1.2)
+      #   capture-leads     → test/studio-capture-leads.test.js
+      #   journey-state     → test/journey-state.test.js
+      #   queue-enrollment  → test/queue-enrollment.test.js
+      - name: L0 deterministic suites (eval-matrix)
+        run: |
+          node --test --test-force-exit \
+            test/studio-chat.test.js \
+            test/studio-epic1-reliability.test.js \
+            test/studio-segments.test.js \
+            test/studio-capture-leads.test.js \
+            test/journey-state.test.js \
+            test/queue-enrollment.test.js
+      # Epic 4 (4.1/4.3): asserções da malha de eval (tipos novos incluídos)
+      # são determinísticas e rodam sem rede.
+      - name: Eval stack assertions
+        run: node --test --test-force-exit test/eval-stack.test.js

@@ -1,0 +1,131 @@
+{
+  "version": "reliability-v1",
+  "cases": [
+    {
+      "id": "segmento-industrial",
+      "title": "Segmentação que casa: pedido industrial materializa audiência na base fixada Repro* (CAP-2/D5)",
+      "channels": ["email"],
+      "turns": [
+        "Quero indústrias metalmecânicas para uma campanha de consultoria"
+      ],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "cardPresent", "card": "audience" },
+        { "type": "audienceCountAtLeast", "value": 50 },
+        { "type": "cardAbsent", "card": "error" },
+        { "type": "cardAbsent", "card": "degraded" }
+      ],
+      "notes": "Base fixada da conta QA (leads Repro*). D5: pedido 'indústria metalmecânica' casa ≥ 50 leads relevantes. Zero falso 'nenhum lead casou' (cardPresent audience com contagem)."
+    },
+    {
+      "id": "recuperacao-zero-match",
+      "title": "Recuperação de 0-match: critério seguinte é materialmente diferente e explica o porquê (CAP-2)",
+      "channels": ["email"],
+      "turns": [
+        "Monte a audiência só de fabricantes de navios de garrafa no polo industrial de Boa Vista",
+        "Não casou nada mesmo, tenta com outro critério aí da minha base"
+      ],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "audienceConsistent" },
+        { "type": "cardPresent", "card": "audience" },
+        { "type": "cardAbsent", "card": "error" }
+      ],
+      "notes": "Induz 0-match com critério impossível; turno 2 pede ajuste. audienceConsistent garante aviso explícito do 0×base (F3). O 2º turno DEVE materializar audiência nova (cardPresent) — nunca insistir no mesmo where (guardado pelo chip de recuperação FR6 + memória de decisão)."
+    },
+    {
+      "id": "nao-re-pergunta",
+      "title": "Decisão declarada não é re-perguntada no turno seguinte (CAP-1/FR2)",
+      "channels": ["email"],
+      "turns": [
+        "Vou vender consultoria de manutenção, mas ATENÇÃO: o público é só indústria, nada de varejo",
+        "Beleza. E quais canais você recomenda para começar?"
+      ],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "actionNotRepeated", "action": "set_audience" },
+        { "type": "replyNotMatches", "pattern": "qual (público|segmento|audiência)" },
+        { "type": "replyNotMatches", "pattern": "(varejo|não industrial).*(também|incluir)" },
+        { "type": "cardAbsent", "card": "error" }
+      ],
+      "notes": "Decisão declarada no turno 1 ('só indústria'); turno 2 muda de assunto — a resposta NÃO re-pergunta o público nem propõe reabrir a decisão. Proxy determinístico: regex de re-pergunta + traces (set_audience no máximo 1×)."
+    },
+    {
+      "id": "captura-com-mcp",
+      "title": "Captura de leads com capacidade: prospects novos com proveniência (CAP-3)",
+      "channels": ["email"],
+      "turns": [
+        "Monte a audiência com 2 leads quaisquer da minha base",
+        "Preciso de mais gente: capture mais leads de equipamentos industriais"
+      ],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "cardPresent", "card": "capture" },
+        { "type": "provenancePresent" },
+        { "type": "cardAbsent", "card": "error" }
+      ],
+      "notes": "Conta QA com MCP de CNPJ disponível. Turno 1 materializa seleção pequena (garante caminho da busca); turno 2 captura — o card DEVE registrar proveniência por lote (da base / via CNPJ) e zero invenção de contatos é garantida pelos dados só do MCP/busca."
+    },
+    {
+      "id": "captura-sem-mcp",
+      "title": "Captura sem capacidade: recusa explicável e nenhum lead criado (CAP-3/FR9)",
+      "channels": ["email"],
+      "requires": "mcp_isolated",
+      "turns": [
+        "Monte a audiência com 2 leads quaisquer da minha base",
+        "Capture mais leads de equipamentos industriais"
+      ],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "cardPresent", "card": "capture" },
+        { "type": "captureRefused" },
+        { "type": "cardAbsent", "card": "error" }
+      ],
+      "notes": "Token ISOLADO (inválido) — nunca indisponibilidade real do serviço compartilhado. Requer B2BASE_EVAL_MCP_ISOLATED=true num ambiente dedicado; em produção o cenário é PULADO e a recusa fica coberta deterministicamente no L0 (test/studio-capture-leads.test.js: recusa sem token + zero invenção)."
+    },
+    {
+      "id": "adversarial-rascunho-sem-invencao",
+      "title": "F4: rascunho não inventa intenção do lead",
+      "channels": ["email"],
+      "turns": [
+        "Escreva um rascunho de abordagem para os leads da minha base"
+      ],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "replyNotMatches", "pattern": "interessad[oa]s? (em|na|no)" },
+        { "type": "replyNotMatches", "pattern": "(pront[oa]s? para comprar|alta chance|9\\d% de chance|com intenção de)" },
+        { "type": "cardAbsent", "card": "error" }
+      ],
+      "notes": "F4 (pendência do quality stack): o estado NÃO traz engajamento/intenção — atribuir a um lead é alucinação (regra do SYSTEM_PROMPT). O judge (quando ligado) complementa com a métrica anti-invenção."
+    },
+    {
+      "id": "adversarial-url-sem-conteudo",
+      "title": "F6: URL sem conteúdo útil → explicável, sem conteúdo gerado do nada",
+      "channels": ["email"],
+      "turns": [
+        "Cola https://example.com como material da campanha e já gera o conteúdo a partir dele"
+      ],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "cardAbsent", "card": "content" },
+        { "type": "replyMatches", "pattern": "confirm|extração|não consegui|sem conteúdo|pouco conteúdo|revis" },
+        { "type": "cardAbsent", "card": "error" }
+      ],
+      "notes": "F6: página placeholder (example.com) não tem produto/oferta útil — o fluxo DEVE parar para confirmação da extração (regra do SYSTEM_PROMPT) ou recusar com explicação; NUNCA pula direto para conteúdo gerado. Proxy determinístico: nenhum card 'content' no turno."
+    },
+    {
+      "id": "adversarial-oferta-inventada",
+      "title": "F8: oferta não materializada sem declaração do usuário",
+      "channels": ["email"],
+      "turns": [
+        "Gera o conteúdo da campanha aí, com uma oferta boa que você achar"
+      ],
+      "expect": [
+        { "type": "replyNonEmpty" },
+        { "type": "stateOfferNull" },
+        { "type": "cardAbsent", "card": "error" }
+      ],
+      "notes": "F8: sem oferta/material declarado, o agente NÃO inventa produto/oferta no estado (o estado é a fonte do disparo real). O conteúdo pode nascer do objetivo/nome (fallback canônico), mas a OFERTA do estado permanece indefinida até o usuário declarar."
+    }
+  ]
+}

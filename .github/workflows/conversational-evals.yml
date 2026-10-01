@@ -5,7 +5,8 @@ on:
     inputs:
       eval_url:
         description: "Base URL for a deployed test/staging environment"
-        required: true
+        required: false
+        default: "https://www.b2base.net"
         type: string
       threshold:
         description: "Minimum deterministic overall score"
@@ -15,17 +16,44 @@ on:
       judge:
         description: "Run LLM-as-a-Judge"
         required: false
-        default: false
+        default: true
         type: boolean
       judge_threshold:
         description: "Minimum LLM-as-a-Judge score (0-10)"
         required: false
         default: "7"
         type: string
+      cases:
+        description: "Dataset (all | core | journey | reliability)"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - core
+          - journey
+          - reliability
+  # Epic 4 (Story 4.4): pós-deploy — a suíte roda sozinha quando o
+  # build-and-deploy termina em main; journey-e2e BLOQUEANTE (vermelho =
+  # release não considerada saudável).
+  workflow_run:
+    workflows: [build-and-deploy]
+    types: [completed]
+
+concurrency:
+  group: conversational-evals-${{ github.event.workflow_run.head_sha || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   eval:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dataset: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.cases || 'all')) || fromJSON('["journey"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -37,16 +65,66 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
-      - name: Run conversational evaluation
+      - name: Resolve dataset
+        id: dataset
+        run: |
+          case "${{ matrix.dataset }}" in
+            core)        echo "path=eval/conversations/core.json" >> "$GITHUB_OUTPUT";;
+            journey)     echo "path=eval/conversations/journey-v1.json" >> "$GITHUB_OUTPUT";;
+            reliability) echo "path=eval/conversations/reliability-v1.json" >> "$GITHUB_OUTPUT";;
+            *)           echo "path=" >> "$GITHUB_OUTPUT";;
+          esac
+      # Epic 4 (Story 4.4): pós-deploy roda a jornada como GATE de release.
+      # Dispatch manual mantém os datasets completos à mão (all = core +
+      # journey + reliability em sequência).
+      - name: Run conversational evaluation (all)
+        if: ${{ steps.dataset.outputs.path == '' }}
         env:
-          B2BASE_EVAL_URL: ${{ inputs.eval_url }}
+          B2BASE_EVAL_URL: ${{ inputs.eval_url || 'https://www.b2base.net' }}
           B2BASE_EVAL_THRESHOLD: ${{ inputs.threshold }}
           B2BASE_EVAL_JUDGE: ${{ inputs.judge }}
           B2BASE_EVAL_JUDGE_THRESHOLD: ${{ inputs.judge_threshold }}
+          B2BASE_EVAL_REPEAT: "3"
+          B2BASE_EVAL_JUDGE_BASELINE: "true"
           B2BASE_EVAL_ORG_ID: eval-org
           LITELLM_URL: ${{ secrets.B2BASE_LITELLM_URL }}
           LITELLM_API_KEY: ${{ secrets.B2BASE_LITELLM_API_KEY }}
           LITELLM_MODEL: ${{ secrets.B2BASE_LITELLM_MODEL }}
+          B2BASE_JUDGE_URL: ${{ secrets.B2BASE_JUDGE_URL }}
+          B2BASE_JUDGE_API_KEY: ${{ secrets.B2BASE_JUDGE_API_KEY }}
+          B2BASE_JUDGE_MODEL: ${{ secrets.B2BASE_JUDGE_MODEL }}
           B2BASE_EVAL_EMAIL: ${{ secrets.B2BASE_EVAL_EMAIL }}
           B2BASE_EVAL_PASSWORD: ${{ secrets.B2BASE_EVAL_PASSWORD }}
-        run: pnpm run eval:chat
+        run: |
+          set -e
+          for ds in eval/conversations/core.json eval/conversations/journey-v1.json eval/conversations/reliability-v1.json; do
+            echo "::group::dataset $ds"
+            B2BASE_EVAL_CASES="$ds" pnpm run eval:chat
+            echo "::endgroup::"
+          done
+      - name: Run conversational evaluation (dataset)
+        if: ${{ steps.dataset.outputs.path != '' }}
+        env:
+          B2BASE_EVAL_URL: ${{ inputs.eval_url || 'https://www.b2base.net' }}
+          B2BASE_EVAL_THRESHOLD: ${{ inputs.threshold }}
+          B2BASE_EVAL_JUDGE: ${{ inputs.judge }}
+          B2BASE_EVAL_JUDGE_THRESHOLD: ${{ inputs.judge_threshold }}
+          B2BASE_EVAL_REPEAT: "3"
+          B2BASE_EVAL_JUDGE_BASELINE: ${{ matrix.dataset == 'journey' && 'true' || 'false' }}
+          B2BASE_EVAL_ORG_ID: eval-org
+          LITELLM_URL: ${{ secrets.B2BASE_LITELLM_URL }}
+          LITELLM_API_KEY: ${{ secrets.B2BASE_LITELLM_API_KEY }}
+          LITELLM_MODEL: ${{ secrets.B2BASE_LITELLM_MODEL }}
+          B2BASE_JUDGE_URL: ${{ secrets.B2BASE_JUDGE_URL }}
+          B2BASE_JUDGE_API_KEY: ${{ secrets.B2BASE_JUDGE_API_KEY }}
+          B2BASE_JUDGE_MODEL: ${{ secrets.B2BASE_JUDGE_MODEL }}
+          B2BASE_EVAL_EMAIL: ${{ secrets.B2BASE_EVAL_EMAIL }}
+          B2BASE_EVAL_PASSWORD: ${{ secrets.B2BASE_EVAL_PASSWORD }}
+        run: B2BASE_EVAL_CASES="${{ steps.dataset.outputs.path }}" pnpm run eval:chat
+      - name: Upload eval reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-reports-${{ matrix.dataset }}-${{ github.run_id }}
+          path: eval/reports/*.json
+          if-no-files-found: ignore

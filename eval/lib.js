@@ -146,6 +146,49 @@ function evaluateAssertion(exp, ctx) {
       const turnsWith = traces.filter((t) => Array.isArray(t.actionTypes) && t.actionTypes.includes(action)).length;
       return pass(turnsWith <= 1, `action "${action}" deveria ocorrer no máximo 1× (ocorreu ${turnsWith}×)`);
     }
+    /**
+     * Epic 4 (4.4/F7): consistência temporal entre turnos — o que o usuário
+     * DECLAROU (janela) é o que ficou materializado no estado.
+     */
+    case 'scheduleWindowsMatch': {
+      const windows = (ctx.state?.campaign?.schedule?.windows) || [];
+      const expectedDays = (exp.days || []).slice().sort((a, b) => a - b).join(',');
+      const match = windows.some(
+        (w) =>
+          Array.isArray(w.days) &&
+          w.days.slice().sort((a, b) => a - b).join(',') === expectedDays &&
+          Number(w.startHour) === Number(exp.startHour) &&
+          Number(w.endHour) === Number(exp.endHour)
+      );
+      return pass(
+        match,
+        `agenda deveria ter janela dias [${expectedDays}] ${exp.startHour}h–${exp.endHour}h (estado: ${JSON.stringify(windows)})`
+      );
+    }
+    /**
+     * Epic 4 (4.3/CAP-3): captura grava PROVENIÊNCIA por lote — card captured
+     * informa de onde veio (base própria × via CNPJ, contagens por lote).
+     */
+    case 'provenancePresent': {
+      const capture = allCards.find((c) => c && c.type === 'capture');
+      if (!capture) return pass(false, 'card de captura ausente');
+      const ok =
+        capture.status === 'captured' &&
+        (Boolean(capture.captureSource) || Number(capture.baseOwnCount) > 0 || Number(capture.mcpCount) > 0);
+      return pass(ok, `captura deveria registrar proveniência (status=${capture.status}, source=${capture.captureSource || '—'})`);
+    }
+    /** Epic 4 (4.3/CAP-3): recusa explicável da captura sem capacidade. */
+    case 'captureRefused': {
+      const capture = allCards.find((c) => c && c.type === 'capture');
+      const ok = capture && ['refused', 'limit_reached'].includes(capture.status);
+      return pass(Boolean(ok), `captura deveria recusar de forma explicável (status=${capture?.status || 'sem card'})`);
+    }
+    /**
+     * Epic 4 (4.6/F8): oferta NÃO materializada sem declaração do usuário —
+     * o agente não inventa produto/oferta no estado.
+     */
+    case 'stateOfferNull':
+      return pass(ctx.state?.campaign?.offer == null, `oferta deveria seguir indefinida (veio: ${JSON.stringify(ctx.state?.campaign?.offer)})`);
     default:
       return pass(false, `asserção desconhecida: ${exp.type}`);
   }

@@ -81,12 +81,14 @@ function weightedOverall(metrics) {
 }
 
 /**
- * judgeConversation({ callLlm, conversation, caseDef }) →
+ * judgeConversation({ callLlm, conversation, caseDef, version }) →
  * { version, metrics, overall, issues, improvements, summary,
  *   model, latencyMs, usage, evaluatedAt }
  * Propaga erro com .code (JUDGE_INVALID_*) para o runner marcar o caso.
+ * `version` rotula quem avaliou ('v1' LiteLLM do SUT | 'v2' Laya independente
+ * — Story 4.5/D3); o runner registra no relatório.
  */
-async function judgeConversation({ callLlm, conversation, caseDef }) {
+async function judgeConversation({ callLlm, conversation, caseDef, version } = {}) {
   if (typeof callLlm !== 'function') throw new Error('judge requer callLlm (llm-client.js)');
   const user = [
     caseDef ? `CENÁRIO ESPERADO DO CASO "${caseDef.id}": ${caseDef.title}` : null,
@@ -117,7 +119,7 @@ async function judgeConversation({ callLlm, conversation, caseDef }) {
   }
   const validated = validateJudgeOutput(raw);
   return {
-    version: JUDGE_VERSION,
+    version: version || JUDGE_VERSION,
     ...validated,
     overall: weightedOverall(validated.metrics),
     model: result.model || null,
