@@ -4,7 +4,7 @@
  * campos que a conversa não cobre (quickstart Cenários 1–2).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { buildCommercialProfilePayload } from './onboarding';
 import type { BusinessContext, OnboardingResult, QuestionId } from '@/types/onboarding';
 import type { CommercialProfile } from '@/types';
@@ -127,9 +127,18 @@ describe('US1 — mapeamento respostas → perfil (FR-002)', () => {
   });
 
   it('mesma entrada produz o mesmo payload (idempotência — I3)', () => {
-    const a = buildCommercialProfilePayload(makeResult(), makeCurrent());
-    const b = buildCommercialProfilePayload(makeResult(), makeCurrent());
-    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+    // completedAt é carimbo de runtime (new Date().toISOString()) — sem o
+    // relógio travado o teste floppa quando o milissegundo vira entre as
+    // duas chamadas (flake observado em 2026-10-02).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-02T12:00:00Z'));
+    try {
+      const a = buildCommercialProfilePayload(makeResult(), makeCurrent());
+      const b = buildCommercialProfilePayload(makeResult(), makeCurrent());
+      expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

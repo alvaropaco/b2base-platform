@@ -419,7 +419,7 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
           {card.label}
           {card.replayed && <span className="ml-1 font-normal text-muted-foreground">(já feito — nada duplicado)</span>}
         </p>
-        {card.detail && <p className="mt-0.5 text-muted-foreground">{card.detail}</p>}
+        {card.detail && <p className="mt-0.5 whitespace-pre-wrap text-muted-foreground">{card.detail}</p>}
         {/* Epic 1 (FR6): diagnóstico do 0-match em linguagem simples. */}
         {card.diagnosis && <p className="mt-1.5 leading-relaxed text-muted-foreground">{card.diagnosis}</p>}
         {/* Epic 1 (FR6): proposta materialmente diferente — 1 clique aplica. */}
@@ -509,8 +509,16 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
               <Sparkles className="h-3.5 w-3.5" />
             </div>
             <div className="min-w-0 max-w-[85%] space-y-2 text-sm">
+              {pending.reply ? (
+                <div className="space-y-2 text-[15px] leading-relaxed [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_li]:ml-4 [&_li]:list-disc [&_ol_li]:list-decimal [&_p]:mb-1.5 [&_p:last-child]:mb-0 [&_strong]:font-semibold">
+                  <ReactMarkdown>{pending.reply}</ReactMarkdown>
+                </div>
+              ) : null}
+              {/* Status por ÚLTIMO (2026-10-02, bug 4 do dono): o que a IA está
+                  fazendo AGORA (gerando conteúdo, criando audiência) fica
+                  visível com os pontinhos — inclusive DEPOIS do texto. */}
               {pending.statuses.length > 0 && (
-                <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
                   <span className="cockpit-typing flex items-center gap-1" aria-hidden="true">
                     <i />
                     <i />
@@ -519,16 +527,11 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
                   {pending.statuses[pending.statuses.length - 1]}
                 </p>
               )}
-              {pending.reply ? (
-                <div className="space-y-2 text-[15px] leading-relaxed [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_li]:ml-4 [&_li]:list-disc [&_ol_li]:list-decimal [&_p]:mb-1.5 [&_p:last-child]:mb-0 [&_strong]:font-semibold">
-                  <ReactMarkdown>{pending.reply}</ReactMarkdown>
-                </div>
-              ) : null}
               {pending.cards.map((card, i) =>
                 card.type === 'error' ? (
                   <div key={i} className="rounded-xl border border-rose-400/40 bg-rose-500/10 p-3 text-xs">
                     <p className="font-semibold text-foreground">{card.label}</p>
-                    {card.detail && <p className="mt-0.5 text-muted-foreground">{card.detail}</p>}
+                    {card.detail && <p className="mt-0.5 whitespace-pre-wrap text-muted-foreground">{card.detail}</p>}
                   </div>
                 ) : (
                   renderCard(card, i)

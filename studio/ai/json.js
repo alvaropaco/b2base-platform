@@ -101,7 +101,7 @@ function isInfraLlmError(err) {
 /** Deadline suave: esgotado, nenhum retry NOVO começa (o turno degrada). */
 const RETRY_DEADLINE_MS = 75_000;
 
-async function callLlmJson(llm, { system, buildUser, validate, maxTokens = 1200, temperature = 0.4, model, tag, parseAttempts = 3, validateAttempts = 2 }) {
+async function callLlmJson(llm, { system, buildUser, validate, maxTokens = 1200, temperature = 0.4, model, tag, timeoutMs, parseAttempts = 3, validateAttempts = 2 }) {
   let lastRaw = null;
   let lastProblem = null;
   let lastTruncated = false;
@@ -130,6 +130,7 @@ async function callLlmJson(llm, { system, buildUser, validate, maxTokens = 1200,
         maxTokens,
         model,
         tag,
+        timeoutMs,
       });
     } catch (err) {
       // Timeout/HTTP/rede do gateway conta no orçamento do estágio de parse

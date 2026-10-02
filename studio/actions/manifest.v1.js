@@ -42,6 +42,10 @@ const ACTIONS_V1 = {
   // o MESMO pedido devolve o MESMO card sem re-executar (FR8/AD-6). Disponível
   // para trial e premium (D2) — o handler NUNCA chama requirePremiumOrg.
   capture_leads: { version: 1, idempotency: 'params', description: 'Captura leads por busca híbrida na base própria e, se não bastar, via MCP CNPJ — com proveniência e limite diário' },
+  // QA 2026-10-02 (bug 5 do dono) — ADITIVA (AD-6), somente leitura: o texto
+  // COMPLETO dos conteúdos gerados aparece no chat para revisão — o agente
+  // nunca mais "troca de assunto" quando pedem para ver o e-mail.
+  show_content: { version: 1, idempotency: 'none', description: 'Mostra no chat os conteúdos gerados (assunto + texto completo por canal) para revisão' },
 };
 
 /**

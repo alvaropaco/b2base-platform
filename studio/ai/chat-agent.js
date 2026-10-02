@@ -59,6 +59,16 @@ const SYSTEM_PROMPT = [
   'decidido ali; referencie os critérios quando for relevante e só proponha mudança se o usuário pedir.',
   'Pergunte uma vez, nunca mais.',
   '',
+  'MENSAGEM RICA (regra de ouro): se a mensagem do usuário já trouxer várias informações de uma vez',
+  '(o que vende, para quem, tom, anexo), processe TUDO de uma vez — emita as actions correspondentes',
+  'na MESMA resposta e NUNCA re-pergunte o que já está na mensagem ou no ESTADO ATUAL (objetivo, oferta,',
+  'audiência decidida). Só pergunte o que de fato FALTA para a campanha avançar — conferindo sempre o',
+  'estado antes de formular qualquer pergunta.',
+  '',
+  'REVISÃO DE CONTEÚDO: quando o usuário pedir para VER, LER ou revisar o e-mail/mensagem gerados',
+  '("me manda o e-mail", "mostra como ficou", "quero ler"), inclua a action "show_content" — o texto',
+  'completo aparece no chat. Nunca apenas aponte para o painel e troque de assunto.',
+  '',
   'JORNADA (Epic 3): a campanha avança em ordem — objetivo → audiência → conteúdo → agenda → certificado.',
   'O bloco jornada do estado mostra a FASE CORRENTE e o que já foi concluído: avance a próxima fase pendente.',
   'Nunca emita ação de uma fase À FRENTE do que já existe (ex.: agendar sem conteúdo) — o servidor recusa',
@@ -81,6 +91,7 @@ const SYSTEM_PROMPT = [
   '            {"type":"attach_url","url":"https://..."},',
   '            {"type":"confirm_material","materialId":"..."},',
   '            {"type":"generate_content","tones":["formal","comercial"]},',
+  '            {"type":"show_content"},',
   '            {"type":"capture_leads","query":"equipamentos agrícolas","limit":25},',
   '            {"type":"set_schedule","mode":"scheduled","windows":[{"days":[1,2,3,4,5],"startHour":9,"endHour":18}],"hourlyLimit":20,"dailyLimit":100,"timezone":"America/Sao_Paulo"},',
   '            {"type":"show_balance"},',
@@ -178,6 +189,85 @@ function unchangedPhases(campaign, extras = {}) {
 function createChatAgent({ callLlm } = {}) {
   const llm = callLlm || require('../../llm-client').callLlm;
 
+  /**
+   * Extração PEQUENA e dedicada de intenção (QA 2026-10-02, bugs 1/2 do dono):
+   * mensagem rica de abertura re-perguntava o que já fora dito porque o
+   * orchestrate (uma chamada só: decidir + escrever) deixava de emitir as
+   * actions. Aqui UMA chamada minúscula (300 tokens, temp 0) extrai
+   * objetivo/oferta/audiência EXPLICITAMENTE presentes na mensagem — o
+   * caller materializa pelos handlers reais e o orchestrate escreve a
+   * resposta com o estado já atualizado. Falhar aqui NUNCA derruba o turno:
+   * o caller segue para o orchestrate normal.
+   */
+  async function extractIntent({ userMessage, onLlmCall = () => {} } = {}) {
+    const instrumented = async (opts) => {
+      const startedAt = Date.now();
+      try {
+        const result = await llm(opts);
+        onLlmCall({
+          durationMs: Date.now() - startedAt,
+          model: result.model || null,
+          usage: result.usage || null,
+          truncated: Boolean(result.truncated),
+          fallbackUsed: Boolean(result.fallbackUsed),
+          status: 'succeeded',
+        });
+        return result;
+      } catch (error) {
+        onLlmCall({
+          durationMs: Date.now() - startedAt,
+          model: null,
+          usage: null,
+          truncated: false,
+          fallbackUsed: false,
+          status: 'failed',
+          errorCode: error.code || null,
+        });
+        throw error;
+      }
+    };
+    try {
+      const parsed = await callLlmJson(instrumented, {
+        system:
+          'Você extrai intenção comercial de mensagens para uma campanha B2B. Responda apenas com JSON válido.',
+        buildUser: (previousRaw) => {
+          const base = [
+            'PRIMEIRA EXTRAÇÃO DE INTENÇÃO — leia a mensagem do usuário e extraia o que estiver EXPLICITAMENTE nela.',
+            'Responda SOMENTE com JSON: {"objective":"...","offer":"...","audience":"..."}',
+            'Regras:',
+            '- objective: o que a pessoa quer alcançar com a campanha (ex.: "agendar demos de ERP").',
+            '- offer: o produto/serviço oferecido (ex.: "software de gestão fiscal").',
+            '- audience: PARA QUEM ela vende — segmento de empresas em poucas palavras (ex.: "indústrias de médio porte em SP").',
+            '- Campo ausente na mensagem = null. NUNCA invente ou complete por conta própria.',
+            '',
+            `MENSAGEM DO USUÁRIO: ${String(userMessage || '').slice(0, 2000)}`,
+          ].join('\n');
+          if (!previousRaw) return base;
+          return [
+            `Sua resposta anterior NÃO foi JSON utilizável: ${String(previousRaw).slice(0, 300)}`,
+            'Responda de novo SOMENTE com JSON no formato {"objective":"...","offer":"...","audience":"..."} sobre a mensagem abaixo.',
+            '',
+            base,
+          ].join('\n');
+        },
+        validate: () => null, // parse apenas — normalização fica no caller
+        maxTokens: 300,
+        temperature: 0,
+        parseAttempts: 2,
+        tag: 'studio:intent',
+      });
+      const clean = (v) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 500) : null);
+      return {
+        objective: clean(parsed.objective),
+        offer: clean(parsed.offer),
+        audience: clean(parsed.audience),
+      };
+    } catch (err) {
+      console.error('[studio/chat] extractIntent falhou (turno segue sem extração):', err.stack || String(err));
+      return { objective: null, offer: null, audience: null };
+    }
+  }
+
   async function orchestrate({ campaign, history, userMessage, extras, onLlmCall = () => {} }) {
     const user = [
       buildStateBlock(campaign, extras),
@@ -259,7 +349,7 @@ function createChatAgent({ callLlm } = {}) {
     }
   }
 
-  return { orchestrate };
+  return { orchestrate, extractIntent };
 }
 
 module.exports = { createChatAgent, SYSTEM_PROMPT };

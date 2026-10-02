@@ -587,13 +587,32 @@ function registerChatRoutes(router, context) {
           : [campaign.objective, campaign.offer].filter(Boolean).join(' — ') || campaign.name;
         const tones = (Array.isArray(action.tones) && action.tones.length ? action.tones : ['formal', 'comercial']).slice(0, 3);
         const settings = await prisma.commercialSettings.findUnique({ where: { orgId } });
-        const created = await generateAndStorePackage(prisma, composer, {
-          campaign,
-          sourceText,
-          tones,
-          orgId,
-          orgContext: settings ? `${settings.companyName || ''} vende ${settings.productDescription || '?'}` : null,
-        });
+        // QA 2026-10-02 (bug 3 do dono): um tom falhando (LLM timeout/JSON
+        // num pacote grande) derrubava o pacote INTEIRO — mesmo com o outro
+        // tom já criado e salvo. Agora cada tom tem seu próprio orçamento:
+        // o que der certo persiste e vira card; o que falhar é dito com
+        // honestidade (e o pedido pode ser repetido só dele). Falha NÃO-LLM
+        // (validação/DB) continua falhando na hora.
+        const created = [];
+        const failedTones = [];
+        let lastError = null;
+        for (const tone of tones) {
+          try {
+            const part = await generateAndStorePackage(prisma, composer, {
+              campaign,
+              sourceText,
+              tones: [tone],
+              orgId,
+              orgContext: settings ? `${settings.companyName || ''} vende ${settings.productDescription || '?'}` : null,
+            });
+            created.push(...part);
+          } catch (err) {
+            if (!['LLM_JSON_FAILED', 'LLM_TIMEOUT', 'LLM_HTTP_ERROR'].includes(err.code)) throw err;
+            failedTones.push(tone);
+            lastError = err;
+          }
+        }
+        if (created.length === 0 && lastError) throw lastError;
         // Epic 3 (Story 3.1): conteúdo materializado conclui a fase de conteúdo.
         if (created.length > 0) await journey.syncJourney(prisma, campaign, { mark: 'conteudo' });
         // FR-26: origem dos dados citada no card — o vendedor vê de onde veio
@@ -607,11 +626,53 @@ function registerChatRoutes(router, context) {
           : [campaign.objective && `Objetivo: ${campaign.objective}`, campaign.offer && `Oferta: ${campaign.offer}`].filter(
               Boolean
             );
+        const okTones = tones.filter((t) => !failedTones.includes(t));
+        const failedNote = failedTones.length
+          ? ` O tom ${failedTones.join(', ')} não conseguiu agora — me peça para gerar de novo só ele.`
+          : '';
         return {
           type: 'content',
           label: 'Conteúdo gerado (em revisão)',
-          detail: `${created.length} variações criadas: ${tones.join(', ')} — revise na lista de conteúdos abaixo.`,
+          detail:
+            `${okTones.length} variação(ões) criada(s): ${okTones.join(', ')}.` +
+            `${failedNote} Me peça "me mostra o e-mail" para ler tudo aqui no chat.`,
           sources,
+          failedTones,
+        };
+      }
+
+      case 'show_content': {
+        // QA 2026-10-02 (bug 5 do dono): "me manda o e-mail pra eu revisar"
+        // virava troca de assunto — o agente não tinha como mostrar o texto
+        // no chat (o estado só carrega um resumo de 60 caracteres). Card com
+        // o conteúdo COMPLETO por canal; somente leitura, sem idempotência.
+        const contents = await prisma.studioContent.findMany({
+          where: { campaignId: campaign.id, kind: 'base', stepIndex: 1 },
+        });
+        if (contents.length === 0) {
+          return {
+            type: 'content_empty',
+            label: 'Ainda não há conteúdo gerado',
+            detail: 'Não gerei conteúdo para esta campanha ainda. Me peça para gerar que eu crio o e-mail e a mensagem do WhatsApp.',
+          };
+        }
+        const parts = contents.map((c) => {
+          if (c.channel === 'email') {
+            const body = emailBlocksToText(c.emailDoc);
+            return `✉️ E-mail (${c.tone || 'tom padrão'})\n**Assunto:** ${c.subject || '—'}${c.preheader ? `\n${c.preheader}` : ''}\n\n${body || '(corpo vazio)'}`;
+          }
+          if (c.channel === 'whatsapp') {
+            return `📱 WhatsApp (${c.tone || 'tom padrão'})\n${c.whatsappText || '(texto vazio)'}`;
+          }
+          if (c.channel === 'linkedin_text') {
+            return `💼 LinkedIn (${c.tone || 'tom padrão'})\n${c.linkedinText || '(texto vazio)'}`;
+          }
+          return `• ${c.channel} (${c.tone || 'tom padrão'})`;
+        });
+        return {
+          type: 'content_review',
+          label: `Seu conteúdo para revisar (${contents.length} item(ns))`,
+          detail: parts.join('\n\n—\n\n') + '\n\nQuer ajustar algo? Me diga o que mudar que eu edito aqui mesmo.',
         };
       }
 
@@ -782,6 +843,19 @@ function registerChatRoutes(router, context) {
         return null;
     }
   }
+
+/** emailDoc.blocks → texto plano do corpo para revisão no chat (show_content). */
+function emailBlocksToText(emailDoc) {
+  const blocks = emailDoc && Array.isArray(emailDoc.blocks) ? emailDoc.blocks : [];
+  return blocks
+    .map((b) => {
+      if (!b || typeof b !== 'object') return null;
+      if (b.type === 'button') return b.url ? `[${b.label || 'Ver mais'}](${b.url})` : b.label || null;
+      return typeof b.text === 'string' && b.text.trim() ? b.text : null;
+    })
+    .filter(Boolean)
+    .join('\n\n');
+}
 
 function criteriaDescription(criteria) {
   return (criteria?.groups || [])
@@ -1171,6 +1245,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
 
   // Rótulos das etapas em pt-BR — exibidos ao vivo no chat (status SSE).
   const ACTION_LABELS = {
+    extract_intent: 'Entendendo sua mensagem…',
     set_objective: 'Definindo objetivo…',
     set_audience: 'Criando audiência…',
     select_leads: 'Ajustando os leads selecionados…',
@@ -1182,6 +1257,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     start_whatsapp_pairing: 'Preparando o pareamento do WhatsApp…',
     attach_files: 'Vinculando anexos à campanha…',
     edit_content: 'Atualizando o conteúdo…',
+    show_content: 'Buscando seus conteúdos…',
     capture_leads: 'Capturando leads…',
   };
 
@@ -1277,6 +1353,61 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     // Epic 3 (Story 3.1): a fase da jornada entra no estado do orchestrate —
     // o modelo avança a próxima fase pendente (o guard server-side é a rede).
     extras.journey = journey.previewFromExtras(campaign, extras);
+    const cards = [...autoAttachCards];
+
+    // QA 2026-10-02 (bugs 1/2 do dono): mensagem rica de abertura re-perguntava
+    // o que já fora dito — o orchestrate (uma chamada só: decidir + escrever)
+    // deixava de emitir as actions. Extração PEQUENA e dedicada materializa
+    // objetivo/oferta/audiência EXPLICITAMENTE presentes na mensagem ANTES do
+    // orchestrate: os handlers reais rodam, os cards saem, e o modelo escreve
+    // a resposta com o estado já atualizado (decisão fechada FR2 entra na
+    // MESMA rodada). Falha aqui NUNCA derruba o turno.
+    if (!campaign.objective) {
+      emit({ type: 'status', label: ACTION_LABELS.extract_intent });
+      actionTypes.push('extract_intent');
+      const extractionStartedAt = Date.now();
+      try {
+        const intent = await chatAgent.extractIntent({
+          userMessage: message,
+          onLlmCall: (telemetry) => llmTelemetry.push(telemetry),
+        });
+        if (intent.objective) {
+          emit({ type: 'status', label: ACTION_LABELS.set_objective });
+          const objectiveCard = await runAction(
+            { type: 'set_objective', objective: intent.objective, ...(intent.offer ? { offer: intent.offer } : {}) },
+            { campaign, cards, orgId, userId }
+          );
+          if (objectiveCard) {
+            cards.push(objectiveCard);
+            emit({ type: 'card', card: objectiveCard });
+          }
+        }
+        if (intent.audience) {
+          emit({ type: 'status', label: ACTION_LABELS.set_audience });
+          const audienceCard = await runAction(
+            { type: 'set_audience', description: intent.audience },
+            { campaign, cards, orgId, userId }
+          );
+          if (audienceCard) {
+            cards.push(audienceCard);
+            emit({ type: 'card', card: audienceCard });
+          }
+        }
+        if (intent.objective || intent.audience) {
+          // O orchestrate precisa do estado PÓS-ação: relê a campanha (o
+          // objeto em memória está pré-ação) e recalcula os extras.
+          const fresh = await prismaClient.studioCampaign.findUnique({ where: { id: campaign.id } });
+          if (fresh) Object.assign(campaign, fresh);
+          Object.assign(extras, await currentExtras(prismaClient, campaign));
+          extras.journey = journey.previewFromExtras(campaign, extras);
+        }
+      } catch (err) {
+        console.error('[studio/chat] pré-extração de intenção falhou (turno segue):', err.stack || String(err));
+      } finally {
+        actionDurationsMs.extract_intent = (actionDurationsMs.extract_intent || 0) + (Date.now() - extractionStartedAt);
+      }
+    }
+
     let reply;
     let actions;
     let degradation = null;
@@ -1314,13 +1445,12 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     }
     emit({ type: 'reply', text: reply });
 
-    const cards = [...autoAttachCards];
     // Ordem canônica: set_audience REMATERIALIZA a seleção — se o modelo
     // emits select_leads antes e set_audience depois, o set apaga a seleção
     // que acabou de ser feita (regressão QA E2E 2026-09-28, estado-consistente).
     // Epic 2: capture_leads por ÚLTIMO (9) — a captura existe para os turnos
     // que pedem leads novos; nunca reordena as fases canônicas anteriores.
-    const ACTION_ORDER = { set_objective: 0, set_audience: 1, attach_url: 2, confirm_material: 3, generate_content: 4, select_leads: 5, set_schedule: 6, attach_files: 7, edit_content: 8, capture_leads: 9 };
+    const ACTION_ORDER = { set_objective: 0, set_audience: 1, attach_url: 2, confirm_material: 3, generate_content: 4, select_leads: 5, set_schedule: 6, attach_files: 7, edit_content: 8, show_content: 8, capture_leads: 9 };
     const orderedActions = [...actions].sort(
       (a, b) => (ACTION_ORDER[a?.type] ?? 9) - (ACTION_ORDER[b?.type] ?? 9)
     );
