@@ -75,10 +75,15 @@ test('bug 6: toda action do manifest é declarada no SYSTEM_PROMPT (capacidades 
 test('roteador de gerenciamento: pedido de campanha injeta a instrução; trabalho de conteúdo não', () => {
   assert.ok(campaignManagementHint('cria uma campanha chamada Rh Novo'), 'criação detectada');
   assert.ok(campaignManagementHint('renomeia a campanha para X'), 'renomear detectado');
+  assert.ok(campaignManagementHint('renomear campanha'), 'renomear (verbo depois) detectado');
+  assert.ok(campaignManagementHint('muda o nome da campanha para Outbound 2026'), 'renomear por "muda o nome" detectado');
+  assert.ok(campaignManagementHint('troca o nome da campanha'), 'renomear por "troca o nome" detectado');
+  assert.ok(campaignManagementHint('o nome da campanha agora é Indústrias SP'), 'renomear por "nome da campanha é" detectado');
   assert.ok(campaignManagementHint('quais campanhas eu tenho?'), 'listagem detectada');
   assert.ok(campaignManagementHint('apaga a campanha antiga'), 'exclusão detectada');
   assert.equal(campaignManagementHint('monta a audiência da campanha'), null, 'trabalho da jornada não é gerência');
   assert.equal(campaignManagementHint('criar conteúdo da campanha'), null, 'conteúdo não é gerência');
+  assert.equal(campaignManagementHint('muda o nome do lead para Acme'), null, 'nome de LEAD não é renomeação de campanha');
   assert.equal(campaignManagementHint('oi, tudo bem?'), null, 'conversa comum sem hint');
 });
 

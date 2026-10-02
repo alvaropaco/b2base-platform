@@ -175,9 +175,10 @@
     },
     {
       "id": "gerenciamento-campanhas",
-      "title": "Gerenciamento pelo chat: criar e listar campanhas sem negação (QA 2026-10-02)",
+      "title": "Gerenciamento pelo chat: criar, renomear e listar sem negação (QA 2026-10-02)",
       "turns": [
         "Crie uma campanha chamada Eval Gerenciamento",
+        "Renomeia a campanha para Eval Gerenciamento v2",
         "Quais campanhas eu tenho?"
       ],
       "expect": [
@@ -195,6 +196,14 @@
         {
           "type": "replyNotMatches",
           "pattern": "(n[ãa]o (h[áa]|tenho|existe)).{0,30}action"
+        },
+        {
+          "type": "replyNotMatches",
+          "pattern": "n[ãa]o tem acesso"
+        },
+        {
+          "type": "cardPresent",
+          "card": "campaign_renamed"
         },
         {
           "type": "cardPresent",
