@@ -3,7 +3,7 @@ title: 'Epic 3 confiabilidade — jornada que conclui e fila consistente'
 type: 'feature'
 ticket: ''
 created: '2026-10-01'
-status: 'in-progress'
+status: 'built'
 baseline_revision: '46bbaa8a'
 route: 'full'
 route_source: 'auto'
@@ -73,14 +73,14 @@ context:
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `prisma/schema.prisma` + migrate `20261001090000_studio_campaign_journey` -- `StudioCampaign.journey Json?` -- 3.1.
-- [ ] `studio/journey.js` (novo) -- `PHASES`; `computeJourney(campaign, {hasContent, hasSchedule, snapshotCount})` (espelha `currentRailStep`); `recordJourney(prisma, campaign, {event})` persiste `{phase, completed:{...}, updatedAt}` (decisão fechada FR2 → audiência concluída); `guardAction(actionType, journey, {hasContent})` → `{ok, block?{missing[]}}` — só salto à frente com pré-requisito ausente bloqueia (`set_schedule` exige conteúdo) -- 3.1.
-- [ ] `studio/chat-routes.js` -- guard em `runAction` (card `journey_block` com o que falta, sem jargão; sem gravar run); `recordJourney` após sucesso de set_objective/set_audience(>0)/geração de conteúdo/set_schedule/status scheduled; linha JORNADA em `buildStateBlock` + regra no `SYSTEM_PROMPT` (avança em ordem; servidor explica atalho) -- 3.1.
-- [ ] `studio/campaign-service.js` -- `syncQueueWithAudience(prisma, campaign, includedProspectIds)`: por execução (email/WA), contatos não enviados (`SELECTED|QUEUED|GENERATING|SCHEDULED`) fora da seleção → `CANCELLED`/`cancelReason:'removido_da_selecao'` + estorno unitário idempotente (`sync:{campaignId}:{channel}:{contactId}`); chamado ao fim de `materializeAudience` (no-op sem execução); falha de estorno logada, não quebra -- 3.2.
-- [ ] `studio/campaign-routes.js` GET `/queue` -- `divergence: {count, byChannel, reason}` = contatos NÃO cancelados/enviados fora da seleção ativa (explicável) -- 3.3.
-- [ ] `apps/web` `CampaignMonitorView.tsx` -- banner da divergência (quantos e por quê, tokens 011, some quando 0) -- 3.3.
-- [ ] `eval/lib.js` -- asserções `cardOrder`, `audienceCountAtLeast`, `certificateGreen`, `actionNotRepeated`; `eval/conversations/journey-v1.json` -- cenário `journey-e2e` (objetivo→audiência industrial→conteúdo 2 canais→agenda→certificado) com asserções de ordem canônica, `audienceCountAtLeast: 50` (D5) e `certificateGreen` -- 3.4.
-- [ ] `test/journey-state.test.js` + `test/queue-enrollment.test.js` (suítes L0 nomeadas pela matriz) + ajustes nos testes existentes que emitirem atalho -- 3.1/3.2.
+- [x] `prisma/schema.prisma` + migrate `20261001090000_studio_campaign_journey` -- `StudioCampaign.journey Json?` -- 3.1.
+- [x] `studio/journey.js` (novo) -- `PHASES`; `computeJourney(campaign, {hasContent, hasSchedule, snapshotCount})` (espelha `currentRailStep`); `recordJourney(prisma, campaign, {event})` persiste `{phase, completed:{...}, updatedAt}` (decisão fechada FR2 → audiência concluída); `guardAction(actionType, journey, {hasContent})` → `{ok, block?{missing[]}}` — só salto à frente com pré-requisito ausente bloqueia (`set_schedule` exige conteúdo) -- 3.1.
+- [x] `studio/chat-routes.js` -- guard em `runAction` (card `journey_block` com o que falta, sem jargão; sem gravar run); `recordJourney` após sucesso de set_objective/set_audience(>0)/geração de conteúdo/set_schedule/status scheduled; linha JORNADA em `buildStateBlock` + regra no `SYSTEM_PROMPT` (avança em ordem; servidor explica atalho) -- 3.1.
+- [x] `studio/campaign-service.js` -- `syncQueueWithAudience(prisma, campaign, includedProspectIds)`: por execução (email/WA), contatos não enviados (`SELECTED|QUEUED|GENERATING|SCHEDULED`) fora da seleção → `CANCELLED`/`cancelReason:'removido_da_selecao'` + estorno unitário idempotente (`sync:{campaignId}:{channel}:{contactId}`); chamado ao fim de `materializeAudience` (no-op sem execução); falha de estorno logada, não quebra -- 3.2.
+- [x] `studio/campaign-routes.js` GET `/queue` -- `divergence: {count, byChannel, reason}` = contatos NÃO cancelados/enviados fora da seleção ativa (explicável) -- 3.3.
+- [x] `apps/web` `CampaignMonitorView.tsx` -- banner da divergência (quantos e por quê, tokens 011, some quando 0) -- 3.3.
+- [x] `eval/lib.js` -- asserções `cardOrder`, `audienceCountAtLeast`, `certificateGreen`, `actionNotRepeated`; `eval/conversations/journey-v1.json` -- cenário `journey-e2e` (objetivo→audiência industrial→conteúdo 2 canais→agenda→certificado) com asserções de ordem canônica, `audienceCountAtLeast: 50` (D5) e `certificateGreen` -- 3.4.
+- [x] `test/journey-state.test.js` + `test/queue-enrollment.test.js` (suítes L0 nomeadas pela matriz) + ajustes nos testes existentes que emitirem atalho -- 3.1/3.2.
 
 **Acceptance Criteria:**
 - Given campanha nova, when turnos avançam, then fase corrente persistida e orchestrate informado das válidas.
@@ -127,6 +127,16 @@ _(preenchido na implementação — 2026-10-01)_
 - **Verificação**: 821 testes root (820 pass + 1 flake pré-existente `studio-scheduler.test.js:240`
   — depende do relógio, falha entre 9h–12h SP; documentado na memória), 111 web, build ok, prisma
   validate ok. Falha de `--test-force-exit` necessária (servidores keep-alive).
+
+## Auto Run Result
+
+**Summary:** Epic 3 da confiabilidade implementado por completo (Stories 3.1–3.4): estado de jornada explícito e persistido (`StudioCampaign.journey` via `studio/journey.js` — derivação server-side espelhando o Rail do cliente, decisão fechada FR2 marcando audiência como concluída), guard server-side em `runAction` que bloqueia salto à frente com pré-requisito ausente (card `journey_block` explicável, sem gravar `StudioActionRun`; chips passam pelo mesmo caminho), prompt informado da fase (linha JORNADA no `buildStateBlock` + regra no `SYSTEM_PROMPT`); sincronização fila×seleção dentro de `materializeAudience` (cancelamento por `updateMany` com guard de status, estorno unitário idempotente com refId determinístico `sync:{campaignId}:{canal}:{contactId}` compartilhado com o branch terminal dos dois motores — corrida sync×worker fechada na raiz) e divergência audiência×fila explicável no `GET /queue` + banner amber no Monitor que some sozinho; cenário `journey-e2e` (dataset `journey-v1`) com asserções novas (`cardOrder`, `audienceCountAtLeast`, `certificateGreen`, `actionNotRepeated`) e suítes L0 `journey-state` + `queue-enrollment`.
+
+**Files changed:** prisma/schema.prisma + migração `20261001090000_studio_campaign_journey` · studio/journey.js (novo) · studio/chat-routes.js · studio/campaign-service.js · studio/campaign-routes.js · studio/ai/chat-agent.js · outreach-workers.js · whatsapp-workers.js · apps/web/src/studio/api.ts · apps/web/src/studio/components/CampaignMonitorView.tsx · eval/lib.js · eval/run-conversations.js · eval/auth.js · eval/conversations/journey-v1.json (novo) · test/journey-state.test.js (novo) · test/queue-enrollment.test.js (novo) · test/studio-chat.test.js — commit `806770e3`.
+
+**Review findings:** review quick (ecc:code-reviewer, 2026-10-01) — 7 findings: high 1, medium 2, low 4; todos corrigidos via patch (E3-H1 guard de status no cancelamento do sync; E3-M2 refId determinístico compartilhado sync×motores contra duplo estorno; E3-M3 `syncJourney` resiliente a falha de persistência; E3-L4 SENDING fora da divergência; E3-L5 snapshot com orderBy; E3-L6 fase 'objetivo' persistida; E3-L7 regra única de audiência decidida). Nenhum falso positivo pendente; nada em `deferred`.
+
+**Verification:** `node --test test/*.test.js` 827/827 ✓ · `pnpm -C apps/web test` 111/111 ✓ · `pnpm --filter web build` ✓ (re-executados em 2026-10-02 no fechamento do plano; a suíte cresceu de 821 para 827 desde a implementação e segue verde). Na época da implementação: 820/821 com flake de relógio conhecido (`studio-scheduler.test.js:240`, janela 9h–12h SP) — hoje verde. Pendente pós-deploy (exige staging/QA, fora do escopo local): `B2BASE_EVAL_CASES=eval/conversations/journey-v1.json pnpm run eval:chat` ×3 verde na conta QA.
 
 ## Plan Change Log
 
