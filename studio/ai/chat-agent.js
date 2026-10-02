@@ -22,7 +22,44 @@
  */
 
 const { callLlmJson } = require('./json');
+const { parseModelJson } = require('./json');
 const skills = require('./skills');
+
+/**
+ * Decodifica o campo "reply" de um JSON PARCIAL (streaming): extrai o valor
+ * da string até onde ela já foi transmitida, decodificando escapes (\n,
+ * \", \\, \uXXXX — \u incompleto no fim aguarda mais bytes). Chave ausente →
+ * '' (o modelo pode emitir actions antes do reply; os deltas começam quando
+ * "reply" aparecer).
+ */
+function extractReplySoFar(raw) {
+  const s = String(raw || '');
+  const key = s.match(/"reply"\s*:\s*"/);
+  if (!key) return '';
+  const start = key.index + key[0].length;
+  let out = '';
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '"') return out; // fecha a string — valor completo
+    if (ch !== '\\') {
+      out += ch;
+      continue;
+    }
+    const next = s[i + 1];
+    if (next === undefined) return out;
+    if (next === 'u') {
+      const hex = s.slice(i + 2, i + 6);
+      if (hex.length < 4) return out; // escape \u incompleto — espera o resto
+      out += String.fromCharCode(parseInt(hex, 16));
+      i += 5;
+      continue;
+    }
+    const map = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', '"': '"', '\\': '\\', '/': '/' };
+    out += map[next] !== undefined ? map[next] : next;
+    i += 1;
+  }
+  return out;
+}
 
 const SYSTEM_PROMPT = [
   'Você é o assistente de criação de campanhas do B2Base (prospecção B2B no Brasil).',
@@ -74,6 +111,33 @@ const SYSTEM_PROMPT = [
   'Nunca emita ação de uma fase À FRENTE do que já existe (ex.: agendar sem conteúdo) — o servidor recusa',
   'com explicação e o usuário fica sem o que pediu. Conteúdo/materiais podem ser ajustados a qualquer momento.',
   '',
+  'CAPACIDADES (o que você FAZ de verdade — ao perguntarem "o que você consegue fazer", liste isto e',
+  'NADA além; nunca diga que não consegue algo desta lista, e nunca prometa o que não está nela):',
+  '  1. Campanhas: criar (create_campaign), listar todas da sua organização (list_campaigns), renomear',
+  '     (rename_campaign), duplicar (duplicate_campaign) e apagar (delete_campaign — sempre pede confirmação);',
+  '     a conversa opera na campanha aberta, mas você vê e cria as outras.',
+  '  2. Objetivo e oferta da campanha (set_objective); audiência por linguagem natural (set_audience),',
+  '     ajuste fino de leads (select_leads) e captura de leads novos (capture_leads).',
+  '  3. Conteúdo: anexar material por URL (attach_url) ou arquivo, gerar e-mail/WhatsApp/LinkedIn',
+  '     (generate_content), editar o que já existe (edit_content) e MOSTRAR o texto completo no chat',
+  '     (show_content) — quando pedirem para ver/revisar, use show_content.',
+  '  4. Agenda e disparo (set_schedule), aprovar a campanha (approve_campaign) e mostrar o que falta',
+  '     para poder disparar (show_balance / certificado).',
+  '  5. Domínio e canais: mostrar os registros DNS (SPF/DKIM/DMARC) a publicar (show_dns_records) e',
+  '     parear o WhatsApp por QR (start_whatsapp_pairing).',
+  '  6. Leads: consultar dados do lead pelo estado, editar dados de empresa/contato (update_lead) e',
+  '     consentimento WhatsApp; e Ler respostas: mostrar quem respondeu (show_replies — interessados,',
+  '     reuniões e pedidos de opt-out dos últimos dias, com empresa e canal).',
+  '  Fora do seu alcance hoje (seja honesto): configurar o remetente no provedor de e-mail (só ORIENTAMOS',
+  '  os registros DNS), ler a caixa de entrada inteira fora das respostas classificadas e alterar o plano',
+  '  da organização.',
+  '',
+  'CONFIRMAÇÃO DE ALTERAÇÕES (regra do dono): quando você for alterar algo que JÁ EXISTE (editar ou',
+  'refazer conteúdo, mudar audiência decidida, reconfigurar agenda, apagar campanha), o servidor devolve',
+  'um card "confirm_change" em vez de executar. Nesse caso: diga no reply EXATAMENTE o que a alteração',
+  'faria e diga que o botão de confirmar está no card — NUNCA repita a action no mesmo turno e NUNCA',
+  'diga que já fez. Criar algo que ainda NÃO existe continua direto (sem confirmação).',
+  '',
   'LIMITES E BLOQUEIOS DE ENVIO (Orçamento de Reputação): cada canal (e-mail, WhatsApp) tem um saldo de envios',
   'com piso e teto. Abaixo do piso, disparos ficam BLOQUEADOS. E-mail também exige domínio autenticado',
   '(SPF/DKIM/DMARC); WhatsApp exige pareamento por QR. Quando o usuário perguntar sobre limites, saldo,',
@@ -97,7 +161,13 @@ const SYSTEM_PROMPT = [
   '            {"type":"show_balance"},',
   '            {"type":"start_whatsapp_pairing"},',
   '            {"type":"none"}]}',
+  'Catálogo completo de actions (além das acima, todas com {type} e os campos citados):',
+  'list_campaigns {}; create_campaign {name, channels?}; rename_campaign {name};',
+  'duplicate_campaign {campaignId?, name?}; delete_campaign {campaignId?}; approve_campaign {campaignId?};',
+  'attach_files {attachmentIds:[id]}; update_lead {prospectId, fields:{companyName?, tradeName?, contactName?, city?, state?, industry?, employees?}};',
+  'show_replies {}; show_dns_records {}; show_capabilities {}; select_leads {add:[id], remove:[id]} ou {set:[id]}.',
   'Regras: nunca prometa disparo sem aprovação; nada é enviado automaticamente.',
+  'Responda com NO MÁXIMO 2-3 actions por turno — prefira concluir uma etapa e confirmar.',
 ].join('\n');
 
 function buildStateBlock(campaign, extras = {}) {
@@ -186,8 +256,17 @@ function unchangedPhases(campaign, extras = {}) {
   return unchanged;
 }
 
-function createChatAgent({ callLlm } = {}) {
+function createChatAgent({ callLlm, callLlmStream } = {}) {
   const llm = callLlm || require('../../llm-client').callLlm;
+  // Streaming real quando disponível (prod); nos testes (só callLlm injetado)
+  // sintetiza a partir da chamada simples — um delta único, hermético.
+  const streamFn =
+    callLlmStream ||
+    (async (opts) => {
+      const r = await llm(opts);
+      if (opts.onDelta) opts.onDelta(r.content);
+      return r;
+    });
 
   /**
    * Extração PEQUENA e dedicada de intenção (QA 2026-10-02, bugs 1/2 do dono):
@@ -268,7 +347,7 @@ function createChatAgent({ callLlm } = {}) {
     }
   }
 
-  async function orchestrate({ campaign, history, userMessage, extras, onLlmCall = () => {} }) {
+  async function orchestrate({ campaign, history, userMessage, extras, onLlmCall = () => {}, onReplyDelta = null }) {
     const user = [
       buildStateBlock(campaign, extras),
       buildOrgBlock(extras),
@@ -312,13 +391,64 @@ function createChatAgent({ callLlm } = {}) {
       }
     };
 
+    // 1ª tentativa EM STREAMING (QA 2026-10-02, bug 4 do dono — "impressionar"):
+    // o reply começa a aparecer no chat no primeiro token, não no fim da
+    // geração. Os deltas são o campo "reply" decodificado incrementalmente
+    // (extractReplySoFar). Se o JSON final não parsear/validar, o fluxo cai
+    // para o loop de reparo não-streaming de baixo — nada se perde.
+    let streamedRaw = null;
+    if (onReplyDelta) {
+      const streamStartedAt = Date.now();
+      try {
+        const result = await streamFn({
+          system: SYSTEM_PROMPT,
+          user,
+          jsonMode: true,
+          temperature: 0.4,
+          maxTokens: 1200,
+          tag: 'studio:chat',
+          onDelta: (fullSoFar) => onReplyDelta(extractReplySoFar(fullSoFar)),
+        });
+        onLlmCall({
+          durationMs: Date.now() - streamStartedAt,
+          model: result.model || null,
+          usage: result.usage || null,
+          truncated: Boolean(result.truncated),
+          fallbackUsed: Boolean(result.fallbackUsed),
+          status: 'succeeded',
+        });
+        streamedRaw = result.content;
+        const parsed = parseModelJson(streamedRaw);
+        if (parsed && typeof parsed === 'object' && typeof parsed.reply === 'string' && parsed.reply.trim()) {
+          return {
+            reply: parsed.reply,
+            actions: Array.isArray(parsed.actions) ? parsed.actions.filter((a) => a && a.type) : [],
+            degraded: false,
+          };
+        }
+      } catch (err) {
+        onLlmCall({
+          durationMs: Date.now() - streamStartedAt,
+          model: null,
+          usage: null,
+          truncated: false,
+          fallbackUsed: false,
+          status: 'failed',
+          errorCode: err.code || null,
+        });
+        console.warn(`[studio/chat] streaming indisponível (${err.code || err.message}) — cai para chamada simples`);
+      }
+    }
+
     try {
       const parsed = await callLlmJson(instrumented, {
         system: SYSTEM_PROMPT,
-        buildUser: (previousRaw) =>
-          previousRaw
-            ? `${user}\n\nSUA RESPOSTA ANTERIOR NÃO VEIO COMO JSON VÁLIDO PARA O USUÁRIO. Refaça a MESMA decisão em JSON válido, sem texto fora do JSON. Sua resposta anterior foi:\n${String(previousRaw).slice(0, 800)}`
-            : user,
+        buildUser: (previousRaw) => {
+          const raw = previousRaw || streamedRaw;
+          return raw
+            ? `${user}\n\nSUA RESPOSTA ANTERIOR NÃO VEIO COMO JSON VÁLIDO PARA O USUÁRIO. Refaça a MESMA decisão em JSON válido, sem texto fora do JSON. Sua resposta anterior foi:\n${String(raw).slice(0, 800)}`
+            : user;
+        },
         validate: (parsed) =>
           typeof parsed.reply === 'string' && parsed.reply.trim() ? null : 'reply ausente ou vazio',
         maxTokens: 1200,
@@ -352,4 +482,4 @@ function createChatAgent({ callLlm } = {}) {
   return { orchestrate, extractIntent };
 }
 
-module.exports = { createChatAgent, SYSTEM_PROMPT };
+module.exports = { createChatAgent, SYSTEM_PROMPT, extractReplySoFar };

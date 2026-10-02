@@ -173,7 +173,7 @@ test('D9: action aditiva edit_content pelo chat REUSA o serviço do PATCH (idemp
     const first = await api('POST', '/campaigns/camp-1/actions', {
       type: 'edit_content',
       actionId: 'edit-1',
-      params: { contents: [{ id: 'content-wa', whatsappText: 'Texto via chat' }] },
+      params: { confirmed: true, contents: [{ id: 'content-wa', whatsappText: 'Texto via chat' }] },
     });
     assert.equal(first.res.status, 200);
     assert.equal(first.body.data.card.type, 'content_edited');
@@ -183,7 +183,7 @@ test('D9: action aditiva edit_content pelo chat REUSA o serviço do PATCH (idemp
     const second = await api('POST', '/campaigns/camp-1/actions', {
       type: 'edit_content',
       actionId: 'edit-1',
-      params: { contents: [{ id: 'content-wa', whatsappText: 'Texto via chat' }] },
+      params: { confirmed: true, contents: [{ id: 'content-wa', whatsappText: 'Texto via chat' }] },
     });
     assert.equal(second.body.data.card.replayed, true);
 
@@ -191,7 +191,7 @@ test('D9: action aditiva edit_content pelo chat REUSA o serviço do PATCH (idemp
     const bad = await api('POST', '/campaigns/camp-1/actions', {
       type: 'edit_content',
       actionId: 'edit-2',
-      params: { contents: [{ id: 'content-wa', whatsappText: 'Oi {{desconhecida}}' }] },
+      params: { confirmed: true, contents: [{ id: 'content-wa', whatsappText: 'Oi {{desconhecida}}' }] },
     });
     assert.equal(bad.res.status, 400);
     assert.equal(bad.body.error, 'UNKNOWN_VARIABLE');
@@ -201,7 +201,7 @@ test('D9: action aditiva edit_content pelo chat REUSA o serviço do PATCH (idemp
     const foreign = await api('POST', '/campaigns/camp-1/actions', {
       type: 'edit_content',
       actionId: 'edit-3',
-      params: { contents: [{ id: 'content-outro', subject: 'x' }] },
+      params: { confirmed: true, contents: [{ id: 'content-outro', subject: 'x' }] },
     });
     assert.equal(foreign.res.status, 404);
   } finally {
@@ -330,7 +330,7 @@ test('edição sem um campo NÃO apaga o campo existente (null é ausente, nunca
     const { res } = await api('POST', '/campaigns/camp-1/actions', {
       type: 'edit_content',
       actionId: 'edit-parcial',
-      params: { contents: [{ id: 'content-email', subject: 'Só o assunto novo' }] },
+      params: { confirmed: true, contents: [{ id: 'content-email', subject: 'Só o assunto novo' }] },
     });
     assert.equal(res.status, 200);
     const email = prisma.studioContent.rows.find((c) => c.id === 'content-email');
@@ -356,7 +356,7 @@ test('edit_content com contents reordenados e SEM actionId → replay (chave est
   try {
     const first = await api('POST', '/campaigns/camp-1/actions', {
       type: 'edit_content',
-      params: {
+      params: { confirmed: true,
         contents: [
           { id: 'content-wa', whatsappText: 'Texto A' },
           { id: 'content-email', subject: 'Assunto A' },
@@ -368,7 +368,7 @@ test('edit_content com contents reordenados e SEM actionId → replay (chave est
 
     const second = await api('POST', '/campaigns/camp-1/actions', {
       type: 'edit_content',
-      params: {
+      params: { confirmed: true,
         contents: [
           { id: 'content-email', subject: 'Assunto A' },
           { id: 'content-wa', whatsappText: 'Texto A' },

@@ -49,7 +49,31 @@ function actionParams(action) {
       return { tones: action.tones || null };
     case 'show_balance':
     case 'start_whatsapp_pairing':
+    case 'list_campaigns':
+    case 'show_replies':
+    case 'show_dns_records':
+    case 'show_capabilities':
       return {};
+    case 'create_campaign':
+      return { name: action.name || null, channels: Array.isArray(action.channels) ? action.channels.map(String) : null };
+    case 'rename_campaign':
+    case 'delete_campaign':
+    case 'approve_campaign':
+      // campaignId opcional: default = campanha aberta (escopo org no handler).
+      return {
+        name: action.name || null,
+        campaignId: action.campaignId ? String(action.campaignId) : null,
+      };
+    case 'duplicate_campaign':
+      return {
+        campaignId: action.campaignId ? String(action.campaignId) : null,
+        name: action.name || null,
+      };
+    case 'update_lead':
+      return {
+        prospectId: action.prospectId ? String(action.prospectId) : null,
+        fields: action.fields && typeof action.fields === 'object' && !Array.isArray(action.fields) ? action.fields : null,
+      };
     case 'set_schedule':
       return {
         mode: action.mode || null,
@@ -128,6 +152,25 @@ async function currentExtras(prisma, campaign) {
       product: m.extraction?.product || null,
     })),
   };
+
+  // Onda "IA com a plataforma inteira" (QA 2026-10-02, bugs 1/2 do dono): o
+  // agente enxerga a ORGANIZAÇÃO — as outras campanhas (nome/status) e o
+  // tamanho da base — deixando de ficar preso à campanha aberta.
+  try {
+    const others = await prisma.studioCampaign.findMany({
+      where: { orgId: campaign.orgId, id: { not: campaign.id } },
+      select: { id: true, name: true, status: true },
+      orderBy: { createdAt: 'desc' },
+      take: 8,
+    });
+    extras.campanhas = [
+      { id: campaign.id, name: campaign.name, status: campaign.status, atual: true },
+      ...others.map((c) => ({ id: c.id, name: c.name, status: c.status })),
+    ];
+    extras.base = { totalLeads: await prisma.prospect.count({ where: { orgId: campaign.orgId } }) };
+  } catch (_e) {
+    console.error('[studio/chat] extras: contexto da organização indisponível:', _e);
+  }
 
   // Memória de decisão (Epic 1, FR2): FATO ("audienciaDecidida") SOMENTE
   // quando o segmento MATERIALIZOU >0 (lastCount gravado no set_audience) E
@@ -367,6 +410,30 @@ function registerChatRoutes(router, context) {
     // fase corrente/anterior nunca chegam aqui bloqueadas.
     const journeyGuard = journey.guardAction(action.type, await journey.guardState(prisma, campaign));
     if (!journeyGuard.ok) return journeyGuard.card;
+    // Gate de confirmação (bug 5 do dono): alteração de artefato existente
+    // pede licença ANTES de executar. Replay idempotente pula o gate (o que
+    // já foi aprovado e executado devolve o mesmo card — duplo toque NUNCA
+    // vira segunda pergunta). O selo `confirmed` vem do chip "Confirmar" ou
+    // da aprovação textual detectada no runChatTurn — gesto explícito passa.
+    // (Lido do ACTION, não dos params: actionParams é whitelist por tipo e
+    // não carrega o selo.)
+    if (!action.confirmed && !params.confirmed) {
+      const key = manifest.actionKey({
+        orgId,
+        campaignId: campaign.id,
+        action: action.type,
+        params,
+        actionId: action.actionId || null,
+      });
+      const prior = key && prisma.studioActionRun
+        ? await prisma.studioActionRun.findFirst({ where: { actionKey: key } })
+        : null;
+      const replayHit = Boolean(prior && prior.status === 'succeeded');
+      if (!replayHit) {
+        const kind = await confirmRequired(action.type, { campaign, prisma });
+        if (kind) return buildConfirmCard(action.type, params, kind);
+      }
+    }
     // Epic 2: recusa/limite/sem-resultado da captura NUNCA persistem replay —
     // gravar a recusa como run 'succeeded' faria a MESMA params devolver a
     // recusa velha para sempre (mesmo depois de configurar o token). Então a
@@ -676,6 +743,255 @@ function registerChatRoutes(router, context) {
         };
       }
 
+      case 'list_campaigns': {
+        // A visão da ORGANIZAÇÃO (bug 1 do dono): todas as campanhas, com
+        // audiência vigente — o frontend renderiza atalho para abrir cada uma.
+        const campaigns = await prisma.studioCampaign.findMany({
+          where: { orgId: campaign.orgId },
+          orderBy: { createdAt: 'desc' },
+          take: 10,
+        });
+        const snaps = await prisma.studioAudienceSnapshot.findMany({
+          where: { orgId: campaign.orgId, status: 'active' },
+        });
+        const byCampaign = new Map(snaps.map((s) => [s.campaignId, s.includedCount]));
+        return {
+          type: 'campaign_list',
+          label: `Campanhas da sua organização (${campaigns.length})`,
+          detail:
+            campaigns
+              .map(
+                (c) =>
+                  `• **${c.name}**${c.id === campaign.id ? ' (aberta agora)' : ''} — ${c.status}` +
+                  `${byCampaign.get(c.id) != null ? ` · ${byCampaign.get(c.id)} lead(s) na audiência` : ''}`
+              )
+              .join('\n') || 'Nenhuma campanha ainda.',
+          campaigns: campaigns.map((c) => ({
+            id: c.id,
+            name: c.name,
+            status: c.status,
+            audienceCount: byCampaign.get(c.id) ?? null,
+            current: c.id === campaign.id,
+          })),
+        };
+      }
+
+      case 'create_campaign': {
+        // Mesmo formato do POST /campaigns (origin 'agent' — criação pelo
+        // agente é rastreável). A conversa continua na campanha aberta; o
+        // card traz o atalho para abrir a nova.
+        const created = await prisma.studioCampaign.create({
+          data: {
+            orgId,
+            name: String(action.name).trim().slice(0, 200),
+            channels: Array.isArray(action.channels) && action.channels.length ? action.channels.map(String) : ['email'],
+            funnelStage: 'middle',
+            origin: 'agent',
+            status: 'draft',
+          },
+        });
+        return {
+          type: 'campaign_created',
+          label: `Campanha "${created.name}" criada`,
+          detail:
+            'Ela começa como rascunho. Abra pelo botão abaixo e me diga o objetivo lá — ou continue criando aqui e abra quando quiser.',
+          campaignId: created.id,
+          campaignName: created.name,
+          channels: created.channels,
+        };
+      }
+
+      case 'rename_campaign': {
+        const target = action.campaignId
+          ? await prisma.studioCampaign.findUnique({ where: { id: String(action.campaignId) } })
+          : campaign;
+        if (!target || target.orgId !== orgId) throw httpError('NOT_FOUND', 404, 'Campanha não encontrada');
+        const oldName = target.name;
+        const updated = await prisma.studioCampaign.update({
+          where: { id: target.id },
+          data: { name: String(action.name).trim().slice(0, 200) },
+        });
+        return {
+          type: 'campaign_renamed',
+          label: 'Campanha renomeada',
+          detail: `"${oldName}" agora se chama **${updated.name}**.`,
+        };
+      }
+
+      case 'duplicate_campaign': {
+        const source = action.campaignId
+          ? await prisma.studioCampaign.findUnique({ where: { id: String(action.campaignId) } })
+          : campaign;
+        if (!source || source.orgId !== orgId) throw httpError('NOT_FOUND', 404, 'Campanha de origem não encontrada');
+        const copy = await prisma.studioCampaign.create({
+          data: {
+            orgId,
+            name: String(action.name || `${source.name} (cópia)`).trim().slice(0, 200),
+            channels: source.channels,
+            objective: source.objective,
+            offer: source.offer,
+            funnelStage: source.funnelStage,
+            origin: 'duplicate',
+            sourceCampaignId: source.id,
+            status: 'draft',
+          },
+        });
+        return {
+          type: 'campaign_created',
+          label: `Cópia criada: "${copy.name}"`,
+          detail: 'A cópia nasce como rascunho com objetivo/oferta da original (audiência e conteúdo começam do zero — nada reaproveitado por engano).',
+          campaignId: copy.id,
+          campaignName: copy.name,
+          channels: copy.channels,
+        };
+      }
+
+      case 'delete_campaign': {
+        // Mesmas regras do DELETE /campaigns/:id (voo precisa pausar antes).
+        const target = action.campaignId
+          ? await prisma.studioCampaign.findUnique({ where: { id: String(action.campaignId) } })
+          : campaign;
+        if (!target || target.orgId !== orgId) throw httpError('NOT_FOUND', 404, 'Campanha não encontrada');
+        if (['running', 'scheduled'].includes(target.status)) {
+          throw httpError('CAMPAIGN_IN_FLIGHT', 409, 'Cancele ou pause a campanha antes de removê-la.');
+        }
+        await prisma.studioContent.deleteMany({ where: { campaignId: target.id } });
+        await prisma.studioChatMessage.deleteMany({ where: { campaignId: target.id } });
+        await prisma.studioAudienceSnapshot.deleteMany({ where: { campaignId: target.id } });
+        await prisma.studioActionRun.deleteMany({ where: { campaignId: target.id } });
+        await prisma.studioComplianceReview.deleteMany({ where: { campaignId: target.id } });
+        await prisma.studioExperiment.deleteMany({ where: { campaignId: target.id } });
+        await prisma.studioRecommendation.deleteMany({ where: { campaignId: target.id } });
+        await prisma.studioJourney.deleteMany({ where: { campaignId: target.id } });
+        await prisma.studioCampaign.deleteMany({ where: { id: target.id } });
+        return {
+          type: 'campaign_deleted',
+          label: `Campanha "${target.name}" apagada`,
+          detail: 'Conteúdos, conversa, audiência e histórico dela saíram junto. Nada enviado foi afetado.',
+        };
+      }
+
+      case 'approve_campaign': {
+        // MESMO fluxo do POST /campaigns/:id/approve (congela audiência +
+        // compliance; recusas do serviço viram card explicável no chat).
+        const target = action.campaignId
+          ? await prisma.studioCampaign.findUnique({ where: { id: String(action.campaignId) } })
+          : campaign;
+        if (!target || target.orgId !== orgId) throw httpError('NOT_FOUND', 404, 'Campanha não encontrada');
+        const result = await campaignService.flow.approveCampaign(prisma, { campaign: target, userId });
+        const approved = result.campaign;
+        return {
+          type: 'campaign_approved',
+          label: `Campanha "${approved.name}" aprovada`,
+          detail: 'Audiência congelada e conformidade checada. Próximo passo: agendar (ou colocar em voo) — posso configurar a agenda se você quiser.',
+          campaignId: approved.id,
+          campaignStatus: approved.status,
+        };
+      }
+
+      case 'update_lead': {
+        // Escopo duplo: o lead TEM que ser da organização (constituição IV).
+        // Só os campos da lista branca saem — o resto é ignorado, nunca
+        // sobrescrito por engano.
+        const FIELDS = ['companyName', 'tradeName', 'contactName', 'city', 'state', 'industry', 'employees'];
+        const lead = await prisma.prospect.findUnique({ where: { id: String(action.prospectId) } });
+        if (!lead || lead.orgId !== orgId) throw httpError('NOT_FOUND', 404, 'Lead não encontrado nesta organização');
+        const data = {};
+        for (const f of FIELDS) {
+          if (action.fields[f] === undefined || action.fields[f] === null) continue;
+          data[f] = f === 'employees' ? Math.max(0, Math.round(Number(action.fields[f]) || 0)) : String(action.fields[f]).slice(0, 200);
+        }
+        const updated = await prisma.prospect.update({ where: { id: lead.id }, data });
+        return {
+          type: 'lead_updated',
+          label: `Lead atualizado: ${updated.companyName}`,
+          detail: `Campos alterados: ${Object.keys(data).join(', ')}.`,
+        };
+      }
+
+      case 'show_replies': {
+        // A caixa de entrada do agente: respostas classificadas dos leads —
+        // as quentes (interesse/reunião, 7 dias) em destaque + o que precisa
+        // de revisão humana. Mesma fonte do bloco RESPOSTAS QUENTES.
+        const rows = await prisma.studioReplyClassification.findMany({
+          where: { orgId: campaign.orgId },
+          take: 200,
+        });
+        if (rows.length === 0) {
+          return {
+            type: 'replies',
+            label: 'Nenhuma resposta de lead ainda',
+            detail: 'Quando seus leads responderem (e-mail ou WhatsApp), as classificações aparecem aqui — interessados, pedidos de reunião e opt-outs.',
+          };
+        }
+        const cutoff = Date.now() - 7 * 86_400_000;
+        const hot = rows
+          .filter((r) => ['interested', 'meeting_request'].includes(r.label) && Number(r.confidence) >= 0.7 && new Date(r.createdAt).getTime() >= cutoff)
+          .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+          .slice(0, 5);
+        const prospectIds = [...new Set(rows.map((r) => r.prospectId))];
+        const prospects = prospectIds.length ? await prisma.prospect.findMany({ where: { id: { in: prospectIds } } }) : [];
+        const byId = new Map(prospects.map((p) => [p.id, p]));
+        const nameOf = (r) => byId.get(r.prospectId)?.companyName || 'lead';
+        const needsReview = rows.filter((r) => r.needsHumanReview).length;
+        const hotLines = hot.length
+          ? hot.map((r) => `• **${nameOf(r)}** (${r.channel}) — ${r.label === 'meeting_request' ? 'pediu reunião' : 'interessado'} · ${Math.round(Number(r.confidence) * 100)}%`).join('\n')
+          : 'Nenhuma resposta quente nos últimos 7 dias.';
+        return {
+          type: 'replies',
+          label: `Respostas dos leads (${rows.length} no total)`,
+          detail: `**Quentes (7 dias):**\n${hotLines}\n\n${needsReview > 0 ? `${needsReview} resposta(s) aguardam a sua confirmação no painel de respostas.` : 'Nada aguardando revisão humana.'}`,
+          counts: rows.reduce((acc, r) => ({ ...acc, [r.label]: (acc[r.label] || 0) + 1 }), {}),
+        };
+      }
+
+      case 'show_dns_records': {
+        // A promessa do Certificado entregue: os registros do domínio de
+        // envio, com o status REAL de cada um (mesma checagem do job diário).
+        const dnsVerify = require('./dns-verify');
+        const accounts = await prisma.emailAccount.findMany({
+          where: { tenantId: orgId, status: 'connected' },
+        });
+        if (accounts.length === 0) {
+          return {
+            type: 'dns_records',
+            label: 'Nenhum domínio de envio conectado ainda',
+            detail: 'Conecte sua conta de e-mail primeiro (painel de canais) que eu te mostro os registros DNS do domínio.',
+          };
+        }
+        const domain = accounts[0].sendingDomain || dnsVerify.domainFromEmail(accounts[0].email);
+        if (!domain) {
+          return { type: 'dns_records', label: 'Domínio de envio desconhecido', detail: 'A conta de e-mail conectada não tem domínio identificável — confira no painel de canais.' };
+        }
+        const detail = await dnsVerify.checkDomain(domain);
+        const mark = (ok) => (ok ? '✅' : '⬜');
+        return {
+          type: 'dns_records',
+          label: `DNS do domínio ${domain}`,
+          detail:
+            `**SPF** ${mark(detail.spf)} — registro TXT na raiz do domínio com \`v=spf1 include:<seu-provedor> ~all\`\n` +
+            `**DKIM** ${mark(detail.dkim)} — os registros \`<seletor>._domainkey.${domain}\` vêm do painel do seu provedor de e-mail (copie de lá)\n` +
+            `**DMARC** ${mark(detail.dmarc)} — recomendado: TXT em \`_dmarc\` com \`v=DMARC1; p=none; rua=mailto:postmaster@${domain}\`\n\n` +
+            (detail.verified
+              ? '✅ SPF + DKIM verificados — seu domínio está liberado para disparar.'
+              : 'Depois de publicar, me peça "verificar meu domínio de novo" (ou aguarde a revalidação diária).'),
+          status: detail,
+        };
+      }
+
+      case 'show_capabilities':
+        return {
+          type: 'capabilities',
+          label: 'O que eu consigo fazer',
+          detail:
+            '**Campanhas** — criar, listar as da sua organização, renomear, duplicar e apagar (sempre confirmo antes de apagar).\n' +
+            '**Jornada da campanha aberta** — objetivo, audiência por linguagem natural, ajuste fino de leads, captura de leads novos, conteúdo (gerar, editar e MOSTRAR aqui no chat) e agendamento.\n' +
+            '**Aprovação** — aprovar a campanha pelo mesmo fluxo do Pré-voo e mostrar o que falta para poder disparar (saldo, certificado).\n' +
+            '**Canais** — mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
+            '**Leads** — consultar e editar dados de empresa/contato, e mostrar as respostas dos leads (interessados, reuniões, opt-outs).\n\n' +
+            'Não faço ainda: configurar o remetente no provedor de e-mail (só oriento os registros) e ler a caixa de entrada inteira fora das respostas classificadas.',
+        };
+
       case 'set_schedule': {
         const windows = Array.isArray(action.windows) ? action.windows : [];
         for (const w of windows) {
@@ -856,6 +1172,61 @@ function emailBlocksToText(emailDoc) {
     .filter(Boolean)
     .join('\n\n');
 }
+
+/**
+ * Gate de confirmação do dono (QA 2026-10-02, bug 5): action que altera
+ * artefato que JÁ EXISTE NÃO executa direto — volta como card "confirm_change"
+ * e o usuário aprova com 1 clique (o chip reenvia a MESMA action com
+ * `confirmed: true`). Criar algo que ainda não existe continua direto.
+ * Retorna a "espécie" de alteração (chave do texto do card) ou null.
+ */
+async function confirmRequired(type, { campaign, prisma }) {
+  switch (type) {
+    case 'edit_content':
+      return 'conteudo';
+    case 'delete_campaign':
+      return 'campanha';
+    case 'generate_content': {
+      const existing = await prisma.studioContent.count({
+        where: { campaignId: campaign.id, kind: 'base', stepIndex: 1 },
+      });
+      return existing > 0 ? 'conteudo' : null;
+    }
+    case 'set_schedule':
+      return campaign.schedule && campaign.schedule.mode ? 'agenda' : null;
+    case 'set_audience':
+    case 'select_leads': {
+      const snap = (
+        await prisma.studioAudienceSnapshot.findMany({ where: { campaignId: campaign.id, status: 'active' } })
+      )[0];
+      return snap && snap.includedCount > 0 ? 'audiencia' : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/** O que a alteração faria, em linguagem de vendedor — por espécie. */
+const CONFIRM_COPY = {
+  conteudo: 'vou ALTERAR o conteúdo que já existe',
+  campanha: 'vou APAGAR a campanha (não tem volta)',
+  agenda: 'vou RECONFIGURAR o agendamento atual',
+  audiencia: 'vou SUBSTITUIR a audiência decidida — a fila sincroniza e o que já saiu não volta',
+};
+
+function buildConfirmCard(type, params, kind) {
+  return {
+    type: 'confirm_change',
+    label: 'Posso fazer essa alteração?',
+    detail: `Se eu seguir, ${CONFIRM_COPY[kind] || 'vou alterar dados atuais da campanha'}. Confira e toque em "Confirmar" — ou me diga o que mudar antes.`,
+    kind,
+    // O chip "Confirmar" reenvia a MESMA action com o selo de aprovação.
+    action: { type, params: { ...params, confirmed: true } },
+  };
+}
+
+/** Aprovação textual: resposta curta afirmativa depois de um confirm_change. */
+const APPROVAL_RE = /^(sim|pode|podia|pode sim|confirmo|confirmado|beleza|ok|okay|aprovado|aprovo|manda|manda ver|faz|vai|claro|isso|perfeito|pode fazer)\b/i;
 
 function criteriaDescription(criteria) {
   return (criteria?.groups || [])
@@ -1259,6 +1630,16 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     edit_content: 'Atualizando o conteúdo…',
     show_content: 'Buscando seus conteúdos…',
     capture_leads: 'Capturando leads…',
+    list_campaigns: 'Listando suas campanhas…',
+    create_campaign: 'Criando a campanha…',
+    rename_campaign: 'Renomeando…',
+    duplicate_campaign: 'Duplicando a campanha…',
+    delete_campaign: 'Apagando a campanha…',
+    approve_campaign: 'Aprovando a campanha…',
+    update_lead: 'Atualizando o lead…',
+    show_replies: 'Vendo as respostas dos leads…',
+    show_dns_records: 'Conferindo o DNS do seu domínio…',
+    show_capabilities: 'Organizando o que eu sei fazer…',
   };
 
   async function persistChatTrace({ campaignId, orgId, turnIndex, startedAt, llmTelemetry, actionTypes, actionDurationsMs, status = 'succeeded', errorCode = null, errorStack = null }) {
@@ -1418,6 +1799,11 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
         userMessage: message,
         extras,
         onLlmCall: (telemetry) => llmTelemetry.push(telemetry),
+        // Streaming (bug 4 do dono): o reply começa a renderizar no chat no
+        // primeiro token — o texto final autoritativo vem no evento `reply`.
+        onReplyDelta: (text) => {
+          if (text) emit({ type: 'reply_delta', text });
+        },
       });
       reply = orchestrated.reply;
       actions = orchestrated.actions;
@@ -1454,13 +1840,32 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     const orderedActions = [...actions].sort(
       (a, b) => (ACTION_ORDER[a?.type] ?? 9) - (ACTION_ORDER[b?.type] ?? 9)
     );
+    // Aprovação textual do gate de confirmação (bug 5): se a última resposta
+    // trouxe um card "confirm_change" e o usuário respondeu com um "pode/
+    // sim/confirmo" curto, a action correspondente segue com o selo de
+    // aprovação — sem exigir o toque no chip. Mensagem longa ≠ aprovação
+    // (provavelmente muda o pedido).
+    const lastAssistantCards = [...history].reverse().find((m) => m.role === 'assistant' && Array.isArray(m.cards) && m.cards.length > 0)?.cards || [];
+    const pendingConfirm = lastAssistantCards.find((c) => c && c.type === 'confirm_change' && c.action);
+    const textApproval = Boolean(
+      pendingConfirm && message.length <= 60 && APPROVAL_RE.test(message.trim())
+    );
+    // set_audience + select_leads NA MESMA mensagem = um gesto só do usuário
+    // (montou a audiência e já ajustou a seleção) — o ajuste não re-pergunta.
+    const sameTurnAudience = orderedActions.some((a) => a && a.type === 'set_audience');
     for (const action of orderedActions) {
-      const label = ACTION_LABELS[action.type];
+      const effective =
+        textApproval && pendingConfirm && action.type === pendingConfirm.action.type
+          ? { ...action, confirmed: true }
+          : sameTurnAudience && action.type === 'select_leads'
+            ? { ...action, confirmed: true }
+            : action;
+      const label = ACTION_LABELS[effective.type];
       if (label) emit({ type: 'status', label });
-      if (action && action.type && action.type !== 'none') actionTypes.push(action.type);
+      if (effective && effective.type && effective.type !== 'none') actionTypes.push(effective.type);
       const actionStartedAt = Date.now();
       try {
-        const card = await runAction(action, { campaign, cards, orgId, userId });
+        const card = await runAction(effective, { campaign, cards, orgId, userId });
         if (card) {
           cards.push(card);
           emit({ type: 'card', card });
@@ -1580,6 +1985,9 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
             if (event.type === 'status') {
               if (event.phase) send('status', { phase: event.phase });
               else send('status', { label: event.label });
+            } else if (event.type === 'reply_delta') {
+              // Streaming: pedaço do reply renderizado em tempo real.
+              send('reply_delta', { text: event.text });
             } else if (event.type === 'reply') {
               send('reply', { text: event.text });
             } else if (event.type === 'card') {

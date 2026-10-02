@@ -46,6 +46,22 @@ const ACTIONS_V1 = {
   // COMPLETO dos conteúdos gerados aparece no chat para revisão — o agente
   // nunca mais "troca de assunto" quando pedem para ver o e-mail.
   show_content: { version: 1, idempotency: 'none', description: 'Mostra no chat os conteúdos gerados (assunto + texto completo por canal) para revisão' },
+  // Onda "IA com a plataforma inteira" (QA 2026-10-02, bugs 1/2/6 do dono) —
+  // TODAS ADITIVAS (AD-6): o agente enxerga a org inteira e executa pelo chat
+  // o que hoje só existe no painel. Somente leitura: list_campaigns,
+  // show_replies, show_dns_records, show_capabilities. Mutadoras com o gate
+  // de confirmação do dono (chat-routes): create/rename/duplicate/delete/
+  // approve/update_lead.
+  list_campaigns: { version: 1, idempotency: 'none', description: 'Lista todas as campanhas da organização (nome, status, audiência) com atalho para abrir' },
+  create_campaign: { version: 1, idempotency: 'params', description: 'Cria uma nova campanha (nome + canais) a partir do chat' },
+  rename_campaign: { version: 1, idempotency: 'none', description: 'Renomeia a campanha (atual ou indicada por campaignId)' },
+  duplicate_campaign: { version: 1, idempotency: 'params', description: 'Duplica uma campanha da organização como rascunho' },
+  delete_campaign: { version: 1, idempotency: 'none', description: 'Apaga uma campanha da organização — SEMPRE passa pelo card de confirmação' },
+  approve_campaign: { version: 1, idempotency: 'params', description: 'Aprova a campanha (in_review → approved) pelo mesmo fluxo do Pré-voo' },
+  update_lead: { version: 1, idempotency: 'none', description: 'Edita dados de um lead (empresa, contato, localidade, porte, setor) com escopo de organização' },
+  show_replies: { version: 1, idempotency: 'none', description: 'Mostra as respostas classificadas dos leads (interessados, reuniões, opt-outs) — a caixa de entrada do agente' },
+  show_dns_records: { version: 1, idempotency: 'none', description: 'Mostra os registros DNS (SPF/DKIM/DMARC) do domínio de envio e o status de cada um' },
+  show_capabilities: { version: 1, idempotency: 'none', description: 'Lista o que o assistente consegue fazer — a resposta canônica para "o que você faz?"' },
 };
 
 /**
@@ -118,6 +134,56 @@ function validate(action, params = {}) {
       return true;
     case 'generate_content':
       return true; // tones opcional (default no serviço)
+    case 'create_campaign':
+    case 'duplicate_campaign': {
+      const isDup = action === 'duplicate_campaign';
+      if (isDup && !params.campaignId && !params.name) {
+        const err = new Error('duplicate_campaign exige `campaignId` (campanha de origem) ou `name`.');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      if (!isDup && !params.name) {
+        const err = new Error('create_campaign exige `name`.');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
+    case 'rename_campaign':
+    case 'delete_campaign': {
+      if (action === 'rename_campaign' && !params.name) {
+        const err = new Error('rename_campaign exige `name`.');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true; // campaignId opcional (default = campanha aberta)
+    }
+    case 'approve_campaign':
+      return true;
+    case 'update_lead': {
+      const FIELDS = ['companyName', 'tradeName', 'contactName', 'city', 'state', 'industry', 'employees'];
+      const fields = params.fields;
+      const hasField =
+        fields && typeof fields === 'object' && !Array.isArray(fields) &&
+        FIELDS.some((f) => fields[f] !== undefined);
+      if (!params.prospectId || typeof params.prospectId !== 'string' || !hasField) {
+        const err = new Error(
+          `update_lead exige \`prospectId\` e \`fields\` com ao menos um de: ${FIELDS.join(', ')}.`
+        );
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
+    case 'show_replies':
+    case 'show_dns_records':
+    case 'show_capabilities':
+    case 'list_campaigns':
+      return true;
     case 'set_schedule':
       return true; // validação de janelas vive no serviço (INVALID_WINDOW)
     case 'select_leads': {

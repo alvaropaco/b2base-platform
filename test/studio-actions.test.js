@@ -97,20 +97,20 @@ test('actionKey: escopada em org+campanha; actionId do cliente vence; hash deter
   assert.equal(manifest.actionKey({ orgId: 'org-1', campaignId: 'c1', action: 'set_objective', params: {} }), null, 'idempotência none não gera chave');
 });
 
-test('manifest v1: contrato fechado com as 13 actions do orquestrador', () => {
-  // Evolução ADITIVA: show_balance/start_whatsapp_pairing (2026-09-27) e —
-  // onda "criação sem bloqueios" (2026-09-29) — attach_files (anexos de
-  // mensagem, Story 2.1) e edit_content (edição em voo pelo chat, Story
-  // 3.3/D9) entraram sem alterar forma, idempotência ou chaves das 9
-  // anteriores — consumidores existentes não quebram (AD-6). Epic 2
-  // (2026-09-30): capture_leads entra ADITIVA (FR7/D1/D2), idempotente por
-  // params — repetir a captura devolve o mesmo card (FR8/AD-6). QA
-  // 2026-10-02: show_content entra ADITIVA (somente leitura, idempotency
-  // none) — o texto completo dos conteúdos aparece no chat para revisão.
+test('manifest v1: contrato fechado com as 23 actions do orquestrador', () => {
+  // Evolução ADITIVA (AD-6): show_balance/start_whatsapp_pairing (2026-09-27);
+  // attach_files/edit_content (2026-09-29); capture_leads (Epic 2, 2026-09-30);
+  // show_content (QA 2026-10-02) e a onda "IA com a plataforma inteira"
+  // (QA 2026-10-02, bugs 1/2/6 do dono): list/create/rename/duplicate/delete/
+  // approve_campaign, update_lead, show_replies, show_dns_records,
+  // show_capabilities — sem alterar forma, idempotência ou chaves das
+  // anteriores; consumidores existentes não quebram.
   assert.deepEqual(Object.keys(manifest.ACTIONS_V1).sort(), [
-    'attach_files', 'attach_url', 'capture_leads', 'confirm_material', 'edit_content', 'generate_content',
-    'select_leads', 'set_audience', 'set_objective', 'set_schedule', 'show_balance', 'show_content',
-    'start_whatsapp_pairing',
+    'approve_campaign', 'attach_files', 'attach_url', 'capture_leads', 'confirm_material',
+    'create_campaign', 'delete_campaign', 'duplicate_campaign', 'edit_content', 'generate_content',
+    'list_campaigns', 'rename_campaign', 'select_leads', 'set_audience', 'set_objective',
+    'set_schedule', 'show_balance', 'show_capabilities', 'show_content', 'show_dns_records',
+    'show_replies', 'start_whatsapp_pairing', 'update_lead',
   ]);
   for (const spec of Object.values(manifest.ACTIONS_V1)) {
     assert.equal(spec.version, 1);

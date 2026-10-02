@@ -303,6 +303,39 @@
   mask-image: linear-gradient(to right, black 88%, transparent);
   -webkit-mask-image: linear-gradient(to right, black 88%, transparent);
 }
+/* Rail clicável (bug 3 do dono): hover com elevação suave — a etapa
+   responde ao cursor e dá affordance de botão. */
+.cockpit-rail-step {
+  transition:
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease;
+}
+.cockpit-rail-step:hover {
+  transform: translateY(-1px) scale(1.04);
+  box-shadow: 0 3px 12px rgba(22, 2, 17, 0.14);
+}
+.cockpit-rail-step[data-current='true']:hover {
+  box-shadow: 0 3px 14px rgba(22, 2, 17, 0.35);
+}
+.cockpit-rail-step:focus-visible {
+  outline: 2px solid rgba(22, 2, 17, 0.55);
+  outline-offset: 2px;
+}
+.cockpit-rail-step:active {
+  transform: translateY(0) scale(0.98);
+}
+/* Card destacado pelo Rail (focusStep): pulso curto aponta onde a etapa
+   está falando no thread. */
+@keyframes cockpit-card-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(22, 2, 17, 0.35); }
+  60% { box-shadow: 0 0 0 6px rgba(22, 2, 17, 0.12); }
+  100% { box-shadow: 0 0 0 0 rgba(22, 2, 17, 0); }
+}
+.cockpit-card-pulse {
+  animation: cockpit-card-pulse 1.5s ease-out 1;
+}
 /* Indicador de "pensando" do piloto (turno SSE em curso). */
 .cockpit-typing > i {
   display: inline-block;
@@ -322,5 +355,14 @@
   .cockpit-orb,
   .cockpit-typing > i {
     animation: none !important;
+  }
+  .cockpit-rail-step {
+    transition: none;
+  }
+  .cockpit-rail-step:hover {
+    transform: none;
+  }
+  .cockpit-card-pulse {
+    animation: none;
   }
 }

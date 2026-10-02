@@ -42,6 +42,12 @@ export interface ChatCard {
   } | null;
   /** Epic 1 (FR15/F2): candidatos quando a confirmação de material é ambígua. */
   candidates?: Array<{ id: string; label: string }>;
+  /** Gate de confirmação (QA 2026-10-02): a action a reenviar com o selo. */
+  action?: { type: string; params?: Record<string, unknown> };
+  /** Campanhas da organização (list_campaigns / create_campaign / duplicar). */
+  campaigns?: Array<{ id: string; name: string; status: string; audienceCount?: number | null; current?: boolean }>;
+  campaignId?: string;
+  campaignName?: string;
 }
 
 /** Chip-ação derivada do card de 0-match (FR6): aplicar o filtro sugerido. */
@@ -49,6 +55,36 @@ export interface RecoveryChip {
   key: string;
   label: string;
   action: { type: string; params: Record<string, unknown> };
+}
+
+/**
+ * Gate de confirmação (QA 2026-10-02, bug 5 do dono): card confirm_change
+ * vira botão "Confirmar" que reenvia a MESMA action já com o selo de
+ * aprovação — a IA nunca altera o que existe sem o gesto do usuário.
+ */
+export function confirmChangeChip(card: ChatCard): RecoveryChip | null {
+  if (card.type !== 'confirm_change' || !card.action || !card.action.type) return null;
+  return {
+    key: 'confirm-change',
+    label: 'Confirmar alteração',
+    action: { type: card.action.type, params: { ...(card.action.params || {}), confirmed: true } },
+  };
+}
+
+/**
+ * Campanhas da organização (bug 1/2 do dono): atalhos de abertura nos cards
+ * campaign_list / campaign_created — trocar de campanha sem sair do chat.
+ */
+export function campaignLinks(card: ChatCard): Array<{ id: string; label: string; current: boolean }> {
+  if (card.type === 'campaign_list' && Array.isArray(card.campaigns)) {
+    return card.campaigns
+      .filter((c) => c && c.id)
+      .map((c) => ({ id: c.id, label: c.name, current: Boolean(c.current) }));
+  }
+  if (card.type === 'campaign_created' && card.campaignId) {
+    return [{ id: card.campaignId, label: card.campaignName || 'Abrir campanha', current: false }];
+  }
+  return [];
 }
 
 /** Decisão de render PURA: botão "Usar este filtro (N leads)" do 0-match. */
@@ -138,7 +174,30 @@ export interface CampaignChatProps {
   step?: string | null;
   /** Pós-lançamento: abre o Monitor desta campanha (fix 5, 2026-09-28). */
   onOpenMonitor?: () => void;
+  /** Rail clicável (bug 3 do dono): { key, token } — token cresce a cada
+   *  clique; o chat rola até o card da etapa ou pré-preenche a pergunta. */
+  focusStep?: { key: string; token: number } | null;
+  /** Atalho dos cards de campanha: abrir outra campanha da organização. */
+  onOpenCampaign?: (id: string, name?: string) => void;
 }
+
+/** Rail step → tipos de card que "falam" daquela etapa (scroll no thread). */
+const FOCUS_CARD_TYPES: Record<string, string[]> = {
+  objective: ['objective'],
+  audience: ['audience'],
+  message: ['content_review', 'content', 'content_empty'],
+  schedule: ['schedule'],
+  balance: ['balance'],
+};
+
+/** Pergunta pré-preenchida quando a etapa ainda não tem card no thread. */
+const FOCUS_DRAFT: Record<string, string> = {
+  objective: 'Me mostra o objetivo da campanha',
+  audience: 'Como está a audiência da campanha?',
+  message: 'Me mostra a mensagem da campanha',
+  schedule: 'Como está o agendamento?',
+  balance: 'Como está meu saldo de envios?',
+};
 
 /** Próximas ações válidas da máquina de estados (FR-3/FR-8) → chips. */
 function nextStepChips(state: CampaignState | null): Array<{ key: string; label: string; prompt: string }> {
@@ -153,7 +212,7 @@ function nextStepChips(state: CampaignState | null): Array<{ key: string; label:
   return chips.slice(0, 3);
 }
 
-export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPreflight, onExitToHome, step, onOpenMonitor }: CampaignChatProps) {
+export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPreflight, onExitToHome, step, onOpenMonitor, focusStep, onOpenCampaign }: CampaignChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [state, setState] = useState<CampaignState | null>(null);
   const [input, setInput] = useState('');
@@ -189,6 +248,27 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, sending, certificate]);
+
+  // Rail clicável (bug 3 do dono): rola até o card da etapa clicada e o
+  // destaca; sem card no thread, pré-preenche a pergunta no campo de input.
+  useEffect(() => {
+    if (!focusStep?.key) return;
+    const types = FOCUS_CARD_TYPES[focusStep.key] || [];
+    const nodes = document.querySelectorAll<HTMLElement>('[data-card-type]');
+    let target: HTMLElement | null = null;
+    for (const node of nodes) {
+      if (types.includes(node.dataset.cardType || '')) target = node; // último
+    }
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add('cockpit-card-pulse');
+      setTimeout(() => target?.classList.remove('cockpit-card-pulse'), 1600);
+    } else {
+      setInput(FOCUS_DRAFT[focusStep.key] || '');
+    }
+    // token: cada clique no Rail re-dispara o efeito.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusStep?.token]);
 
   const send = async (text: string) => {
     if (!text.trim() || sending) return;
@@ -235,6 +315,11 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
               const label = data.phase === 'thinking' ? 'Pensando…' : data.label;
               if (!label) return prev;
               return { ...prev, statuses: [...prev.statuses.filter((s) => s !== 'Pensando…' || data.phase === 'thinking'), label] };
+            }
+            if (event === 'reply_delta') {
+              // Streaming (bug 4 do dono): o reply cresce em tempo real — o
+              // evento `reply` final é autoritativo e substitui o texto.
+              return { ...prev, reply: (prev.reply || '') + String(data.text || '') };
             }
             if (event === 'reply') return { ...prev, reply: data.text };
             if (event === 'card' || event === 'card_error') {
@@ -299,7 +384,7 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
         // Nonce por disparo: autorizar de novo é um pedido NOVO (não replaya
         // um agendamento antigo); duplo toque é protegido pelo backend.
         actionId: `launch-${campaignId}-${Date.now()}`,
-        params: { mode: 'immediate' },
+        params: { mode: 'immediate', confirmed: true },
       });
       const fresh = await jsonFetch<CampaignState>('GET', `/campaigns/${campaignId}/state`);
       setLaunchSummary(fresh);
@@ -332,7 +417,12 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
   const applyRecoveryChip = async (chip: RecoveryChip) => {
     setError(null);
     try {
-      await runCampaignAction(campaignId, { type: chip.action.type, params: chip.action.params });
+      // confirmed: true — chip é gesto direto do usuário (o gate de
+      // confirmação do dono vale para a IA, não para cliques dele).
+      await runCampaignAction(campaignId, {
+        type: chip.action.type,
+        params: { ...chip.action.params, confirmed: true },
+      });
       await load();
       onStateChange?.();
     } catch (err) {
@@ -413,13 +503,32 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
     // Epic 2 (UX-DR3): chip do card de captura — 1 clique materializa a
     // audiência com o lote capturado.
     const captureChip = captureLeadsChip(card);
+    // Gate de confirmação (bug 5) + atalhos de campanha (bugs 1/2).
+    const confirmChipCard = confirmChangeChip(card);
+    const links = campaignLinks(card);
     return (
-      <div key={i} className="cockpit-glass rounded-xl p-3 text-xs">
+      <div key={i} data-card-type={card.type} className="cockpit-glass rounded-xl p-3 text-xs">
         <p className="font-semibold text-foreground">
           {card.label}
           {card.replayed && <span className="ml-1 font-normal text-muted-foreground">(já feito — nada duplicado)</span>}
         </p>
         {card.detail && <p className="mt-0.5 whitespace-pre-wrap text-muted-foreground">{card.detail}</p>}
+        {links.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {links
+              .filter((l) => !l.current)
+              .map((l) => (
+                <button
+                  key={l.id}
+                  type="button"
+                  onClick={() => onOpenCampaign?.(l.id, l.label)}
+                  className="rounded-full border border-[#160211]/10 bg-white px-3 py-1.5 text-[11px] font-medium text-foreground shadow-sm transition-colors hover:bg-accent"
+                >
+                  Abrir “{l.label}”
+                </button>
+              ))}
+          </div>
+        )}
         {/* Epic 1 (FR6): diagnóstico do 0-match em linguagem simples. */}
         {card.diagnosis && <p className="mt-1.5 leading-relaxed text-muted-foreground">{card.diagnosis}</p>}
         {/* Epic 1 (FR6): proposta materialmente diferente — 1 clique aplica. */}
@@ -440,6 +549,16 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
             className="mt-2 rounded-full bg-[#160211] px-3 py-1.5 text-[11px] font-medium text-white shadow-md transition-transform hover:brightness-110"
           >
             {captureChip.label}
+          </button>
+        )}
+        {/* Gate de confirmação (bug 5 do dono): 1 clique aprova a alteração. */}
+        {confirmChipCard && (
+          <button
+            type="button"
+            onClick={() => void applyRecoveryChip(confirmChipCard)}
+            className="mt-2 rounded-full bg-[#160211] px-3 py-1.5 text-[11px] font-medium text-white shadow-md transition-transform hover:brightness-110"
+          >
+            {confirmChipCard.label}
           </button>
         )}
         {/* Epic 1 (FR15/F2): desambiguação — cada candidato é um chip vivo. */}

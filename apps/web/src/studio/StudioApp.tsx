@@ -111,6 +111,9 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
   const [saldoOpen, setSaldoOpen] = useState(false);
   const [events, setEvents] = useState<ReputationEvent[]>([]);
   const [wakesOpen, setWakesOpen] = useState(false);
+  // Rail clicável (bug 3 do dono): token cresce a cada clique — re-clique na
+  // MESMA etapa re-dispara o efeito de foco no chat.
+  const [railFocus, setRailFocus] = useState<{ key: RailKey; token: number } | null>(null);
   // FR-1/Story 3.1: 'preflight' é o destino do fim da criação (redirect
   // automático via onApproved) e painel de ajuste fino pré-lançamento.
   const [pane, setPane] = useState<'home' | 'campaigns' | 'agent' | 'brand' | 'monitor' | 'preflight'>('home');
@@ -571,9 +574,22 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                 return (
                   <li key={step.key} className="flex items-center gap-1" aria-current={lit ? 'step' : undefined}>
                     {i > 0 && <span aria-hidden="true" className="mx-0.5 text-muted-foreground/60">→</span>}
-                    <span
+                    <button
+                      type="button"
                       data-current={lit ? 'true' : undefined}
-                      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 transition-colors ${
+                      title={`Ir para ${step.label}`}
+                      onClick={() => {
+                        if (step.key === 'balance') {
+                          setSaldoOpen(true);
+                          setTimeout(
+                            () => document.getElementById('cockpit-saldo')?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+                            80
+                          );
+                          return;
+                        }
+                        setRailFocus({ key: step.key, token: Date.now() });
+                      }}
+                      className={`cockpit-rail-step inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 transition-colors ${
                         lit
                           ? 'bg-[#160211] font-semibold text-white'
                           : done
@@ -588,7 +604,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                         } ${sweeping && lit ? 'cockpit-rail-sweep' : ''}`}
                       />
                       {step.label}
-                    </span>
+                    </button>
                   </li>
                 );
               })}
@@ -799,6 +815,10 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
               step={railCurrent}
               onExitToHome={exitToBriefing}
               onOpenMonitor={() => navigate('monitor')}
+              // Rail clicável (bug 3 do dono) + atalho dos cards de campanha
+              // (bugs 1/2): foco na etapa e troca de campanha sem sair do chat.
+              focusStep={railFocus}
+              onOpenCampaign={resumeCampaign}
               // Story 3.2 (FR9): fim da criação → redirect automático ao
               // Pré-voo, sem pedir permissão e sem polling (gancho onApproved).
               onApproved={() => navigate('preflight')}

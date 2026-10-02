@@ -296,6 +296,7 @@ test('1.3: matching sem acento e por companyName — "metalurgica"/"taunus" casa
       type: 'set_audience',
       params: {
         description: 'taunus',
+        confirmed: true,
         criteria: { version: 1, groups: [{ op: 'AND', conditions: [{ field: 'companyName', op: 'contains', value: 'taunus' }] }] },
       },
     });

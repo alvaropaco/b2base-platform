@@ -403,7 +403,7 @@ test('chat: select_leads ajusta a audiência a partir da seleção vigente (add/
         return {
           content: JSON.stringify({
             reply: 'Feito — adicionei a Acme Alimentos à campanha.',
-            actions: [{ type: 'select_leads', add: ['l3'] }],
+            actions: [{ type: 'select_leads', add: ['l3'], confirmed: true }],
           }),
         };
       }
@@ -411,7 +411,7 @@ test('chat: select_leads ajusta a audiência a partir da seleção vigente (add/
         return {
           content: JSON.stringify({
             reply: 'Removi a Indústria da seleção.',
-            actions: [{ type: 'select_leads', remove: ['l2'] }],
+            actions: [{ type: 'select_leads', remove: ['l2'], confirmed: true }],
           }),
         };
       }
@@ -419,7 +419,7 @@ test('chat: select_leads ajusta a audiência a partir da seleção vigente (add/
         return {
           content: JSON.stringify({
             reply: 'Ok, adicionei.',
-            actions: [{ type: 'select_leads', add: ['lx'] }],
+            actions: [{ type: 'select_leads', add: ['lx'], confirmed: true }],
           }),
         };
       }
@@ -432,7 +432,7 @@ test('chat: select_leads ajusta a audiência a partir da seleção vigente (add/
         return {
           content: JSON.stringify({
             reply: 'Reincluí a Log B na seleção.',
-            actions: [{ type: 'select_leads', add: ['l2'] }],
+            actions: [{ type: 'select_leads', add: ['l2'], confirmed: true }],
           }),
         };
       }
