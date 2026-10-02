@@ -317,10 +317,27 @@ function campaignManagementHint(userMessage) {
 function extractRenameTarget(userMessage) {
   const msg = String(userMessage || '').trim();
   if (!msg) return null;
+  // GAP: o usuário costuma citar o NOME ATUAL no meio do pedido ("renomeia a
+  // campanha TESTE para B2BASE") — até 4 palavras entre "campanha" e a
+  // preposição do nome novo são toleradas.
+  const GAP = '(?:[\\wÀ-ÿ-]+\\s+){0,4}';
   const patterns = [
-    /(?:renomei[ao]|renomear)\s+(?:a\s+)?campanha\s+(?:para|pra|como|para ser|para ficar como)\s+(.+)/i,
-    /(?:mud[aeo]|mudar|troc[aeo]|trocar|alter[aeo]|alterar)\s+(?:o\s+)?nome\s+(?:d[ao]s?\s+)?(?:dessa|desta|minha|da)?\s*campanha\s+(?:para|pra|como|para ser)\s+(.+)/i,
-    /(?:o\s+)?nome\s+(?:d[ao]s?\s+)?(?:dessa|desta|minha|da)\s+campanha\s+(?:agora\s+)?(?:[ée]|ser[áa]|vai\s+ser|fica|vira|passa\s+a\s+ser)\s+(.+)/i,
+    new RegExp(
+      '(?:renomei[ao]|renomear)\\s+(?:a\\s+)?campanha\\s+' + GAP + '(?:para|pra|como|para ser|para ficar como)\\s+(.+)',
+      'i'
+    ),
+    new RegExp(
+      '(?:mud[aeo]|mudar|troc[aeo]|trocar|alter[aeo]|alterar)\\s+(?:o\\s+)?nome\\s+(?:d[ao]s?\\s+)?(?:dessa|desta|minha|da)?\\s*(?:[\\wÀ-ÿ-]+\\s+){0,3}campanha\\s+' +
+        GAP +
+        '(?:para|pra|como|para ser)\\s+(.+)',
+      'i'
+    ),
+    new RegExp(
+      '(?:o\\s+)?nome\\s+(?:d[ao]s?\\s+)?(?:dessa|desta|minha|da)\\s+campanha\\s+' +
+        GAP +
+        '(?:agora\\s+)?(?:[ée]|ser[áa]|vai\\s+ser|fica|vira|passa\\sa\\sser)\\s+(.+)',
+      'i'
+    ),
   ];
   for (const re of patterns) {
     const m = msg.match(re);

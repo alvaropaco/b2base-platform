@@ -78,6 +78,12 @@ test('extração determinística do novo nome da campanha (rename server-side)',
   assert.equal(extractRenameTarget('renomeia a campanha para Relâmpago'), 'Relâmpago');
   assert.equal(extractRenameTarget('o nome da campanha agora é Indústrias SP.'), 'Indústrias SP');
   assert.equal(extractRenameTarget('altera o nome dessa campanha para Teste A, por favor'), 'Teste A');
+  // QA 4ª bateria: o usuário cita o NOME ATUAL no meio do pedido.
+  assert.equal(extractRenameTarget('renomeia a campanha TESTE para B2BASE'), 'B2BASE');
+  assert.equal(extractRenameTarget('muda o nome da campanha TESTE para B2BASE'), 'B2BASE');
+  assert.equal(extractRenameTarget('renomear a campanha Minha Campanha Antiga para Novo Começo'), 'Novo Começo');
+  assert.equal(extractRenameTarget('o nome da campanha TESTE agora é B2BASE'), 'B2BASE');
+  assert.equal(extractRenameTarget('quero renomear a campanha TESTE para B2BASE?'), 'B2BASE');
   assert.equal(extractRenameTarget('troca o nome da campanha'), null, 'sem alvo → modelo pergunta');
   assert.equal(extractRenameTarget('monta a audiência da campanha'), null);
   assert.equal(extractRenameTarget('muda o nome do lead para Acme'), null, 'lead não é campanha');
