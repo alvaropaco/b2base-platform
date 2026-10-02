@@ -15,7 +15,7 @@ const express = require('express');
 const { createFakePrisma } = require('./helpers/fake-prisma');
 const { createStudioRouter } = require('../studio/router');
 const manifest = require('../studio/actions/manifest.v1');
-const { SYSTEM_PROMPT, campaignManagementHint } = require('../studio/ai/chat-agent');
+const { SYSTEM_PROMPT, campaignManagementHint, extractRenameTarget } = require('../studio/ai/chat-agent');
 
 /** segment-nl stub: traduz a descrição em critérios determinísticos. */
 function segmentStub({ user }) {
@@ -70,6 +70,49 @@ test('bug 6: toda action do manifest é declarada no SYSTEM_PROMPT (capacidades 
   // Anti-negação (QA 2026-10-02, 3ª bateria): o modelo negava que dava para
   // criar/renomear pelo chat — a regra absoluta precisa estar no prompt.
   assert.ok(SYSTEM_PROMPT.includes('REGRA ABSOLUTA CONTRA NEGAÇÃO FALSA'));
+});
+
+test('extração determinística do novo nome da campanha (rename server-side)', () => {
+  assert.equal(extractRenameTarget('muda o nome da campanha para Outbound 2026'), 'Outbound 2026');
+  assert.equal(extractRenameTarget('troca o nome da campanha pra "Rh Indústria"'), 'Rh Indústria');
+  assert.equal(extractRenameTarget('renomeia a campanha para Relâmpago'), 'Relâmpago');
+  assert.equal(extractRenameTarget('o nome da campanha agora é Indústrias SP.'), 'Indústrias SP');
+  assert.equal(extractRenameTarget('altera o nome dessa campanha para Teste A, por favor'), 'Teste A');
+  assert.equal(extractRenameTarget('troca o nome da campanha'), null, 'sem alvo → modelo pergunta');
+  assert.equal(extractRenameTarget('monta a audiência da campanha'), null);
+  assert.equal(extractRenameTarget('muda o nome do lead para Acme'), null, 'lead não é campanha');
+});
+
+test('QA 3ª bateria: MESMO com o modelo negando, o servidor renomeia a campanha', async () => {
+  // O stub reproduz a falha real do dono: o modelo responde "sem acesso,
+  // use o painel" e NÃO emita action nenhuma. A renomeação tem que
+  // acontecer mesmo assim (caminho determinístico server-side).
+  const llmImpl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      assert.ok(user.includes('AÇÃO JÁ EXECUTADA PELO SERVIDOR'), 'modelo recebe a nota de ação já executada');
+      return {
+        content: JSON.stringify({
+          reply: 'Desculpe, não tenho acesso — a renomeação precisa ser feita pelo painel.',
+          actions: [{ type: 'none' }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, api } = await startServer({ llmImpl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Nome Antigo', channels: ['email'] });
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'muda o nome da campanha para Outbound 2026',
+    });
+    assert.equal(res.status, 200);
+    const renamed = body.data.cards.find((card) => card.type === 'campaign_renamed');
+    assert.ok(renamed, 'card de renomeação no thread — independente do modelo');
+    const fresh = (await api('GET', `/campaigns/${c.data.id}`)).body.data;
+    assert.equal(fresh.name, 'Outbound 2026', 'a campanha RENOMEOU no banco');
+  } finally {
+    server.close();
+  }
 });
 
 test('roteador de gerenciamento: pedido de campanha injeta a instrução; trabalho de conteúdo não', () => {

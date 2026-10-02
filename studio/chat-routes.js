@@ -14,7 +14,7 @@
 
 const crypto = require('crypto');
 const { httpError } = require('./errors');
-const { createChatAgent } = require('./ai/chat-agent');
+const { createChatAgent, extractRenameTarget } = require('./ai/chat-agent');
 const { createComposer } = require('./ai/compose');
 const { createExtractor } = require('./ai/extract');
 const { generateAndStorePackage } = require('./compose-service');
@@ -1789,6 +1789,39 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
       }
     }
 
+    // Renomeação DETERMINÍSTICA (QA 2026-10-02: o modelo negava mesmo com o
+    // hint — estocástico demais para ser gatekeeper). O servidor extrai o
+    // nome novo da frase e executa rename_campaign sozinho; o modelo recebe
+    // o estado JÁ atualizado e só confirma. Roda em qualquer turno,
+    // independe do objetivo, e nunca derruba o turno.
+    let serverExecuted = null;
+    const renameTarget = typeof extractRenameTarget === 'function' ? extractRenameTarget(message) : null;
+    if (renameTarget && renameTarget !== campaign.name) {
+      emit({ type: 'status', label: ACTION_LABELS.rename_campaign });
+      actionTypes.push('rename_campaign');
+      const renameStartedAt = Date.now();
+      try {
+        const renameCard = await runAction(
+          { type: 'rename_campaign', name: renameTarget },
+          { campaign, cards, orgId, userId }
+        );
+        if (renameCard) {
+          cards.push(renameCard);
+          emit({ type: 'card', card: renameCard });
+        }
+        const fresh = await prismaClient.studioCampaign.findUnique({ where: { id: campaign.id } });
+        if (fresh) Object.assign(campaign, fresh);
+        Object.assign(extras, await currentExtras(prismaClient, campaign));
+        extras.journey = journey.previewFromExtras(campaign, extras);
+        serverExecuted = 'rename_campaign';
+      } catch (err) {
+        console.error('[studio/chat] renomeação determinística falhou (turno segue):', err.stack || String(err));
+      } finally {
+        actionDurationsMs.rename_campaign =
+          (actionDurationsMs.rename_campaign || 0) + (Date.now() - renameStartedAt);
+      }
+    }
+
     let reply;
     let actions;
     let degradation = null;
@@ -1804,6 +1837,14 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
         onReplyDelta: (text) => {
           if (text) emit({ type: 'reply_delta', text });
         },
+        // Ação já executada server-side (ex.: rename determinístico): o hint
+        // padrão é SUBSTITUÍDO — o modelo só confirma, nunca re-emite.
+        hintOverride: serverExecuted
+          ? `AÇÃO JÁ EXECUTADA PELO SERVIDOR NESTE TURNO: ${serverExecuted} (o card do resultado já está no thread). ` +
+            'Apenas CONFIRME a mudança ao usuário com os dados novos do estado. NÃO emita nenhuma action de ' +
+            'gerenciamento de campanha neste turno (seria duplicado) e NUNCA diga que não pode ou que precisa ' +
+            'ser no painel.'
+          : null,
       });
       reply = orchestrated.reply;
       actions = orchestrated.actions;

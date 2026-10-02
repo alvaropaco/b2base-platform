@@ -307,6 +307,36 @@ function campaignManagementHint(userMessage) {
   ].join('\n');
 }
 
+/**
+ * Extrai determinísticamente o NOVO NOME de um pedido de renomeação da
+ * campanha aberta (QA 2026-10-02: o modelo negava a renomeação mesmo com o
+ * hint — agora o servidor executa sozinho e o modelo só confirma). Retorna
+ * o nome limpo ou null (pedido sem alvo claro → cai para o modelo perguntar
+ * o nome novo).
+ */
+function extractRenameTarget(userMessage) {
+  const msg = String(userMessage || '').trim();
+  if (!msg) return null;
+  const patterns = [
+    /(?:renomei[ao]|renomear)\s+(?:a\s+)?campanha\s+(?:para|pra|como|para ser|para ficar como)\s+(.+)/i,
+    /(?:mud[aeo]|mudar|troc[aeo]|trocar|alter[aeo]|alterar)\s+(?:o\s+)?nome\s+(?:d[ao]s?\s+)?(?:dessa|desta|minha|da)?\s*campanha\s+(?:para|pra|como|para ser)\s+(.+)/i,
+    /(?:o\s+)?nome\s+(?:d[ao]s?\s+)?(?:dessa|desta|minha|da)\s+campanha\s+(?:agora\s+)?(?:[ée]|ser[áa]|vai\s+ser|fica|vira|passa\s+a\s+ser)\s+(.+)/i,
+  ];
+  for (const re of patterns) {
+    const m = msg.match(re);
+    if (m && m[1]) {
+      let name = m[1].trim()
+        .replace(/^["'“”«»]+|["'“”«»]+$/g, '') // aspas em volta
+        .replace(/\s*(por favor|pfv|pf)\s*$/i, '')
+        .replace(/[.,;!?…]+\s*$/, '')
+        .trim();
+      if (!name) continue;
+      return name.slice(0, 200);
+    }
+  }
+  return null;
+}
+
 function createChatAgent({ callLlm, callLlmStream } = {}) {
   const llm = callLlm || require('../../llm-client').callLlm;
   // Streaming real quando disponível (prod); nos testes (só callLlm injetado)
@@ -398,13 +428,13 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
     }
   }
 
-  async function orchestrate({ campaign, history, userMessage, extras, onLlmCall = () => {}, onReplyDelta = null }) {
+  async function orchestrate({ campaign, history, userMessage, extras, onLlmCall = () => {}, onReplyDelta = null, hintOverride = null }) {
     const user = [
       buildStateBlock(campaign, extras),
       buildOrgBlock(extras),
       buildHistoryBlock(history),
       skills.selectFor(userMessage),
-      campaignManagementHint(userMessage),
+      hintOverride || campaignManagementHint(userMessage),
       `NOVA MENSAGEM DO USUÁRIO: ${userMessage}`,
       'Decida as ações e escreva a resposta para o usuário.',
     ]
@@ -534,4 +564,10 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
   return { orchestrate, extractIntent };
 }
 
-module.exports = { createChatAgent, SYSTEM_PROMPT, extractReplySoFar, campaignManagementHint };
+module.exports = {
+  createChatAgent,
+  SYSTEM_PROMPT,
+  extractReplySoFar,
+  campaignManagementHint,
+  extractRenameTarget,
+};
