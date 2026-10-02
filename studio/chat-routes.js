@@ -14,7 +14,7 @@
 
 const crypto = require('crypto');
 const { httpError } = require('./errors');
-const { createChatAgent, extractRenameTarget } = require('./ai/chat-agent');
+const { createChatAgent, extractRenameTarget, leadCaptureIntent, extractCaptureQuery, extractCaptureState } = require('./ai/chat-agent');
 const { createComposer } = require('./ai/compose');
 const { createExtractor } = require('./ai/extract');
 const { generateAndStorePackage } = require('./compose-service');
@@ -1795,6 +1795,9 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     // o estado JÁ atualizado e só confirma. Roda em qualquer turno,
     // independe do objetivo, e nunca derruba o turno.
     let serverExecuted = null;
+    // Tipos já atendidos server-side neste turno — o modelo NÃO re-emite
+    // (a captura determinística + a action do modelo seriam DOIS trabalhos).
+    const serverActionsDone = new Set();
     const renameTarget = typeof extractRenameTarget === 'function' ? extractRenameTarget(message) : null;
     if (renameTarget && renameTarget !== campaign.name) {
       emit({ type: 'status', label: ACTION_LABELS.rename_campaign });
@@ -1819,6 +1822,75 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
       } finally {
         actionDurationsMs.rename_campaign =
           (actionDurationsMs.rename_campaign || 0) + (Date.now() - renameStartedAt);
+      }
+    }
+
+    // Captura DETERMINÍSTICA de leads (QA 2026-10-02, 5ª bateria: 'procura
+    // potenciais leads' virava filtro 0-match + 'importa a base'). Pedido
+    // explícito de ADICIONAR/PROCURAR leads → capture_leads roda server-side
+    // com a query da frase ou, na falta, os termos do segmento vigente. Se o
+    // pedido citou a CAMPANHA, os capturados já entram na audiência (a ordem
+    // explícita do usuário é o consentimento — select_leads vai confirmado).
+    const captureWanted = typeof leadCaptureIntent === 'function' ? leadCaptureIntent(message) : false;
+    if (captureWanted) {
+      let query = extractCaptureQuery(message);
+      if (!query) {
+        // Fallback: termos do segmento vigente (a audiência que o usuário já
+        // definiu é a melhor aproximação de "leads como os meus").
+        try {
+          const seg = await prismaClient.studioSegment.findFirst({
+            where: { orgId },
+            orderBy: { createdAt: 'desc' },
+          });
+          const conds = (seg?.criteria?.groups || []).flatMap((g) => g.conditions || []);
+          const vals = conds
+            .filter((c) => ['industry', 'companyName', 'tradeName'].includes(c.field))
+            .map((c) => (Array.isArray(c.value) ? c.value.join(' ') : c.value));
+          if (vals.length) query = vals.join(' ').slice(0, 80);
+        } catch (_e) { /* segue sem fallback */ }
+      }
+      if (query) {
+        emit({ type: 'status', label: ACTION_LABELS.capture_leads });
+        actionTypes.push('capture_leads');
+        const captureStartedAt = Date.now();
+        try {
+          const state = typeof extractCaptureState === 'function' ? extractCaptureState(message) : null;
+          const captureCard = await runAction(
+            { type: 'capture_leads', query, ...(state ? { state } : {}) },
+            { campaign, cards, orgId, userId }
+          );
+          if (captureCard) {
+            cards.push(captureCard);
+            emit({ type: 'card', card: captureCard });
+          }
+          serverExecuted = 'capture_leads';
+          serverActionsDone.add('capture_leads');
+          // "…para minha campanha" → capturados entram na audiência agora.
+          const ids = captureCard && captureCard.suggestedFilter && Array.isArray(captureCard.suggestedFilter.prospectIds)
+            ? captureCard.suggestedFilter.prospectIds
+            : [];
+          if (/campanha/i.test(message) && ids.length > 0) {
+            emit({ type: 'status', label: ACTION_LABELS.select_leads });
+            actionTypes.push('select_leads');
+            const addCard = await runAction(
+              { type: 'select_leads', add: ids, confirmed: true },
+              { campaign, cards, orgId, userId }
+            );
+            if (addCard) {
+              cards.push(addCard);
+              emit({ type: 'card', card: addCard });
+            }
+            const freshAfterAdd = await prismaClient.studioCampaign.findUnique({ where: { id: campaign.id } });
+            if (freshAfterAdd) Object.assign(campaign, freshAfterAdd);
+            Object.assign(extras, await currentExtras(prismaClient, campaign));
+            extras.journey = journey.previewFromExtras(campaign, extras);
+          }
+        } catch (err) {
+          console.error('[studio/chat] captura determinística falhou (turno segue):', err.stack || String(err));
+        } finally {
+          actionDurationsMs.capture_leads =
+            (actionDurationsMs.capture_leads || 0) + (Date.now() - captureStartedAt);
+        }
       }
     }
 
@@ -1895,6 +1967,9 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     // (montou a audiência e já ajustou a seleção) — o ajuste não re-pergunta.
     const sameTurnAudience = orderedActions.some((a) => a && a.type === 'set_audience');
     for (const action of orderedActions) {
+      // Já atendida server-side neste turno (rename/captura determinísticos):
+      // o modelo re-emitiria = trabalho dobrado — pula sem executar.
+      if (serverActionsDone.has(action.type)) continue;
       const effective =
         textApproval && pendingConfirm && action.type === pendingConfirm.action.type
           ? { ...action, confirmed: true }

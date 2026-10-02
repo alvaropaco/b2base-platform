@@ -15,7 +15,7 @@ const express = require('express');
 const { createFakePrisma } = require('./helpers/fake-prisma');
 const { createStudioRouter } = require('../studio/router');
 const manifest = require('../studio/actions/manifest.v1');
-const { SYSTEM_PROMPT, campaignManagementHint, extractRenameTarget } = require('../studio/ai/chat-agent');
+const { SYSTEM_PROMPT, campaignManagementHint, extractRenameTarget, leadCaptureIntent, extractCaptureQuery } = require('../studio/ai/chat-agent');
 
 /** segment-nl stub: traduz a descrição em critérios determinísticos. */
 function segmentStub({ user }) {
@@ -72,8 +72,31 @@ test('bug 6: toda action do manifest é declarada no SYSTEM_PROMPT (capacidades 
   assert.ok(SYSTEM_PROMPT.includes('REGRA ABSOLUTA CONTRA NEGAÇÃO FALSA'));
 });
 
-test('extração determinística do novo nome da campanha (rename server-side)', () => {
-  assert.equal(extractRenameTarget('muda o nome da campanha para Outbound 2026'), 'Outbound 2026');
+test('QA 5ª bateria: detector e extrator da intenção de captura de leads', () => {
+  // Frases do dono e variações naturais — TODAS devem disparar a captura.
+  for (const msg of [
+    'procura potenciais leads para mim',
+    'procura potenciais leads de construção civil para minha campanha',
+    'adiciona leads a minha base',
+    'adiciona mais leads à campanha',
+    'preciso de mais leads',
+    'encontre empresas novas de equipamentos agrícolas',
+    'capture leads da base',
+    'traz mais leads pra campanha',
+  ]) {
+    assert.ok(leadCaptureIntent(msg), `intenção de captura: "${msg}"`);
+  }
+  // Consultas/perguntas sobre a base NÃO são captura.
+  for (const msg of ['quantos leads tem minha base?', 'monta a audiência da campanha', 'quem são os leads da audiência?']) {
+    assert.ok(!leadCaptureIntent(msg), `NÃO é captura: "${msg}"`);
+  }
+  // Query de setor extraída da frase.
+  assert.equal(extractCaptureQuery('procura potenciais leads de construção civil para minha campanha'), 'construção civil');
+  assert.equal(extractCaptureQuery('encontre empresas novas de equipamentos agrícolas'), 'equipamentos agrícolas');
+  assert.equal(extractCaptureQuery('adiciona leads a minha base'), null, 'sem setor → fallback usa o segmento');
+});
+
+test('extração determinística do novo nome da campanha (rename server-side)', () => {  assert.equal(extractRenameTarget('muda o nome da campanha para Outbound 2026'), 'Outbound 2026');
   assert.equal(extractRenameTarget('troca o nome da campanha pra "Rh Indústria"'), 'Rh Indústria');
   assert.equal(extractRenameTarget('renomeia a campanha para Relâmpago'), 'Relâmpago');
   assert.equal(extractRenameTarget('o nome da campanha agora é Indústrias SP.'), 'Indústrias SP');
@@ -116,6 +139,50 @@ test('QA 3ª bateria: MESMO com o modelo negando, o servidor renomeia a campanha
     assert.ok(renamed, 'card de renomeação no thread — independente do modelo');
     const fresh = (await api('GET', `/campaigns/${c.data.id}`)).body.data;
     assert.equal(fresh.name, 'Outbound 2026', 'a campanha RENOMEOU no banco');
+  } finally {
+    server.close();
+  }
+});
+
+test('QA 5ª bateria: "procura potenciais leads" CAPTURA leads de verdade (não filtra a base)', async () => {
+  // O stub reproduz a falha real: o modelo NÃO emite capture_leads — a
+  // captura tem que acontecer no caminho determinístico server-side.
+  const llmImpl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      assert.ok(user.includes('AÇÃO JÁ EXECUTADA PELO SERVIDOR'), 'modelo recebe a nota de ação já executada');
+      return {
+        content: JSON.stringify({
+          reply: 'Prontinho, dá uma olhada no painel de leads.',
+          actions: [{ type: 'none' }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl });
+  try {
+    // Base com construtoras — a captura lexical encontra e o card lista.
+    prisma.prospect.rows.push(
+      { id: 'c1', orgId: 'org-1', companyName: 'Construtora Horizonte', industry: 'construção civil', searchText: 'construtora horizonte construção civil', status: 'qualified', cnpjEmail: 'c1@obra.com' },
+      { id: 'c2', orgId: 'org-1', companyName: 'Construtora Taunus', industry: 'construção civil', searchText: 'construtora taunus construção civil', status: 'qualified', cnpjEmail: 'c2@obra.com' },
+      { id: 'outro', orgId: 'org-1', companyName: 'Mercearia Central', industry: 'varejo', searchText: 'mercearia central varejo', status: 'prospect', cnpjEmail: 'm@merc.com' }
+    );
+    const { body: c } = await api('POST', '/campaigns', { name: 'Obras', channels: ['email'] });
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'procura potenciais leads de construção civil para minha campanha',
+    });
+    assert.equal(res.status, 200);
+    const captureCard = body.data.cards.find((card) => card.type === 'capture');
+    assert.ok(captureCard, 'card de CAPTURA no thread (não só audiência)');
+    assert.equal(captureCard.status, 'captured', 'captura encontrou as construtoras da base');
+    assert.ok(captureCard.suggestedFilter.prospectIds.length >= 2, 'as duas construtoras no lote capturado');
+    // O pedido citou "campanha" → capturados materializados na audiência.
+    const audienceCard = body.data.cards.find((card) => card.type === 'audience');
+    assert.ok(audienceCard, 'audiência materializada com os capturados');
+    const state = (await api('GET', `/campaigns/${c.data.id}/state`)).body.data;
+    assert.equal(state.extras.audienceCount, 2, 'as 2 construtoras estão na campanha');
+    assert.equal(state.extras.audienceCount !== 0 || captureCard.capturedToday >= 0, true);
   } finally {
     server.close();
   }

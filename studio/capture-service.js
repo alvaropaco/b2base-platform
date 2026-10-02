@@ -304,8 +304,34 @@ function createCaptureService(prisma, deps = {}) {
       };
     }
 
-    // Fase 2 — fallback MCP (a base não atende).
+    // Fase 2 — fallback MCP (a base não atende o mínimo próprio).
     if (!mcp.isMcpConfigured()) {
+      // QA 2026-10-02 (diretiva do dono: "sempre que eu falar pra adicionar
+      // leads, ela faz"): MCP indisponível NUNCA esconde o que a base própria
+      // JÁ encontrou — entrega o lote próprio com proveniência. Recusa ZERO
+      // (explicável, sem inventar leads — FR9) só quando não achou NADA.
+      if (own.ids.length > 0) {
+        const markedIds = own.ids.slice(0, room);
+        await prisma.prospect.updateMany({
+          where: { orgId, id: { in: markedIds }, captureSource: null },
+          data: { captureSource: 'base-propria' },
+        });
+        return {
+          status: 'captured',
+          query: q,
+          source: 'base-propria',
+          mode: own.mode,
+          baseOwnCount: own.ids.length,
+          mcpCount: 0,
+          duplicates: 0,
+          prospectIds: own.ids,
+          mcpAvailable: false,
+          capturedToday: await prisma.prospect.count({
+            where: { orgId, captureSource: { in: CAPTURE_SOURCES }, createdAt: { gte: startOfDay } },
+          }),
+          dailyLimit: cap,
+        };
+      }
       return {
         status: 'refused',
         reason: 'mcp_not_configured',

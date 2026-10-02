@@ -230,8 +230,11 @@ test('captura: base própria não atende → MCP CNPJ é consultado, dedupe não
       assert.ok(/cnpj/i.test(card.detail), 'proveniência "via CNPJ" visível no card');
 
       // UMA chamada de MCP por captura (Design Notes) com os filtros pedidos.
+      // A 1ª chamada é da CAPTURA DETERMINÍSTICA (QA 2026-10-02): query é a
+      // grafia da frase do usuário (acentos normalizados dentro do serviço)
+      // e a UF veio da frase ('em SP').
       assert.equal(mcpCalls.length, 1);
-      assert.equal(mcpCalls[0].query, 'maquinas agricolas');
+      assert.equal(mcpCalls[0].query, 'máquinas agrícolas');
       assert.equal(mcpCalls[0].state, 'SP');
 
       const created = prisma.prospect.rows.find((p) => p.id !== 'l1');
@@ -296,9 +299,11 @@ test('captura: CNPJ retornado de novo pela corrida (P2002) resolve por findFirst
   }
 });
 
-// ── FR9: recusa explicável quando o token MCP não existe — NENHUM lead ──────
+// ── QA 2026-10-02 (diretiva do dono): MCP fora NUNCA esconde o que a base ───
+// própria já encontrou — entrega o lote com proveniência; recusa ZERO só
+// quando não achou NADA (FR9: nunca inventar leads segue valendo).
 
-test('captura: sem token MCP → recusa explicável e nenhum lead criado nem marcado', () =>
+test('captura: sem token MCP + base achou pouco → ENTREGA o lote próprio (não recusa)', () =>
   withEnv({ STUDIO_CAPTURE_MIN_OWN: '5' }, async () => {
     let searchCalls = 0;
     mcpCnpj._setMcpForTests({
@@ -324,7 +329,44 @@ test('captura: sem token MCP → recusa explicável e nenhum lead criado nem mar
       assert.equal(res.status, 200);
       const card = body.data.cards.find((card) => card.type === 'capture');
       assert.ok(card);
-      assert.equal(card.status, 'refused', 'recusa é card explicável, não erro');
+      assert.equal(card.status, 'captured', 'lead encontrado na própria base é ENTREGUE');
+      assert.equal(card.baseOwnCount, 1, 'o lote próprio vem no card');
+      assert.equal(searchCalls, 0, 'MCP nem é chamado sem token');
+      assert.equal(prisma.prospect.rows.length, before, 'nenhum lead INVENTADO (FR9)');
+      assert.equal(prisma.prospect.rows.find((p) => p.id === 'l1').captureSource, 'base-propria', 'proveniência marcada');
+    } finally {
+      mcpCnpj._resetMcpForTests();
+      server.close();
+    }
+  }));
+
+test('captura: sem token MCP e base VAZIA de matches → recusa explicável e nada marcado', () =>
+  withEnv({ STUDIO_CAPTURE_MIN_OWN: '5' }, async () => {
+    let searchCalls = 0;
+    mcpCnpj._setMcpForTests({
+      isMcpConfigured: () => false, // CNPJ_MCP_TOKEN ausente
+      searchCompanies: async () => {
+        searchCalls += 1;
+        return [];
+      },
+    });
+    const { server, prisma, api } = await startServer({
+      llmImpl: captureLlm('equipamentos agricolas'),
+      overrides: { embedTexts: async () => null },
+    });
+    try {
+      const { body: c } = await api('POST', '/campaigns', { name: 'Sem token', channels: ['email'] });
+      prisma.prospect.rows.push(
+        { id: 'l1', orgId: 'org-1', companyName: 'Mercadinho Central', industry: 'Varejo', searchText: 'mercadinho central varejo', state: 'SP' }
+      );
+      const before = prisma.prospect.rows.length;
+      const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+        message: 'capture mais leads de equipamentos agrícolas',
+      });
+      assert.equal(res.status, 200);
+      const card = body.data.cards.find((card) => card.type === 'capture');
+      assert.ok(card);
+      assert.equal(card.status, 'refused', 'sem match nenhum, a recusa é card explicável, não erro');
       assert.equal(searchCalls, 0, 'MCP nem é chamado sem token');
       assert.equal(prisma.prospect.rows.length, before, 'NENHUM lead criado (FR9)');
       assert.equal(prisma.prospect.rows.find((p) => p.id === 'l1').captureSource, undefined, 'recusa não marca proveniência');

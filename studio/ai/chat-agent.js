@@ -84,12 +84,16 @@ const SYSTEM_PROMPT = [
   'Se mensagens ANTERIORES da conversa (suas ou do usuário) mencionarem interesse, engajamento ou percentuais',
   'de leads, trate como inválido: não repita nem confirme esses números — o estado atual é a única fonte.',
   '',
-  'CAPTURA DE LEADS (Epic 2): quando o usuário pedir MAIS leads ("capture mais leads", "capture leads da base",',
-  '"encontre empresas novas de X"), inclua a action capture_leads: {"type":"capture_leads","query":"<termo curto do setor>"}',
+  'CAPTURA DE LEADS (Epic 2): quando o usuário pedir MAIS leads — "capture mais leads", "procura leads",',
+  '"procura potenciais leads", "adiciona leads à minha campanha/base", "preciso de mais leads",',
+  '"encontre empresas novas de X" — inclua a action capture_leads: {"type":"capture_leads","query":"<termo curto do setor>"}',
   '  - query é OBRIGATÓRIA e é um TERMO DE SETOR curto (ex.: "equipamentos agrícolas"), não a frase do usuário inteira;',
   '  - filtros opcionais: "state" (UF), "city", "cnae" (termo do ramo), "limit" (quantidade, default 25);',
   '  - a captura busca PRIMEIRO na base do próprio usuário e, se não bastar, no CNPJ público — nunca prometa',
   '    leads que não vieram no card; apresente contagem e proveniência (da base dele / via CNPJ).',
+  '  - REGRA CRÍTICA: pedido de ADICIONAR/PROCURAR leads é CAPTURA — trazer leads que NÃO estavam na base.',
+  '    NUNCA responda esse pedido apenas materializando um filtro da base atual: se o filtro casa 0 e o',
+  '    usuário quer leads, a resposta é capture_leads, não "importar/enriquecer a base antes".',
   '',
   'DECISÃO FECHADA (Epic 1, FR2): o bloco audienciaDecidida do estado é UM FATO decidido pelo usuário —',
   'critérios de audiência já fechados, com contagem do snapshot ativo. NUNCA re-pergunte o que já está',
@@ -354,6 +358,47 @@ function extractRenameTarget(userMessage) {
   return null;
 }
 
+/**
+ * Intenção de CAPTURA de leads (QA 2026-10-02, 5ª bateria: 'procura
+ * potenciais leads' virava filtro de base 0-match — o modelo não emitia
+ * capture_leads). Detecta pedidos de ADICIONAR/PROCURAR/TRAZER leads novos
+ * (para a campanha ou para a base). Retorna true/false.
+ */
+const LEAD_CAPTURE_RE = new RegExp(
+  [
+    '\\b(procura|procurar|procure|busca|buscar|busque|acha|achar|ache|encontra|encontrar|encontre|captur(?:a|ar|e)|adicion(?:a|ar|e)|acrescent(?:a|ar|e)|traz|trazer|trag[aeo]|gera|gerar|gere|puxa|puxar)\\b[^.?!]{0,48}\\b(leads?|empresas?|contatos?|prospects?|potenciais)\\b',
+    '\\b(leads?|empresas?|contatos?|prospects?)\\b[^.?!]{0,40}\\b(para|pra|na|no|d[aeo])\\s+(minha\\s+|nossa\\s+|essa\\s+|esta\\s+)?(campanha|base)\\b',
+    '\\b(mais|novos|novas|potenciais|qualificados?|novatos?)\\s+(leads?|empresas?|contatos?|prospects?)\\b',
+    '\\b(leads?)\\s+(novos|novas|potenciais|qualificados?)\\b',
+  ].join('|'),
+  'i'
+);
+
+function leadCaptureIntent(userMessage) {
+  return LEAD_CAPTURE_RE.test(String(userMessage || ''));
+}
+
+/**
+ * Termo de setor para a captura, extraído da frase ('leads de construção
+ * civil' → 'construção civil'). Null quando a frase não traz setor — o
+ * caller usa o segmento vigente da campanha como fallback.
+ */
+function extractCaptureQuery(userMessage) {
+  const msg = String(userMessage || '');
+  const patterns = [
+    /\b(?:leads?|empresas?|contatos?|prospects?)(?:\s+(?:novos?|novas?|potenciais|qualificados?|b2b))?\s+(?:d[oe]|de|sobre)\s+([^.?!]{2,80}?)(?=\s+(?:para|pra|que|com|no|na|em|d[aeo])\s|[,.?!]|$)/i,
+    /\b(?:empresas?|leads?)\s+(?:do\s+)?(?:setor|ramo|segmento)\s+(?:d[eo]\s+)?([^.?!]{2,80}?)(?=\s+(?:para|pra|que|com)\s|[,.?!]|$)/i,
+  ];
+  for (const re of patterns) {
+    const m = msg.match(re);
+    if (m && m[1]) {
+      const term = m[1].trim().replace(/\s+/g, ' ');
+      if (term.length >= 2) return term.slice(0, 80);
+    }
+  }
+  return null;
+}
+
 function createChatAgent({ callLlm, callLlmStream } = {}) {
   const llm = callLlm || require('../../llm-client').callLlm;
   // Streaming real quando disponível (prod); nos testes (só callLlm injetado)
@@ -581,10 +626,22 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
   return { orchestrate, extractIntent };
 }
 
+/** UF citada na frase ('em SP', 'no RJ') — case-sensitive para não casar
+ *  artigos/preposições minúsculos ('da', 'em baixo'). Null quando ausente. */
+function extractCaptureState(userMessage) {
+  const m = String(userMessage || '').match(
+    /\b(?:em|no|na|da)\s+(AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO)\b/
+  );
+  return m ? m[1] : null;
+}
+
 module.exports = {
   createChatAgent,
   SYSTEM_PROMPT,
   extractReplySoFar,
   campaignManagementHint,
   extractRenameTarget,
+  leadCaptureIntent,
+  extractCaptureQuery,
+  extractCaptureState,
 };
