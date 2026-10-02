@@ -5,13 +5,28 @@
     {
       "id": "criacao-simples",
       "title": "Criação simples: objetivo + audiência montados",
-      "turns": ["Quero vender ERP para empresas de logística"],
+      "turns": [
+        "Quero vender ERP para empresas de logística"
+      ],
       "expect": [
-        { "type": "replyNonEmpty" },
-        { "type": "cardPresent", "card": "objective" },
-        { "type": "cardPresent", "card": "audience" },
-        { "type": "stateObjectiveMatches", "pattern": "ERP" },
-        { "type": "audienceConsistent" }
+        {
+          "type": "replyNonEmpty"
+        },
+        {
+          "type": "cardPresent",
+          "card": "objective"
+        },
+        {
+          "type": "cardPresent",
+          "card": "audience"
+        },
+        {
+          "type": "stateObjectiveMatches",
+          "pattern": "ERP"
+        },
+        {
+          "type": "audienceConsistent"
+        }
       ]
     },
     {
@@ -22,10 +37,21 @@
         "demonstração"
       ],
       "expect": [
-        { "type": "replyNonEmpty" },
-        { "type": "replyNotContains", "text": "pode reformular" },
-        { "type": "replyNotContains", "text": "problema técnico" },
-        { "type": "stateObjectiveMatches", "pattern": "consultoria de RH|RH" }
+        {
+          "type": "replyNonEmpty"
+        },
+        {
+          "type": "replyNotContains",
+          "text": "pode reformular"
+        },
+        {
+          "type": "replyNotContains",
+          "text": "problema técnico"
+        },
+        {
+          "type": "stateObjectiveMatches",
+          "pattern": "consultoria de RH|RH"
+        }
       ]
     },
     {
@@ -36,59 +62,148 @@
         "Na verdade muda o público: agora é para indústrias de alimentos"
       ],
       "expect": [
-        { "type": "replyNonEmpty" },
-        { "type": "cardPresent", "card": "objective" },
-        { "type": "cardPresent", "card": "audience" },
-        { "type": "stateObjectiveMatches", "pattern": "ERP" },
-        { "type": "audienceConsistent" }
+        {
+          "type": "replyNonEmpty"
+        },
+        {
+          "type": "cardPresent",
+          "card": "objective"
+        },
+        {
+          "type": "cardPresent",
+          "card": "audience"
+        },
+        {
+          "type": "stateObjectiveMatches",
+          "pattern": "ERP"
+        },
+        {
+          "type": "audienceConsistent"
+        }
       ]
     },
     {
       "id": "material-url",
       "title": "URL colada vira material com extração",
-      "turns": ["Quero criar uma campanha. Usa https://www.b2base.net como material de referência"],
+      "turns": [
+        "Quero criar uma campanha. Usa https://www.b2base.net como material de referência"
+      ],
       "expect": [
-        { "type": "replyNonEmpty" },
-        { "type": "cardPresent", "card": "material" }
+        {
+          "type": "replyNonEmpty"
+        },
+        {
+          "type": "cardPresent",
+          "card": "material"
+        }
       ]
     },
     {
       "id": "agendamento",
       "title": "Agendamento 20/h em horário comercial",
-      "turns": ["Configura o disparo para 20 mensagens por hora em horário comercial"],
+      "turns": [
+        "Configura o disparo para 20 mensagens por hora em horário comercial"
+      ],
       "expect": [
-        { "type": "replyNonEmpty" },
-        { "type": "cardPresent", "card": "schedule" },
-        { "type": "scheduleHourlyLimit", "value": 20 }
+        {
+          "type": "replyNonEmpty"
+        },
+        {
+          "type": "cardPresent",
+          "card": "schedule"
+        },
+        {
+          "type": "scheduleHourlyLimit",
+          "value": 20
+        }
       ]
     },
     {
       "id": "pedido-ambiguo",
       "title": "Pedido ambíguo pede contexto em vez de inventar",
-      "turns": ["Quero criar uma campanha"],
+      "turns": [
+        "Quero criar uma campanha"
+      ],
       "expect": [
-        { "type": "replyNonEmpty" },
-        { "type": "cardAbsent", "card": "content" },
-        { "type": "replyMatches", "pattern": "\\?" }
+        {
+          "type": "replyNonEmpty"
+        },
+        {
+          "type": "cardAbsent",
+          "card": "content"
+        },
+        {
+          "type": "replyMatches",
+          "pattern": "\\?"
+        }
       ]
     },
     {
       "id": "grounding-sem-dado",
       "title": "Dado inexistente não é inventado (grounding)",
-      "turns": ["Qual é o faturamento anual declarado dos leads da minha base? Me dá os números exatos."],
+      "turns": [
+        "Qual é o faturamento anual declarado dos leads da minha base? Me dá os números exatos."
+      ],
       "expect": [
-        { "type": "replyNonEmpty" },
-        { "type": "replyMatches", "pattern": "não tenho esse (dado|número|valor|informação)|não (vou|posso) (te )?(dar|inventar|estimar)|sem inventar|não inventar" }
+        {
+          "type": "replyNonEmpty"
+        },
+        {
+          "type": "replyMatches",
+          "pattern": "não tenho esse (dado|número|valor|informação)|não (vou|posso) (te )?(dar|inventar|estimar)|sem inventar|não inventar"
+        }
       ]
     },
     {
       "id": "audiencia-sem-match",
       "title": "Audiência 0 leads em base populada avisa (F3)",
-      "turns": ["Quero vender software de frota para companhias aéreas internacionais"],
+      "turns": [
+        "Quero vender software de frota para companhias aéreas internacionais"
+      ],
       "expect": [
-        { "type": "replyNonEmpty" },
-        { "type": "cardPresent", "card": "audience" },
-        { "type": "audienceConsistent" }
+        {
+          "type": "replyNonEmpty"
+        },
+        {
+          "type": "cardPresent",
+          "card": "audience"
+        },
+        {
+          "type": "audienceConsistent"
+        }
+      ]
+    },
+    {
+      "id": "gerenciamento-campanhas",
+      "title": "Gerenciamento pelo chat: criar e listar campanhas sem negação (QA 2026-10-02)",
+      "turns": [
+        "Crie uma campanha chamada Eval Gerenciamento",
+        "Quais campanhas eu tenho?"
+      ],
+      "expect": [
+        {
+          "type": "replyNonEmpty"
+        },
+        {
+          "type": "cardPresent",
+          "card": "campaign_created"
+        },
+        {
+          "type": "replyNotMatches",
+          "pattern": "s[óo] (pode|d[áa]) (ser|pelo) painel"
+        },
+        {
+          "type": "replyNotMatches",
+          "pattern": "(n[ãa]o (h[áa]|tenho|existe)).{0,30}action"
+        },
+        {
+          "type": "cardPresent",
+          "card": "campaign_list"
+        },
+        {
+          "type": "replyContains",
+          "text": "Eval Gerenciamento"
+        }
       ]
     }
   ]

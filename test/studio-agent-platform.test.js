@@ -15,7 +15,7 @@ const express = require('express');
 const { createFakePrisma } = require('./helpers/fake-prisma');
 const { createStudioRouter } = require('../studio/router');
 const manifest = require('../studio/actions/manifest.v1');
-const { SYSTEM_PROMPT } = require('../studio/ai/chat-agent');
+const { SYSTEM_PROMPT, campaignManagementHint } = require('../studio/ai/chat-agent');
 
 /** segment-nl stub: traduz a descrição em critérios determinísticos. */
 function segmentStub({ user }) {
@@ -66,6 +66,49 @@ async function startServer({ llmImpl } = {}) {
 test('bug 6: toda action do manifest é declarada no SYSTEM_PROMPT (capacidades sem drift)', () => {
   for (const key of Object.keys(manifest.ACTIONS_V1)) {
     assert.ok(SYSTEM_PROMPT.includes(key), `SYSTEM_PROMPT cita a action "${key}"`);
+  }
+  // Anti-negação (QA 2026-10-02, 3ª bateria): o modelo negava que dava para
+  // criar/renomear pelo chat — a regra absoluta precisa estar no prompt.
+  assert.ok(SYSTEM_PROMPT.includes('REGRA ABSOLUTA CONTRA NEGAÇÃO FALSA'));
+});
+
+test('roteador de gerenciamento: pedido de campanha injeta a instrução; trabalho de conteúdo não', () => {
+  assert.ok(campaignManagementHint('cria uma campanha chamada Rh Novo'), 'criação detectada');
+  assert.ok(campaignManagementHint('renomeia a campanha para X'), 'renomear detectado');
+  assert.ok(campaignManagementHint('quais campanhas eu tenho?'), 'listagem detectada');
+  assert.ok(campaignManagementHint('apaga a campanha antiga'), 'exclusão detectada');
+  assert.equal(campaignManagementHint('monta a audiência da campanha'), null, 'trabalho da jornada não é gerência');
+  assert.equal(campaignManagementHint('criar conteúdo da campanha'), null, 'conteúdo não é gerência');
+  assert.equal(campaignManagementHint('oi, tudo bem?'), null, 'conversa comum sem hint');
+});
+
+test('bug 2: criar campanha pelo CHAT (turno do modelo) materializa a campanha', async () => {
+  const llmImpl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      assert.ok(user.includes('GERENCIAMENTO DE CAMPANHAS DETECTADO'), 'hint de gerência injetado no prompt do turno');
+      return {
+        content: JSON.stringify({
+          reply: 'Campanha criada!',
+          actions: [{ type: 'create_campaign', name: 'Rh Novo', channels: ['email'] }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, api } = await startServer({ llmImpl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Sessão', channels: ['email'] });
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'cria uma campanha chamada Rh Novo',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'campaign_created');
+    assert.ok(card, 'card de criação no thread');
+    const created = (await api('GET', `/campaigns/${card.campaignId}`)).body.data;
+    assert.equal(created.name, 'Rh Novo');
+    assert.equal(created.origin, 'agent');
+  } finally {
+    server.close();
   }
 });
 

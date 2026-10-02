@@ -132,6 +132,12 @@ const SYSTEM_PROMPT = [
   '  os registros DNS), ler a caixa de entrada inteira fora das respostas classificadas e alterar o plano',
   '  da organização.',
   '',
+  'REGRA ABSOLUTA CONTRA NEGAÇÃO FALSA: as actions do catálogo EXISTEM e executam pelo chat. NUNCA diga',
+  'que algo da lista "só pode ser feito no painel", que "não há action para isso" ou peça para o usuário',
+  'sair do chat para usar outra tela. Pedido de gerenciar campanhas (criar/renomear/duplicar/apagar/listar)',
+  '→ EMITA a action correspondente na MESMA resposta (ex.: "cria uma campanha chamada X" →',
+  '{"type":"create_campaign","name":"X"}), sem perguntar de volta se pode.',
+  '',
   'CONFIRMAÇÃO DE ALTERAÇÕES (regra do dono): quando você for alterar algo que JÁ EXISTE (editar ou',
   'refazer conteúdo, mudar audiência decidida, reconfigurar agenda, apagar campanha), o servidor devolve',
   'um card "confirm_change" em vez de executar. Nesse caso: diga no reply EXATAMENTE o que a alteração',
@@ -157,6 +163,8 @@ const SYSTEM_PROMPT = [
   '            {"type":"generate_content","tones":["formal","comercial"]},',
   '            {"type":"show_content"},',
   '            {"type":"capture_leads","query":"equipamentos agrícolas","limit":25},',
+  '            {"type":"list_campaigns"},',
+  '            {"type":"create_campaign","name":"Outbound indústrias"},',
   '            {"type":"set_schedule","mode":"scheduled","windows":[{"days":[1,2,3,4,5],"startHour":9,"endHour":18}],"hourlyLimit":20,"dailyLimit":100,"timezone":"America/Sao_Paulo"},',
   '            {"type":"show_balance"},',
   '            {"type":"start_whatsapp_pairing"},',
@@ -256,6 +264,44 @@ function unchangedPhases(campaign, extras = {}) {
   return unchanged;
 }
 
+/**
+ * Roteador determinístico de GERENCIAMENTO DE CAMPANHAS (QA 2026-10-02:
+ * o modelo negava que dava para criar/renomear pelo chat e mandava para o
+ * painel). Pedido de criar/renomear/duplicar/apagar/listar campanha injeta
+ * um bloco curto no prompt do turno com a action exata — a negação fica
+ * impossível no momento que importa, sem custo de chamada extra.
+ * Retorna o bloco de instrução ou null (pedido comum).
+ */
+const CAMPAIGN_MGMT_RE = new RegExp(
+  [
+    '\\b(criar?|crie|cria|nova|novo|montar?|monte)\\b[^.?!]{0,48}\\bcampanhas?\\b',
+    '\\bcampanhas?\\b[^.?!]{0,48}\\b(criar|crie|cria|nova)\\b',
+    '\\b(renomear?|renomeia|duplicar?|duplica|clonar?|clona|apagar?|apague|apaga|excluir|exclui|remover?)\\b[^.?!]{0,32}\\bcampanhas?\\b',
+    '\\bcampanhas?\\b[^.?!]{0,32}\\b(renomear|renomeia|duplicar|duplica|apagar|apaga|excluir)\\b',
+    '\\b(minhas|suas|as|minha)\\s+campanhas?\\b',
+    '\\b(listar?|liste|quais)\\s+(as\\s+)?campanhas?\\b',
+  ].join('|'),
+  'i'
+);
+/** Trabalho de CONTEÚDO ("criar conteúdo/mensagem da campanha") não é gerência. */
+const CONTENT_WORK_RE = /\b(conte[úu]do|mensagem|e-?mail|whatsapp|audi[êe]ncia|material|copy)\b/i;
+
+function campaignManagementHint(userMessage) {
+  const msg = String(userMessage || '');
+  if (!CAMPAIGN_MGMT_RE.test(msg)) return null;
+  // "criar conteúdo da campanha" gera conteúdo — não é gerência de campanhas.
+  const mgmtMatch = msg.match(CAMPAIGN_MGMT_RE);
+  if (CONTENT_WORK_RE.test(mgmtMatch[0])) return null;
+  return [
+    'GERENCIAMENTO DE CAMPANHAS DETECTADO — as actions EXISTEM e executam pelo chat:',
+    '{"type":"create_campaign","name":"<nome>"} · {"type":"rename_campaign","name":"<novo nome>"} ·',
+    '{"type":"duplicate_campaign","campaignId":"..."} · {"type":"delete_campaign"} (o servidor pede',
+    'confirmação) · {"type":"list_campaigns"} · {"type":"approve_campaign"}.',
+    'USE a action correspondente NESTA resposta — nunca diga que precisa ser no painel, que não há',
+    'action, ou pergunte se pode.',
+  ].join('\n');
+}
+
 function createChatAgent({ callLlm, callLlmStream } = {}) {
   const llm = callLlm || require('../../llm-client').callLlm;
   // Streaming real quando disponível (prod); nos testes (só callLlm injetado)
@@ -353,6 +399,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
       buildOrgBlock(extras),
       buildHistoryBlock(history),
       skills.selectFor(userMessage),
+      campaignManagementHint(userMessage),
       `NOVA MENSAGEM DO USUÁRIO: ${userMessage}`,
       'Decida as ações e escreva a resposta para o usuário.',
     ]
@@ -482,4 +529,4 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
   return { orchestrate, extractIntent };
 }
 
-module.exports = { createChatAgent, SYSTEM_PROMPT, extractReplySoFar };
+module.exports = { createChatAgent, SYSTEM_PROMPT, extractReplySoFar, campaignManagementHint };
