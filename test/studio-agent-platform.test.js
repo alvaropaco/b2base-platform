@@ -15,7 +15,7 @@ const express = require('express');
 const { createFakePrisma } = require('./helpers/fake-prisma');
 const { createStudioRouter } = require('../studio/router');
 const manifest = require('../studio/actions/manifest.v1');
-const { SYSTEM_PROMPT, campaignManagementHint, extractRenameTarget, leadCaptureIntent, extractCaptureQuery } = require('../studio/ai/chat-agent');
+const { SYSTEM_PROMPT, campaignManagementHint, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery } = require('../studio/ai/chat-agent');
 
 /** segment-nl stub: traduz a descrição em critérios determinísticos. */
 function segmentStub({ user }) {
@@ -107,9 +107,56 @@ test('extração determinística do novo nome da campanha (rename server-side)',
   assert.equal(extractRenameTarget('renomear a campanha Minha Campanha Antiga para Novo Começo'), 'Novo Começo');
   assert.equal(extractRenameTarget('o nome da campanha TESTE agora é B2BASE'), 'B2BASE');
   assert.equal(extractRenameTarget('quero renomear a campanha TESTE para B2BASE?'), 'B2BASE');
+  // QA 5ª bateria (2026-10-05): BARE — a palavra "campanha" é opcional no
+  // contexto do Cockpit ("muda o nome para X", "renomeia para X").
+  assert.equal(extractRenameTarget('muda o nome para B2BASE'), 'B2BASE');
+  assert.equal(extractRenameTarget('renomeia para Relâmpago'), 'Relâmpago');
+  assert.equal(extractRenameTarget('troca o nome pra Outbound'), 'Outbound');
+  // Fala de lead/contato → NUNCA é rename de campanha (bare desligado).
+  assert.equal(extractRenameTarget('muda o nome do lead para Acme'), null, 'lead não é campanha');
+  assert.equal(extractRenameTarget('renomeia o contato para Maria'), null, 'contato não é campanha');
   assert.equal(extractRenameTarget('troca o nome da campanha'), null, 'sem alvo → modelo pergunta');
   assert.equal(extractRenameTarget('monta a audiência da campanha'), null);
-  assert.equal(extractRenameTarget('muda o nome do lead para Acme'), null, 'lead não é campanha');
+});
+
+test('extração determinística do nome de CRIAÇÃO de campanha', () => {
+  assert.equal(extractCreateTarget('cria uma campanha chamada Rh Novo'), 'Rh Novo');
+  assert.equal(extractCreateTarget('crie uma campanha com o nome Outbound 2026'), 'Outbound 2026');
+  assert.equal(extractCreateTarget('nova campanha: Indústrias SP'), 'Indústrias SP');
+  assert.equal(extractCreateTarget('abre uma campanha chamada Teste Abertura'), 'Teste Abertura');
+  // Sem marcador de nome ("para" traz PÚBLICO, não nome) → modelo cuida.
+  assert.equal(extractCreateTarget('cria uma campanha para indústrias'), null);
+  assert.equal(extractCreateTarget('criar campanha'), null);
+});
+
+test('QA 4ª bateria: "cria uma campanha chamada X" CRIA no servidor mesmo com modelo negando', async () => {
+  const llmImpl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      assert.ok(user.includes('AÇÃO JÁ EXECUTADA PELO SERVIDOR'), 'modelo recebe a nota de ação já executada');
+      return {
+        content: JSON.stringify({
+          reply: 'Ainda não consigo criar campanhas pelo chat — faça pelo painel.',
+          actions: [{ type: 'none' }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, api } = await startServer({ llmImpl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Sessão', channels: ['email'] });
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'cria uma campanha chamada Teste Determinístico',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'campaign_created');
+    assert.ok(card, 'card de criação no thread — independente do modelo');
+    const created = (await api('GET', `/campaigns/${card.campaignId}`)).body.data;
+    assert.equal(created.name, 'Teste Determinístico');
+    assert.equal(created.origin, 'agent');
+  } finally {
+    server.close();
+  }
 });
 
 test('QA 3ª bateria: MESMO com o modelo negando, o servidor renomeia a campanha', async () => {

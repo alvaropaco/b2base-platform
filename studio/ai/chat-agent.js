@@ -325,6 +325,7 @@ function extractRenameTarget(userMessage) {
   // campanha TESTE para B2BASE") — até 4 palavras entre "campanha" e a
   // preposição do nome novo são toleradas.
   const GAP = '(?:[\\wÀ-ÿ-]+\\s+){0,4}';
+  // ANCORADAS: citam a palavra "campanha" explicitamente.
   const patterns = [
     new RegExp(
       '(?:renomei[ao]|renomear)\\s+(?:a\\s+)?campanha\\s+' + GAP + '(?:para|pra|como|para ser|para ficar como)\\s+(.+)',
@@ -343,11 +344,49 @@ function extractRenameTarget(userMessage) {
       'i'
     ),
   ];
-  for (const re of patterns) {
+  // BARE (QA 2026-10-05): dentro do Cockpit a conversa JÁ É a campanha —
+  // "muda o nome para X" / "renomeia para X" sem citar a palavra. Só valem
+  // quando a frase NÃO fala de lead/contato (esses não são rename de
+  // campanha).
+  const bare = [
+    /(?:renomei[ao]|renomear)\s+(?:o\s+nome\s+)?(?:para|pra|como)\s+(.+)/i,
+    /(?:mud[aeo]|mudar|troc[aeo]|trocar|alter[aeo]|alterar)\s+(?:o\s+)?nome\s+(?:para|pra|como|para ser)\s+(.+)/i,
+  ];
+  const aboutLeads = /\b(leads?|contatos?)\b/i.test(msg);
+  for (const re of aboutLeads ? patterns : [...patterns, ...bare]) {
     const m = msg.match(re);
     if (m && m[1]) {
       let name = m[1].trim()
         .replace(/^["'“”«»]+|["'“”«»]+$/g, '') // aspas em volta
+        .replace(/\s*(por favor|pfv|pf)\s*$/i, '')
+        .replace(/[.,;!?…]+\s*$/, '')
+        .trim();
+      if (!name) continue;
+      return name.slice(0, 200);
+    }
+  }
+  return null;
+}
+
+/**
+ * Criação DETERMINÍSTICA de campanha (QA 2026-10-05): "cria uma campanha
+ * chamada X" executa server-side — o modelo só confirma. Exige marcador
+ * EXPLÍCITO de nome (chamada/com o nome/nome/":") — "cria uma campanha para
+ * indústrias" NÃO tem nome (o "para" traz o público) e segue pelo modelo.
+ */
+function extractCreateTarget(userMessage) {
+  const msg = String(userMessage || '').trim();
+  if (!msg) return null;
+  const patterns = [
+    /(?:cri[ae]r?|monte|montar|abr[aeo]r?)\s+(?:uma\s+|um\s+|mais\s+uma\s+)?campanha\s+(?:chamad[ao]|com\s+o\s+nome|com\s+nome|nome)\s+(.+)/i,
+    /(?:nova|novo)\s+campanha\s*:\s*(.+)/i,
+    /(?:cri[ae]r?|monte|montar)\s+(?:uma\s+)?campanha\s+(?:chamad[ao]|com\s+o\s+nome|com\s+nome)\s+(.+)/i,
+  ];
+  for (const re of patterns) {
+    const m = msg.match(re);
+    if (m && m[1]) {
+      let name = m[1].trim()
+        .replace(/^["'“”«»]+|["'“”«»]+$/g, '')
         .replace(/\s*(por favor|pfv|pf)\s*$/i, '')
         .replace(/[.,;!?…]+\s*$/, '')
         .trim();
@@ -641,6 +680,7 @@ module.exports = {
   extractReplySoFar,
   campaignManagementHint,
   extractRenameTarget,
+  extractCreateTarget,
   leadCaptureIntent,
   extractCaptureQuery,
   extractCaptureState,

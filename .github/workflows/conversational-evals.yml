@@ -66,8 +66,11 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
       # Os secrets de eval são fornecidos pelo dono (política: senha da conta
-      # QA nunca versionada). Sem eles o job PULA com aviso — o gate ativa
-      # assim que B2BASE_EVAL_EMAIL/_PASSWORD forem configurados.
+      # QA nunca versionada). INCIDENTE 2026-10-05: o "skip com aviso"
+      # mascarou 5 dias de deploy que nunca chegou ao cluster — todos os
+      # releases liam "success" com o eval PULADO. Agora: SEM credenciais o
+      # job FALHA alto (o gate de release não é opcional). Configure
+      # B2BASE_EVAL_EMAIL/_PASSWORD para voltar ao verde.
       - name: Check eval credentials
         id: creds
         env:
@@ -75,7 +78,8 @@ jobs:
         run: |
           if [ -z "$EVAL_EMAIL" ]; then
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::B2BASE_EVAL_EMAIL/B2BASE_EVAL_PASSWORD ausentes — eval de release PULADO. Configure os secrets para ativar o gate bloqueante (journey-e2e)."
+            echo "::error::EVAL PULADO = RELEASE NÃO VALIDADA. Secrets B2BASE_EVAL_EMAIL/B2BASE_EVAL_PASSWORD ausentes — configure-os em Settings → Secrets → Actions. O gate conversacional é bloqueante por política (journey-e2e): sem eles nenhum release pode ser considerado saudável."
+            exit 1
           else
             echo "available=true" >> "$GITHUB_OUTPUT"
           fi

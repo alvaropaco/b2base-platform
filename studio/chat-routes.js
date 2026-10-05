@@ -14,7 +14,7 @@
 
 const crypto = require('crypto');
 const { httpError } = require('./errors');
-const { createChatAgent, extractRenameTarget, leadCaptureIntent, extractCaptureQuery, extractCaptureState } = require('./ai/chat-agent');
+const { createChatAgent, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery, extractCaptureState } = require('./ai/chat-agent');
 const { createComposer } = require('./ai/compose');
 const { createExtractor } = require('./ai/extract');
 const { generateAndStorePackage } = require('./compose-service');
@@ -1798,7 +1798,39 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     // Tipos já atendidos server-side neste turno — o modelo NÃO re-emite
     // (a captura determinística + a action do modelo seriam DOIS trabalhos).
     const serverActionsDone = new Set();
-    const renameTarget = typeof extractRenameTarget === 'function' ? extractRenameTarget(message) : null;
+    const createTarget = typeof extractCreateTarget === 'function' ? extractCreateTarget(message) : null;
+    const renameTarget = createTarget
+      ? null
+      : typeof extractRenameTarget === 'function'
+        ? extractRenameTarget(message)
+        : null;
+    // Criação determinística (QA 2026-10-05): "cria uma campanha chamada X"
+    // executa server-side — a conversa segue na campanha aberta, o card traz
+    // o atalho para abrir a nova.
+    if (createTarget) {
+      emit({ type: 'status', label: ACTION_LABELS.create_campaign });
+      actionTypes.push('create_campaign');
+      const createStartedAt = Date.now();
+      try {
+        const createdCard = await runAction(
+          { type: 'create_campaign', name: createTarget },
+          { campaign, cards, orgId, userId }
+        );
+        if (createdCard) {
+          cards.push(createdCard);
+          emit({ type: 'card', card: createdCard });
+        }
+        Object.assign(extras, await currentExtras(prismaClient, campaign));
+        extras.journey = journey.previewFromExtras(campaign, extras);
+        serverExecuted = 'create_campaign';
+        serverActionsDone.add('create_campaign');
+      } catch (err) {
+        console.error('[studio/chat] criação determinística falhou (turno segue):', err.stack || String(err));
+      } finally {
+        actionDurationsMs.create_campaign =
+          (actionDurationsMs.create_campaign || 0) + (Date.now() - createStartedAt);
+      }
+    }
     if (renameTarget && renameTarget !== campaign.name) {
       emit({ type: 'status', label: ACTION_LABELS.rename_campaign });
       actionTypes.push('rename_campaign');

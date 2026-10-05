@@ -111,3 +111,46 @@ jobs:
             git commit -m "b2base: bump image tag to sha-${{ steps.meta.outputs.shashort }} [skip ci]"
             git push origin HEAD:master
           fi
+
+  # QA 2026-10-05 (incidente de 5 dias): tag commitada no k8s-infra ≠ pod
+  # atualizado — o ArgoCD deixou de aplicar e o /api/version continuou num sha
+  # de 30/09 enquanto TODOS os releases liam "success". Este job fecha o
+  # circuito: o release só é verde se o GIT_SHA NO AR for este commit (ou um
+  # descendente direto). Endpoint público (/api/version é pré-auth).
+  verify-rollout:
+    runs-on: ubuntu-latest
+    needs: [build-push, bump-k8s-infra]
+    steps:
+      - name: Checkout source (histórico p/ checagem de ancestralidade)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Poll /api/version até o rollout chegar (teto 12 min)
+        env:
+          EXPECTED: ${{ github.sha }}
+          PROD_URL: https://www.b2base.net
+        run: |
+          EXPECTED_SHORT=$(echo "$EXPECTED" | cut -c1-7)
+          DEADLINE=$(( $(date +%s) + 720 ))
+          RUNNING=""
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            RUNNING=$(curl -sf -m 10 "$PROD_URL/api/version" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["sha"] or "")' || true)
+            if [ -n "$RUNNING" ]; then
+              if [ "$RUNNING" = "$EXPECTED" ]; then
+                echo "Rollout confirmado: produção em $RUNNING"
+                exit 0
+              fi
+              # Um sha NOVO (descendente deste commit) também é sucesso —
+              # deploys encadeados podem ultrapassar este.
+              if git fetch --quiet origin "$RUNNING" 2>/dev/null && git merge-base --is-ancestor "$EXPECTED" "$RUNNING" 2>/dev/null; then
+                echo "Rollout confirmado (commit descendente): produção em $RUNNING"
+                exit 0
+              fi
+              echo "Produção ainda em ${RUNNING:0:7} — aguardando ArgoCD..."
+            else
+              echo "/api/version indisponível — tentando de novo..."
+            fi
+            sleep 30
+          done
+          echo "::error::DEPLOY NÃO CHEGOU AO CLUSTER em 12 min. Imagem sha-$EXPECTED_SHORT buildada e tag commitada no k8s-infra, mas produção segue em '${RUNNING:0:7}'. Verifique o app do ArgoCD (sync/erro) — NUNCA considere este release válido."
+          exit 1

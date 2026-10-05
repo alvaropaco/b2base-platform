@@ -240,8 +240,17 @@ test('cancelamento preserva enviados e descarta a fila com confirmação (FR-021
 test('fila reporta motivo de retenção quando fora da janela (US3)', async () => {
   const { server, prisma, api } = await startServer();
   try {
-    // 16:00Z = fora da janela 9–12 SP; congelar "agora" para o endpoint.
-    prisma.studioCampaign.rows.push(campaignFixture({ status: 'running' }));
+    // Janela SEMPRE fechada relógio-adentro: a janela fica na HORA UTC
+    // ANTERIOR à atual (fuso UTC no fixture) — o teste deixa de flopar
+    // entre 9h–12h SP (flake documentado no plano do Epic 3).
+    const prevHour = (new Date().getUTCHours() + 23) % 24;
+    const allDays = [1, 2, 3, 4, 5, 6, 7];
+    prisma.studioCampaign.rows.push(
+      campaignFixture({
+        status: 'running',
+        schedule: { timezone: 'UTC', windows: [{ days: allDays, startHour: prevHour, endHour: prevHour + 1 }] },
+      })
+    );
     prisma.outreachContact.rows.push(queuedContact('oc-1', 'lead-1'));
     const { body } = await api('GET', '/campaigns/camp-1/queue', undefined);
     assert.equal(body.data[0].retainedReason, 'outside_window');
