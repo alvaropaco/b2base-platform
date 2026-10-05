@@ -81,7 +81,7 @@ function defaultVectorSearch(prisma) {
     const rows = await prisma.$queryRaw`
       SELECT id FROM "Prospect"
       WHERE "orgId" = ${orgId} AND "captureEmbedding" IS NOT NULL
-      ORDER BY "captureEmbedding" <=> ${toPgVector(embedding)}::vector
+      ORDER BY "captureEmbedding" OPERATOR(public.<=>) ${toPgVector(embedding)}::public.vector
       LIMIT ${limit}`;
     return rows.map((r) => String(r.id));
   };

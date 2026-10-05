@@ -76,7 +76,7 @@ async function runEmbeddingsBackfill(prisma, { batchSize, maxRows, embeddings: e
     for (let i = 0; i < rows.length; i += 1) {
       // Guarda IS NULL no WHERE: corrida com outra execução não reescreve.
       await prisma.$executeRaw`
-        UPDATE "Prospect" SET "captureEmbedding" = ${toPgVector(vectors[i])}::vector
+        UPDATE "Prospect" SET "captureEmbedding" = ${toPgVector(vectors[i])}::public.vector
         WHERE id = ${rows[i].id} AND "captureEmbedding" IS NULL`;
       embedded += 1;
     }
