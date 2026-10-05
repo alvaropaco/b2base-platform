@@ -539,3 +539,99 @@ test('bug "Erro interno": connectedSendChannels com casing certo do WhatsAppAcco
     server.close();
   }
 });
+
+test('QA 6ª bateria: cadastrar e-mail de disparo PELO CHAT (connect_email)', async () => {
+  const llmImpl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Conectando o remetente.',
+          actions: [{ type: 'connect_email', email: 'vendas@empresa.com', provider: 'resend', fromName: 'Equipe Vendas' }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  // Stub do Resend: API key válida com domínio verificado (igual ao fluxo
+  // do POST /api/email/connect — o serviço é o MESMO).
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/domains')) {
+      return { ok: true, status: 200, json: async () => ({ data: [{ name: 'empresa.com', status: 'verified' }] }) };
+    }
+    return originalFetch(url, init);
+  };
+  const { server, prisma, api } = await startServer({ llmImpl });
+  try {
+    process.env.RESEND_API_KEY = 're_chave_plataforma';
+    process.env.TOKEN_ENCRYPTION_KEY = 'a'.repeat(64); // cifra real no teste
+    require('../gmail-auth').initEncryption();
+    // O serviço deriva a org do DONO (user.orgId) — semeia o usuário como no real.
+    prisma.user.rows.push({ id: 'user-1', orgId: 'org-1' });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Remetente', channels: ['email'], objective: 'vender' });
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'cadastra o email vendas@empresa.com para os disparos',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'email_connected');
+    assert.ok(card, 'card de conexão no thread');
+    assert.equal(card.email, 'vendas@empresa.com');
+    const account = prisma.emailAccount.rows.find((row) => row.email === 'vendas@empresa.com');
+    assert.ok(account, 'EmailAccount persistida');
+    assert.equal(account.tenantId, 'org-1', 'escopo da org do dono');
+    assert.equal(account.status, 'connected');
+    assert.equal(account.sendingDomain, 'empresa.com', 'domínio verificado no Resend registrado');
+    assert.ok(account.encryptedSecret, 'secret persistido');
+    assert.ok(!account.encryptedSecret.includes('re_chave'), 'secret NUNCA legível no banco (AES-256-GCM)');
+  } finally {
+    delete process.env.RESEND_API_KEY;
+    globalThis.fetch = originalFetch;
+    server.close();
+  }
+});
+
+test('QA 6ª bateria: reconectar e-mail existente pede confirmação (gate do dono)', async () => {
+  const llmImpl = async () => ({
+    content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }),
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/domains')) {
+      return { ok: true, status: 200, json: async () => ({ data: [{ name: 'empresa.com', status: 'verified' }] }) };
+    }
+    return originalFetch(url, init);
+  };
+  const { server, prisma, api } = await startServer({ llmImpl });
+  try {
+    process.env.RESEND_API_KEY = 're_chave_plataforma';
+    prisma.user.rows.push({ id: 'user-1', orgId: 'org-1' });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Gate email', channels: ['email'] });
+    prisma.emailAccount.rows.push({
+      id: 'ea-existente', orgId: 'org-1', tenantId: 'org-1', userId: 'user-1',
+      provider: 'resend', email: 'vendas@empresa.com', status: 'connected', encryptedSecret: 'antiga',
+    });
+
+    // 1ª tentativa SEM confirmação: gate, nada trocado.
+    const gated = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'connect_email',
+      params: { email: 'vendas@empresa.com', provider: 'resend', apiKey: 're_nova' },
+    });
+    assert.equal(gated.body.data.card.type, 'confirm_change', 'substituir credenciais pede licença');
+    assert.equal(prisma.emailAccount.rows.find((row) => row.id === 'ea-existente').encryptedSecret, 'antiga', 'credencial intacta');
+
+    // Confirmado: substitui (mesma conta, novo secret).
+    const done = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'connect_email',
+      params: { email: 'vendas@empresa.com', provider: 'resend', apiKey: 're_nova', confirmed: true },
+    });
+    assert.equal(done.body.data.card.type, 'email_connected');
+    const updated = prisma.emailAccount.rows.find((row) => row.id === 'ea-existente');
+    assert.notEqual(updated.encryptedSecret, 'antiga', 'credencial substituída');
+    assert.ok(!updated.encryptedSecret.includes('re_nova'), 'secret cifrado no banco');
+  } finally {
+    delete process.env.RESEND_API_KEY;
+    globalThis.fetch = originalFetch;
+    server.close();
+  }
+});

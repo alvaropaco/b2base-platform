@@ -74,6 +74,19 @@ function actionParams(action) {
         prospectId: action.prospectId ? String(action.prospectId) : null,
         fields: action.fields && typeof action.fields === 'object' && !Array.isArray(action.fields) ? action.fields : null,
       };
+    case 'connect_email':
+      // Secret NUNCA entra no card nem no histórico de actions (só no hash
+      // de idempotência, que é irreversível).
+      return {
+        email: action.email || null,
+        provider: action.provider || null,
+        password: typeof action.password === 'string' ? action.password : null,
+        apiKey: typeof action.apiKey === 'string' ? action.apiKey : null,
+        smtpHost: action.smtpHost || null,
+        smtpPort: action.smtpPort ? Number(action.smtpPort) : null,
+        smtpSecure: Boolean(action.smtpSecure),
+        fromName: action.fromName || null,
+      };
     case 'set_schedule':
       return {
         mode: action.mode || null,
@@ -430,7 +443,7 @@ function registerChatRoutes(router, context) {
         : null;
       const replayHit = Boolean(prior && prior.status === 'succeeded');
       if (!replayHit) {
-        const kind = await confirmRequired(action.type, { campaign, prisma });
+        const kind = await confirmRequired(action.type, { campaign, prisma, params });
         if (kind) return buildConfirmCard(action.type, params, kind);
       }
     }
@@ -979,6 +992,37 @@ function registerChatRoutes(router, context) {
         };
       }
 
+      case 'connect_email': {
+        // MESMO serviço do POST /api/email/connect: valida as credenciais
+        // (SMTP real / Resend API) ANTES de salvar; recusas viram card
+        // explicável. Secret resolvido aqui — o Resend pode usar a key da
+        // plataforma quando o usuário não tem a dele.
+        const emailProvider = overrides.emailProvider || require('../email-provider');
+        const provider = action.provider === 'smtp' ? 'smtp' : 'resend';
+        const secret = provider === 'smtp' ? action.password : (action.apiKey || process.env.RESEND_API_KEY);
+        const account = await emailProvider.connectEmailAccount(prisma, {
+          provider,
+          email: String(action.email),
+          secret,
+          smtpHost: action.smtpHost || undefined,
+          smtpPort: action.smtpPort ? Number(action.smtpPort) : undefined,
+          smtpSecure: Boolean(action.smtpSecure),
+          fromName: action.fromName || undefined,
+          userId,
+        });
+        return {
+          type: 'email_connected',
+          label: 'E-mail de disparo conectado',
+          detail:
+            `**${account.email}** (${account.provider}) está pronto para enviar.` +
+            (provider === 'resend'
+              ? ' Domínio já verificado no Resend — pode disparar assim que o saldo liberar.'
+              : ' Falta a autenticação de domínio: me peça "listar os registros DNS", publique no seu provedor e me avise que eu reverifico.'),
+          email: account.email,
+          provider: account.provider,
+        };
+      }
+
       case 'show_capabilities':
         return {
           type: 'capabilities',
@@ -1180,12 +1224,20 @@ function emailBlocksToText(emailDoc) {
  * `confirmed: true`). Criar algo que ainda não existe continua direto.
  * Retorna a "espécie" de alteração (chave do texto do card) ou null.
  */
-async function confirmRequired(type, { campaign, prisma }) {
+async function confirmRequired(type, { campaign, prisma, params = {} }) {
   switch (type) {
     case 'edit_content':
       return 'conteudo';
     case 'delete_campaign':
       return 'campanha';
+    case 'connect_email': {
+      if (!params.email) return null;
+      const existing = await prisma.emailAccount.findFirst({
+        where: { tenantId: campaign.orgId, email: String(params.email) },
+        select: { id: true },
+      });
+      return existing ? 'canal' : null;
+    }
     case 'generate_content': {
       const existing = await prisma.studioContent.count({
         where: { campaignId: campaign.id, kind: 'base', stepIndex: 1 },
@@ -1210,6 +1262,7 @@ async function confirmRequired(type, { campaign, prisma }) {
 const CONFIRM_COPY = {
   conteudo: 'vou ALTERAR o conteúdo que já existe',
   campanha: 'vou APAGAR a campanha (não tem volta)',
+  canal: 'vou SUBSTITUIR as credenciais de envio desse e-mail',
   agenda: 'vou RECONFIGURAR o agendamento atual',
   audiencia: 'vou SUBSTITUIR a audiência decidida — a fila sincroniza e o que já saiu não volta',
 };
@@ -1639,6 +1692,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     update_lead: 'Atualizando o lead…',
     show_replies: 'Vendo as respostas dos leads…',
     show_dns_records: 'Conferindo o DNS do seu domínio…',
+    connect_email: 'Conectando o e-mail de disparo…',
     show_capabilities: 'Organizando o que eu sei fazer…',
   };
 

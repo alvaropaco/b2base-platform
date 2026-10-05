@@ -62,6 +62,11 @@ const ACTIONS_V1 = {
   show_replies: { version: 1, idempotency: 'none', description: 'Mostra as respostas classificadas dos leads (interessados, reuniões, opt-outs) — a caixa de entrada do agente' },
   show_dns_records: { version: 1, idempotency: 'none', description: 'Mostra os registros DNS (SPF/DKIM/DMARC) do domínio de envio e o status de cada um' },
   show_capabilities: { version: 1, idempotency: 'none', description: 'Lista o que o assistente consegue fazer — a resposta canônica para "o que você faz?"' },
+  // QA 2026-10-05 (bateria do dono) — ADITIVA (AD-6): cadastrar o e-mail de
+  // disparo PELO CHAT (SMTP com App Password ou Resend). Reusa o MESMO
+  // serviço do POST /api/email/connect (credenciais validadas antes de
+  // salvar). Substituir uma conta existente passa pelo gate de confirmação.
+  connect_email: { version: 1, idempotency: 'params', description: 'Conecta a conta de e-mail de disparo (SMTP com App Password ou Resend) — valida as credenciais antes de salvar' },
 };
 
 /**
@@ -173,6 +178,21 @@ function validate(action, params = {}) {
         const err = new Error(
           `update_lead exige \`prospectId\` e \`fields\` com ao menos um de: ${FIELDS.join(', ')}.`
         );
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
+    case 'connect_email': {
+      if (!params.email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(params.email))) {
+        const err = new Error('connect_email exige `email` válido.');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      if (params.provider && !['smtp', 'resend'].includes(params.provider)) {
+        const err = new Error('connect_email: provider deve ser "smtp" ou "resend".');
         err.code = 'INVALID_ACTION_PARAMS';
         err.status = 400;
         throw err;
