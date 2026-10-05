@@ -108,6 +108,13 @@ COPY discovery ./discovery
 # Campaign Studio (specs/010) — módulo em DIRETÓRIO: mesmo motivo do discovery,
 # `COPY *.js ./` não copia pastas (MODULE_NOT_FOUND → CrashLoopBackOff).
 COPY studio ./studio
+# Backfill de embeddings da captura híbrida (Epic 2, 2026-10-01) — módulo em
+# DIRETÓRIO: mesmo motivo. INCIDENTE 2026-10-05: a pasta foi adicionada no
+# Epic 2 mas o deploy estava travado desde 30/09 — o primeiro rollout pós-fix
+# crashou com MODULE_NOT_FOUND ('./jobs/embeddings-backfill') e só então a
+# falta apareceu. QUALQUER diretório novo requerido pelo server-prod precisa
+# de um COPY aqui.
+COPY jobs ./jobs
 
 # Copy built SPA + fallback dashboard
 COPY --from=builder /app/apps/web/dist ./apps/web/dist
