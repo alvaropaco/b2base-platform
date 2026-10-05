@@ -28,7 +28,7 @@ async function autoSelectEmailAccount(prisma, orgId) {
 }
 
 async function autoSelectWhatsAppAccount(prisma, orgId) {
-  const account = await prisma.whatsappAccount.findFirst({
+  const account = await prisma.whatsAppAccount.findFirst({
     where: { orgId, status: 'CONNECTED' },
   });
   if (!account) {

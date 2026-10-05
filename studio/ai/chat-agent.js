@@ -512,7 +512,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
           ].join('\n');
         },
         validate: () => null, // parse apenas — normalização fica no caller
-        maxTokens: 300,
+        maxTokens: 800, // deepseek-v4-flash truncava 300 (QA 2026-10-05)
         temperature: 0,
         parseAttempts: 2,
         tag: 'studio:intent',

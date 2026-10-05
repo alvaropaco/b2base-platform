@@ -58,7 +58,7 @@ async function isChannelConfigured(prisma, orgId, channel) {
     return Boolean(account);
   }
   if (channel === 'whatsapp') {
-    const account = await prisma.whatsappAccount.findFirst({
+    const account = await prisma.whatsAppAccount.findFirst({
       where: { orgId, status: 'CONNECTED' },
     });
     return Boolean(account);

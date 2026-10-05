@@ -520,3 +520,22 @@ test('bug 4: o reply chega EM STREAMING (eventos reply_delta no SSE)', async () 
     server.close();
   }
 });
+
+test('bug "Erro interno": connectedSendChannels com casing certo do WhatsAppAccount', async () => {
+  // Prisma expõe `whatsAppAccount` (model WhatsAppAccount); as 3 chamadas
+  // antigas usavam `whatsappAccount` (undefined em produção) → 500 genérico
+  // ("Erro interno") no GET /campaigns/:id a cada abertura de campanha.
+  const { server, prisma, api } = await startServer();
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Casing', channels: ['email', 'whatsapp'] });
+    const { res, body } = await api('GET', `/campaigns/${c.data.id}`);
+    assert.equal(res.status, 200, 'detalhe NÃO pode 500 (era o "Erro interno")');
+    assert.deepEqual(body.data.connectedChannels, { email: false, whatsapp: false });
+
+    prisma.whatsAppAccount.rows.push({ id: 'wa1', orgId: 'org-1', sessionName: 'sess', status: 'CONNECTED' });
+    const after = await api('GET', `/campaigns/${c.data.id}`);
+    assert.equal(after.body.data.connectedChannels.whatsapp, true, 'WhatsApp conectado detectado pelo alias');
+  } finally {
+    server.close();
+  }
+});

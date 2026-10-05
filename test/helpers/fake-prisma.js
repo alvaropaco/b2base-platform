@@ -170,7 +170,7 @@ function makeModel(name, uniqueFields = [], compositeUniques = []) {
 }
 
 function createFakePrisma() {
-  return {
+  const db = {
     organization: makeModel('organization'),
     user: makeModel('user'),
     activity: makeModel('activity'),
@@ -237,6 +237,12 @@ function createFakePrisma() {
     discoveryCandidate: makeModel('discoveryCandidate'),
     discoverySignal: makeModel('discoverySignal'),
   };
+  // ALIAS de casing: o client Prisma expõe `whatsAppAccount` (model
+  // WhatsAppAccount) e o código novo usa esse nome — o fake atende os DOIS
+  // com o MESMO store (a variante `whatsappAccount` permanece para testes
+  // antigos; NUNCA criar model novo com casing divergente do schema).
+  db.whatsAppAccount = db.whatsappAccount;
+  return db;
 }
 
 /** Bus fake do JetStream: captura publicações para asserção. */

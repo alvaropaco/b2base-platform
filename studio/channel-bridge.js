@@ -332,7 +332,7 @@ async function connectedSendChannels(prisma, orgId) {
   const email = await prisma.emailAccount.findFirst({
     where: { tenantId: orgId, status: 'connected' },
   });
-  const whatsapp = await prisma.whatsappAccount.findFirst({
+  const whatsapp = await prisma.whatsAppAccount.findFirst({
     where: { orgId, status: 'CONNECTED' },
   });
   return { email: Boolean(email), whatsapp: Boolean(whatsapp) };
