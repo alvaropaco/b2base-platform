@@ -183,5 +183,5 @@ jobs:
             fi
             sleep 30
           done
-          echo "::error::DEPLOY NÃO CHEGOU AO CLUSTER em 12 min. Imagem sha-$EXPECTED_SHORT buildada e tag commitada no k8s-infra, mas produção segue em '${RUNNING:0:7}'. Verifique o app do ArgoCD (sync/erro) — NUNCA considere este release válido."
+          echo "::error::DEPLOY NÃO CHEGOU AO CLUSTER em 15 min. Imagem buildada e tag commitada no k8s-infra, mas produção segue em '${RUNNING:0:7}'. Verifique o app do ArgoCD (sync/erro) — NUNCA considere este release válido."
           exit 1
