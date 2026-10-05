@@ -125,16 +125,24 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Poll /api/version até o rollout chegar (teto 12 min)
+      - name: Poll /api/version até o rollout chegar (teto 15 min)
         env:
           EXPECTED: ${{ github.sha }}
           PROD_URL: https://www.b2base.net
         run: |
-          EXPECTED_SHORT=$(echo "$EXPECTED" | cut -c1-7)
-          DEADLINE=$(( $(date +%s) + 720 ))
+          DEADLINE=$(( $(date +%s) + 900 ))
           RUNNING=""
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            RUNNING=$(curl -sf -m 10 "$PROD_URL/api/version" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["sha"] or "")' || true)
+            # Cloudflare na frente pode desafiar ranges de runner: tenta com
+            # UA de browser e registra o HTTP code de CADA tentativa — o log
+            # do job é o diagnóstico sem precisar de acesso admin.
+            HTTP=$(curl -s -m 10 -o /tmp/version.json -w "%{http_code}" \
+              -A "Mozilla/5.0 (X11; Linux x86_64) b2base-verify/1.0" \
+              -H "Accept: application/json" "$PROD_URL/api/version" || echo "curl_failed")
+            RUNNING=""
+            if [ "$HTTP" = "200" ]; then
+              RUNNING=$(python3 -c 'import json;print(json.load(open("/tmp/version.json"))["data"]["sha"] or "")' 2>/dev/null || true)
+            fi
             if [ -n "$RUNNING" ]; then
               if [ "$RUNNING" = "$EXPECTED" ]; then
                 echo "Rollout confirmado: produção em $RUNNING"
@@ -148,7 +156,7 @@ jobs:
               fi
               echo "Produção ainda em ${RUNNING:0:7} — aguardando ArgoCD..."
             else
-              echo "/api/version indisponível — tentando de novo..."
+              echo "/api/version indisponível (HTTP $HTTP) — tentando de novo..."
             fi
             sleep 30
           done
