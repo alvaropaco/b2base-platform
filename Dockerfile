@@ -115,6 +115,7 @@ COPY studio ./studio
 # falta apareceu. QUALQUER diretório novo requerido pelo server-prod precisa
 # de um COPY aqui.
 COPY jobs ./jobs
+# (re-disparo 2026-10-05: commit vazio não dispara o workflow de paths)
 
 # Copy built SPA + fallback dashboard
 COPY --from=builder /app/apps/web/dist ./apps/web/dist
