@@ -128,7 +128,10 @@ const SYSTEM_PROMPT = [
   '     (show_content — channel:"whatsapp" mostra SÓ a mensagem de WhatsApp). NUNCA diga que gerou',
   '     WhatsApp se o card não confirmar — o card diz o que de fato foi criado.',
   '  4. Disparo: aprovar (approve_campaign) e COLOCAR EM VOO (launch_campaign — disparo único imediato,',
-  '     e-mail e WhatsApp, SEM perguntar nada de agenda). Regra do disparo: quando o usuário pedirem para',
+  '     e-mail e WhatsApp, SEM perguntar nada de agenda). TESTE ANTES DO DISPARO: quando o usuário quiser',
+  '     testar/ver a mensagem antes de enviar para os leads (ex.: "envia uma mensagem padrão para o número',
+  '     X" ou "me manda um teste no e-mail Y"), EMITA send_test_message — nada vai para os leads nem gasta',
+  '     saldo. Regra do disparo: quando o usuário pedirem para',
   '     disparar/enviar/colocar no ar uma campanha, EMITA launch_campaign na hora. Agenda (set_schedule)',
   '     SÓ quando o usuário PEDIR explicitamente para programar (dias/horários). Aprovar e disparar na',
   '     mesma mensagem? Emita as duas actions, approve primeiro.',
@@ -180,7 +183,8 @@ const SYSTEM_PROMPT = [
   '            {"type":"create_campaign","name":"Outbound indústrias"},',
   '            {"type":"rename_campaign","name":"Outbound indústrias 2026"},',
   '            {"type":"approve_campaign"},',
-  '            {"type":"launch_campaign"}',
+  '            {"type":"launch_campaign"},',
+  '            {"type":"send_test_message","phone":"12 99965-7200"},',
   '            {"type":"connect_email","email":"vendas@empresa.com","provider":"resend","apiKey":"re_..."},',
   '            {"type":"set_schedule","mode":"scheduled","windows":[{"days":[1,2,3,4,5],"startHour":9,"endHour":18}],"hourlyLimit":20,"dailyLimit":100,"timezone":"America/Sao_Paulo"},',
   '            {"type":"show_balance"},',
@@ -192,6 +196,7 @@ const SYSTEM_PROMPT = [
   'launch_campaign {campaignId?};',
   'attach_files {attachmentIds:[id]}; update_lead {prospectId, fields:{companyName?, tradeName?, contactName?, city?, state?, industry?, employees?}};',
   'show_replies {}; show_dns_records {}; show_capabilities {}; connect_email {email, provider:"smtp"|"resend", password?|apiKey?, smtpHost?, smtpPort?, fromName?};',
+  'send_test_message {phone?|email?} — mensagem de TESTE da campanha para um destino, com dados de exemplo;',
   'select_leads {add:[id], remove:[id]} ou {set:[id]}.',
   'Regras: nunca prometa disparo sem aprovação; nada é enviado automaticamente.',
   'Responda com NO MÁXIMO 2-3 actions por turno — prefira concluir uma etapa e confirmar.',
@@ -478,6 +483,38 @@ function extractChannelIntent(userMessage) {
   return null;
 }
 
+/**
+ * TESTE DE MENSAGEM antes do disparo (QA 2026-10-06, pedido do dono: novos
+ * usuários precisam testar a mensagem antes de ir para todos os leads).
+ * Determinístico: extrai o destino (telefone/e-mail) da própria frase.
+ * Retorna { phone, email } ou null.
+ */
+const TEST_MESSAGE_RE = /\b(teste|testar|testa|testando)\b[^.?!]{0,64}\b(mensagem|whatsapp|e-?\s?mail|disparo)\b|\bmensagem\s+padr(ã|a)o\b[^.?!]{0,64}\b(envi\w*|mand\w*|n(ú|u)mero)\b/i;
+const SEND_RE = /\b(envi\w*|mand\w*|dispar\w*)\b/i;
+const PHONE_RE = /\(?\s*\d{2}\s*\)?\s?-?\s?9?\d{4}\s?-?\s?\d{4}/;
+
+function testMessageIntent(userMessage) {
+  const msg = String(userMessage || '');
+  if (!TEST_MESSAGE_RE.test(msg) || !SEND_RE.test(msg)) return null;
+  const emailMatch = msg.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+  const phoneMatch = msg.match(PHONE_RE);
+  const phone = phoneMatch ? phoneMatch[0].replace(/\s+/g, ' ').trim() : null;
+  const email = emailMatch ? emailMatch[0] : null;
+  if (!phone && !email) return null;
+  return { phone, email };
+}
+
+function testMessageHint(userMessage) {
+  const t = testMessageIntent(userMessage);
+  if (!t) return null;
+  return [
+    'TESTE DE MENSAGEM ANTES DO DISPARO — a action send_test_message EXISTE e executa pelo chat:',
+    `{"type":"send_test_message"${t.phone ? `,"phone":"${t.phone}"` : ''}${t.email ? `,"email":"${t.email}"` : ''}}`,
+    'Envia a mensagem JÁ GERADA da campanha para o destino informado, com dados de exemplo — NADA vai para os leads, não gasta saldo nem toca a fila.',
+    'NUNCA diga que não dá para testar; NUNCA ofereça disparar a campanha inteira para "testar".',
+  ].join('\n');
+}
+
 function emailConnectHint(userMessage) {
   const msg = String(userMessage || '');
   if (!EMAIL_CONNECT_RE.test(msg)) return null;
@@ -602,7 +639,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
       buildOrgBlock(extras),
       buildHistoryBlock(history),
       skills.selectFor(userMessage),
-      hintOverride || campaignManagementHint(userMessage) || emailConnectHint(userMessage),
+      hintOverride || campaignManagementHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage),
       `NOVA MENSAGEM DO USUÁRIO: ${userMessage}`,
       'Decida as ações e escreva a resposta para o usuário.',
     ]
@@ -748,6 +785,8 @@ module.exports = {
   campaignManagementHint,
   emailConnectHint,
   extractChannelIntent,
+  testMessageIntent,
+  testMessageHint,
   extractRenameTarget,
   extractCreateTarget,
   leadCaptureIntent,

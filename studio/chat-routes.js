@@ -14,7 +14,7 @@
 
 const crypto = require('crypto');
 const { httpError } = require('./errors');
-const { createChatAgent, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery, extractCaptureState, extractChannelIntent } = require('./ai/chat-agent');
+const { createChatAgent, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery, extractCaptureState, extractChannelIntent, testMessageIntent } = require('./ai/chat-agent');
 const { createComposer } = require('./ai/compose');
 const { createExtractor } = require('./ai/extract');
 const { generateAndStorePackage, generateAndStoreWhatsApp } = require('./compose-service');
@@ -71,6 +71,11 @@ function actionParams(action) {
       return {
         name: action.name || null,
         campaignId: action.campaignId ? String(action.campaignId) : null,
+      };
+    case 'send_test_message':
+      return {
+        phone: action.phone ? String(action.phone) : null,
+        email: action.email ? String(action.email) : null,
       };
     case 'duplicate_campaign':
       return {
@@ -1020,6 +1025,87 @@ function registerChatRoutes(router, context) {
         };
       }
 
+      case 'send_test_message': {
+        // TESTE antes do disparo (QA 2026-10-06, pedido do dono: novos
+        // usuários precisam ver a mensagem antes de ir para todos os leads).
+        // Mesma semântica do POST /api/outreach/campaigns/test do painel:
+        // dados de exemplo, destino ÚNICO informado — nada toca a audiência,
+        // a fila ou o saldo de reputação.
+        const { renderTemplate, normalizePhone, toChatId } = require('../whatsapp-utils');
+        const contents = await prisma.studioContent.findMany({
+          where: { campaignId: campaign.id, kind: 'base', stepIndex: 1 },
+        });
+        if (contents.length === 0) {
+          throw httpError('NO_CONTENT', 409, 'A campanha ainda não tem mensagem gerada — me peça para gerar antes do teste.');
+        }
+        const SAMPLE = {
+          // Shape que o buildTemplateVars lê (firstName deriva de contactName).
+          contactName: 'Mariana Silva',
+          companyName: 'Transportes Alfa Ltda',
+          city: 'Curitiba',
+          industry: 'Transporte rodoviário de carga',
+        };
+        const parts = [];
+        const crypto = require('crypto');
+
+        if (action.phone) {
+          const phone = normalizePhone(String(action.phone));
+          const chatId = toChatId(String(action.phone));
+          if (!phone || phone.length < 10) {
+            throw httpError('INVALID_PHONE', 400, 'Número inválido — informe com DDD (ex.: 12 99965-7200).');
+          }
+          const waContent = contents.find((c) => c.channel === 'whatsapp' && c.whatsappText);
+          if (!waContent) throw httpError('NO_CONTENT', 409, 'A campanha não tem mensagem de WhatsApp gerada — me peça para gerar.');
+          const account = await prisma.whatsAppAccount.findFirst({ where: { orgId, status: 'CONNECTED' } });
+          if (!account) throw httpError('NO_CHANNEL', 409, 'O WhatsApp não está conectado — me peça para parear por QR.');
+          const waha = require('../waha-provider');
+          const result = await waha.WAHAWhatsAppProvider.sendText(account.sessionName, chatId, renderTemplate(waContent.whatsappText, SAMPLE));
+          if (!result?.providerMessageId) {
+            throw httpError('WAHA_NO_ACK', 502, 'O WhatsApp não confirmou o envio — verifique se a sessão segue conectada.');
+          }
+          parts.push(`📱 WhatsApp para ${phone}`);
+        }
+
+        if (action.email) {
+          const to = String(action.email).trim();
+          if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
+            throw httpError('INVALID_EMAIL', 400, 'E-mail de teste inválido.');
+          }
+          const emailContent = contents.find((c) => c.channel === 'email');
+          if (!emailContent) throw httpError('NO_CONTENT', 409, 'A campanha não tem e-mail gerado — me peça para gerar.');
+          const account = await prisma.emailAccount.findFirst({
+            // Mesma tolerância do painel: contas antigas (Gmail) gravam userId,
+            // não tenantId — filtrar só por orgId escondia a conta.
+            where: { OR: [{ orgId }, { userId }], status: 'connected' },
+          });
+          if (!account) throw httpError('NO_CHANNEL', 409, 'Nenhuma conta de e-mail de disparo conectada — me peça para conectar.');
+          const renderedBody = renderTemplate(emailBlocksToText(emailContent.emailDoc), SAMPLE);
+          const emailProvider = require('../email-provider');
+          await emailProvider.sendEmailForAccount(prisma, account.id, {
+            to,
+            subject: `[TESTE] ${renderTemplate(emailContent.subject || campaign.name, SAMPLE)}`,
+            body: renderedBody,
+            htmlBody: `<p>${renderedBody
+              .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+              .replace(/\n{2,}/g, '</p><p>')
+              .replace(/\n/g, '<br/>')}</p>`,
+            messageId: `teste-${crypto.randomUUID()}`,
+          });
+          parts.push(`✉️ E-mail para ${to}`);
+        }
+
+        if (parts.length === 0) {
+          throw httpError('NO_DESTINATION', 400, 'Me diga para onde vai o teste — um número de WhatsApp ou um e-mail.');
+        }
+        return {
+          type: 'test_message_sent',
+          label: 'Mensagem de teste enviada',
+          detail:
+            `${parts.join(' e ')} — com dados de exemplo (${SAMPLE.contactName}, ${SAMPLE.companyName}). ` +
+            'Confira como o lead vai receber e ajuste o que quiser: só coloco em voo quando você pedir.',
+        };
+      }
+
       case 'update_lead': {
         // Escopo duplo: o lead TEM que ser da organização (constituição IV).
         // Só os campos da lista branca saem — o resto é ignorado, nunca
@@ -1159,7 +1245,7 @@ function registerChatRoutes(router, context) {
           detail:
             '**Campanhas** — criar, listar as da sua organização, renomear, duplicar e apagar (sempre confirmo antes de apagar).\n' +
             '**Jornada da campanha aberta** — objetivo, audiência por linguagem natural, ajuste fino de leads, captura de leads novos, conteúdo (gerar, editar e MOSTRAR aqui no chat) e agendamento.\n' +
-            '**Aprovação e disparo** — aprovar a campanha pelo mesmo fluxo do Pré-voo, COLOCAR EM VOO na hora (disparo único, e-mail e WhatsApp — sem perguntas de agenda) e mostrar o que falta para poder disparar (saldo, certificado).\n' +
+            '**Aprovação e disparo** — aprovar a campanha pelo mesmo fluxo do Pré-voo, ENVIAR UMA MENSAGEM DE TESTE para o seu WhatsApp ou e-mail antes de valer, COLOCAR EM VOO na hora (disparo único, e-mail e WhatsApp — sem perguntas de agenda) e mostrar o que falta para poder disparar (saldo, certificado).\n' +
             '**Canais** — conectar a conta de e-mail de disparo (Resend com a sua API key ou SMTP com senha de app), mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
             '**Leads** — consultar e editar dados de empresa/contato, e mostrar as respostas dos leads (interessados, reuniões, opt-outs).\n\n' +
             'Não faço ainda: publicar os registros DNS no provedor do domínio (eu mostro, você publica) e ler a caixa de entrada inteira fora das respostas classificadas.',
@@ -1819,6 +1905,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     delete_campaign: 'Apagando a campanha…',
     approve_campaign: 'Aprovando a campanha…',
     launch_campaign: 'Colocando em voo…',
+    send_test_message: 'Enviando mensagem de teste…',
     update_lead: 'Atualizando o lead…',
     show_replies: 'Vendo as respostas dos leads…',
     show_dns_records: 'Conferindo o DNS do seu domínio…',
@@ -2198,6 +2285,15 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
       if ((effective.type === 'generate_content' || effective.type === 'show_content') && !effective.channel) {
         const channelIntent = extractChannelIntent(message);
         if (channelIntent) effective.channel = channelIntent;
+      }
+      // QA 2026-10-06: destino do TESTE extraído da PRÓPRIA frase ("envie uma
+      // mensagem padrão para o número 12 99657-7200") — o modelo não decide.
+      if (effective.type === 'send_test_message') {
+        const t = testMessageIntent(message);
+        if (t) {
+          if (!effective.phone && t.phone) effective.phone = t.phone;
+          if (!effective.email && t.email) effective.email = t.email;
+        }
       }
       const label = ACTION_LABELS[effective.type];
       if (label) emit({ type: 'status', label });

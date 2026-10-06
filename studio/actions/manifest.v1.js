@@ -62,6 +62,10 @@ const ACTIONS_V1 = {
   // aprovada sai NA HORA (disparo único, e-mail + WhatsApp), sem perguntas de
   // agenda; agenda continua existindo para quem PEDIR (set_schedule).
   launch_campaign: { version: 1, idempotency: 'params', description: 'Coloca a campanha em voo AGORA — disparo único imediato pelos canais conectados, sem agenda' },
+  // QA 2026-10-06 (dono): novos usuários testam a mensagem ANTES de enviar
+  // para todos os leads. Somente leitura da campanha + envio para UM destino
+  // informado — nunca toca a audiência, a fila ou o saldo.
+  send_test_message: { version: 1, idempotency: 'none', description: 'Envia a mensagem da campanha como TESTE (dados de exemplo) para um WhatsApp ou e-mail informado — nada vai para os leads' },
   update_lead: { version: 1, idempotency: 'none', description: 'Edita dados de um lead (empresa, contato, localidade, porte, setor) com escopo de organização' },
   show_replies: { version: 1, idempotency: 'none', description: 'Mostra as respostas classificadas dos leads (interessados, reuniões, opt-outs) — a caixa de entrada do agente' },
   show_dns_records: { version: 1, idempotency: 'none', description: 'Mostra os registros DNS (SPF/DKIM/DMARC) do domínio de envio e o status de cada um' },
@@ -184,6 +188,15 @@ function validate(action, params = {}) {
     case 'launch_campaign':
       // campaignId opcional em ambas: default = campanha aberta no handler.
       return true;
+    case 'send_test_message': {
+      if (!params.phone && !params.email) {
+        const err = new Error('send_test_message exige `phone` (WhatsApp) ou `email` de destino.');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
     case 'update_lead': {
       const FIELDS = ['companyName', 'tradeName', 'contactName', 'city', 'state', 'industry', 'employees'];
       const fields = params.fields;

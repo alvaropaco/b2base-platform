@@ -926,3 +926,52 @@ test('QA: "dispara agora" coloca em voo SEM perguntas de agenda (disparo único)
     server.close();
   }
 });
+
+// ── QA 2026-10-06: mensagem de TESTE antes do disparo (não vai para leads) ───
+
+test('QA: "envie uma mensagem padrão para o número X" envia TESTE pelo WhatsApp (fila intocada)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({ reply: 'Vou enviar o teste.', actions: [{ type: 'send_test_message' }] }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  const waha = require('../waha-provider');
+  const sent = [];
+  const realSendText = waha.WAHAWhatsAppProvider.sendText;
+  waha.WAHAWhatsAppProvider.sendText = async (_session, chatId, text) => {
+    sent.push({ chatId, text });
+    return { providerMessageId: 'wam.teste123' };
+  };
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Teste antes', channels: ['email', 'whatsapp'] });
+    prisma.studioContent.rows.push({
+      id: 'cw1', orgId: 'org-1', campaignId: c.data.id, channel: 'whatsapp',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      whatsappText: 'Oi {{firstName}}, tudo bem? A {{companyName}} testa antes de enviar.',
+      emailDoc: null,
+    });
+    prisma.whatsAppAccount.rows.push({ id: 'wacc-1', orgId: 'org-1', sessionName: 'sess-1', status: 'CONNECTED' });
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'envie uma mensagem padrão para o número 12 996572002',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'test_message_sent');
+    assert.ok(card, 'card de teste enviado');
+    assert.match(card.detail, /WhatsApp para 5512996572002/, 'destino normalizado com DDI no card');
+    assert.equal(sent.length, 1, 'UM envio de teste');
+    assert.ok(/12\s?996572002|5512996572002/.test(sent[0].chatId), 'chatId derivado do número da frase');
+    assert.match(sent[0].text, /Mariana/, 'variáveis renderizadas com dados de exemplo');
+    assert.ok(!sent[0].text.includes('{{'), 'nenhuma placeholder crua no teste');
+    // NADA foi para a fila/audiência/leads.
+    assert.equal(prisma.outreachMessage.rows.length, 0, 'nenhuma mensagem de campanha criada');
+    assert.equal(prisma.whatsAppCampaignContact.rows.length, 0, 'nenhum contato de campanha inscrito');
+  } finally {
+    waha.WAHAWhatsAppProvider.sendText = realSendText;
+    server.close();
+  }
+});

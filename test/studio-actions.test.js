@@ -97,19 +97,20 @@ test('actionKey: escopada em org+campanha; actionId do cliente vence; hash deter
   assert.equal(manifest.actionKey({ orgId: 'org-1', campaignId: 'c1', action: 'set_objective', params: {} }), null, 'idempotência none não gera chave');
 });
 
-test('manifest v1: contrato fechado com as 25 actions do orquestrador', () => {
+test('manifest v1: contrato fechado com as 26 actions do orquestrador', () => {
   // Evolução ADITIVA (AD-6): show_balance/start_whatsapp_pairing (2026-09-27);
   // attach_files/edit_content (2026-09-29); capture_leads (Epic 2, 2026-09-30);
   // show_content (QA 2026-10-02) e a onda "IA com a plataforma inteira"
   // (QA 2026-10-02, bugs 1/2/6 do dono): list/create/rename/duplicate/delete/
   // approve_campaign, update_lead, show_replies, show_dns_records,
-  // show_capabilities; launch_campaign (QA 2026-10-06, disparo sem fricção)
+  // show_capabilities; launch_campaign (QA 2026-10-06, disparo sem fricção);
+  // send_test_message (QA 2026-10-06, teste antes do disparo)
   // — sem alterar forma, idempotência ou chaves das
   // anteriores; consumidores existentes não quebram.
   assert.deepEqual(Object.keys(manifest.ACTIONS_V1).sort(), [
     'approve_campaign', 'attach_files', 'attach_url', 'capture_leads', 'confirm_material',
     'connect_email', 'create_campaign', 'delete_campaign', 'duplicate_campaign', 'edit_content',
-    'generate_content', 'launch_campaign', 'list_campaigns', 'rename_campaign', 'select_leads', 'set_audience',
+    'generate_content', 'launch_campaign', 'list_campaigns', 'rename_campaign', 'select_leads', 'send_test_message', 'set_audience',
     'set_objective', 'set_schedule', 'show_balance', 'show_capabilities', 'show_content',
     'show_dns_records', 'show_replies', 'start_whatsapp_pairing', 'update_lead',
   ]);
