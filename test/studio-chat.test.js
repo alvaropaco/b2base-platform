@@ -975,3 +975,42 @@ test('QA: "envie uma mensagem padrão para o número X" envia TESTE pelo WhatsAp
     server.close();
   }
 });
+
+test('QA: "manda a mensagem pro 12 996399943" (sem a palavra "teste") também é envio de teste', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({ reply: 'Mandando o teste.', actions: [{ type: 'send_test_message' }] }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  const waha = require('../waha-provider');
+  const sent = [];
+  const realSendText = waha.WAHAWhatsAppProvider.sendText;
+  waha.WAHAWhatsAppProvider.sendText = async (_session, chatId, text) => {
+    sent.push({ chatId, text });
+    return { providerMessageId: 'wam.teste456' };
+  };
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Sem palavra teste', channels: ['whatsapp'] });
+    prisma.studioContent.rows.push({
+      id: 'cw2', orgId: 'org-1', campaignId: c.data.id, channel: 'whatsapp',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      whatsappText: 'Oi {{firstName}}, mensagem da {{companyName}}.', emailDoc: null,
+    });
+    prisma.whatsAppAccount.rows.push({ id: 'wacc-2', orgId: 'org-1', sessionName: 'sess-2', status: 'CONNECTED' });
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'manda a mensagem pro 12 996399943',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'test_message_sent');
+    assert.ok(card, 'card de teste enviado (intenção contextual, sem a palavra teste)');
+    assert.equal(sent.length, 1, 'UM envio de teste');
+  } finally {
+    waha.WAHAWhatsAppProvider.sendText = realSendText;
+    server.close();
+  }
+});

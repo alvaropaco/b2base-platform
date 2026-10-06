@@ -128,10 +128,9 @@ const SYSTEM_PROMPT = [
   '     (show_content — channel:"whatsapp" mostra SÓ a mensagem de WhatsApp). NUNCA diga que gerou',
   '     WhatsApp se o card não confirmar — o card diz o que de fato foi criado.',
   '  4. Disparo: aprovar (approve_campaign) e COLOCAR EM VOO (launch_campaign — disparo único imediato,',
-  '     e-mail e WhatsApp, SEM perguntar nada de agenda). TESTE ANTES DO DISPARO: quando o usuário quiser',
-  '     testar/ver a mensagem antes de enviar para os leads (ex.: "envia uma mensagem padrão para o número',
-  '     X" ou "me manda um teste no e-mail Y"), EMITA send_test_message — nada vai para os leads nem gasta',
-  '     saldo. Regra do disparo: quando o usuário pedirem para',
+  '     e-mail e WhatsApp, SEM perguntar nada de agenda). TESTE ANTES DO DISPARO: QUALQUER pedido de',
+  '     "manda/envia para o número X" ou "me manda um teste no e-mail Y" é TESTE — EMITA send_test_message',
+  '     (nada vai para os leads nem gasta saldo). Regra do disparo: quando o usuário pedirem para',
   '     disparar/enviar/colocar no ar uma campanha, EMITA launch_campaign na hora. Agenda (set_schedule)',
   '     SÓ quando o usuário PEDIR explicitamente para programar (dias/horários). Aprovar e disparar na',
   '     mesma mensagem? Emita as duas actions, approve primeiro.',
@@ -495,12 +494,17 @@ const PHONE_RE = /\(?\s*\d{2}\s*\)?\s?-?\s?9?\d{4}\s?-?\s?\d{4}/;
 
 function testMessageIntent(userMessage) {
   const msg = String(userMessage || '');
-  if (!TEST_MESSAGE_RE.test(msg) || !SEND_RE.test(msg)) return null;
   const emailMatch = msg.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
   const phoneMatch = msg.match(PHONE_RE);
   const phone = phoneMatch ? phoneMatch[0].replace(/\s+/g, ' ').trim() : null;
   const email = emailMatch ? emailMatch[0] : null;
   if (!phone && !email) return null;
+  // Frase explícita de teste OU qualquer "manda/envia para <número|e-mail>":
+  // no contexto do studio, envio para UM destino digitado só pode ser teste
+  // (o disparo real vai para a AUDIÊNCIA, nunca para um número solto).
+  const explicit = TEST_MESSAGE_RE.test(msg);
+  const sendsToDestination = SEND_RE.test(msg);
+  if (!explicit && !sendsToDestination) return null;
   return { phone, email };
 }
 
