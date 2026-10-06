@@ -1127,11 +1127,12 @@ function registerChatRoutes(router, context) {
           const account = await prisma.whatsAppAccount.findFirst({ where: { orgId, status: 'CONNECTED' } });
           if (!account) throw httpError('NO_CHANNEL', 409, 'O WhatsApp não está conectado — me peça para parear por QR.');
           const waha = require('../waha-provider');
-          const result = await waha.WAHAWhatsAppProvider.sendText(account.sessionName, chatId, renderTemplate(waContent.whatsappText, SAMPLE));
+          const renderedWa = renderTemplate(waContent.whatsappText, SAMPLE);
+          const result = await waha.WAHAWhatsAppProvider.sendText(account.sessionName, chatId, renderedWa);
           if (!result?.providerMessageId) {
             throw httpError('WAHA_NO_ACK', 502, 'O WhatsApp não confirmou o envio — verifique se a sessão segue conectada.');
           }
-          parts.push(`📱 WhatsApp para ${phone}`);
+          parts.push(`📱 WhatsApp para ${phone} — texto que saiu: "${String(renderedWa).slice(0, 180)}"`);
         }
 
         if (action.email) {
@@ -1221,7 +1222,13 @@ function registerChatRoutes(router, context) {
           }
           leadReports.push(
             sentVia.length > 0
-              ? `✅ ${lead.companyName}: teste enviado por ${sentVia.join(' + ')} (dados reais do cadastro).`
+              ? `✅ ${lead.companyName}: teste enviado por ${sentVia.join(' + ')} — "${String(
+                  waContentForLead && sentVia.includes('WhatsApp')
+                    ? renderTemplate(waContentForLead.whatsappText, lead)
+                    : emailContentForLead
+                      ? renderTemplate(emailBlocksToText(emailContentForLead.emailDoc), lead)
+                      : ''
+                ).slice(0, 140)}" (dados reais do cadastro).`
               : `⚠️ ${lead.companyName}: nada enviado — ${phones.length === 0 ? 'sem telefone no cadastro' : ''}${phones.length === 0 && !lead.cnpjEmail ? ' e ' : ''}${!lead.cnpjEmail ? 'sem e-mail no cadastro' : ''} ou canal não conectado.`
           );
         }
