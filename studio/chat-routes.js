@@ -967,15 +967,10 @@ function registerChatRoutes(router, context) {
           : campaign;
         if (!target || target.orgId !== orgId) throw httpError('NOT_FOUND', 404, 'Campanha não encontrada');
         await context.requirePremiumOrg(orgId);
-        if (target.status === 'running') {
-          return {
-            type: 'campaign_launched',
-            label: `Campanha "${target.name}" já está em voo`,
-            detail: 'A fila sai pelo ritmo do Orçamento de Reputação — nada re-dispara por engano. Me peça "ver o saldo" para acompanhar.',
-            campaignId: target.id,
-            campaignStatus: target.status,
-          };
-        }
+        // Já em voo → DISPARO DELTA (QA 2026-10-06: o replay da idempotência
+        // travava o re-disparo pós-consentimento; agora recompila, matricula
+        // quem falta e reenfileira só os não alocados — nada duplica).
+        const alreadyRunning = target.status === 'running';
         if (target.status === 'scheduled') {
           return {
             type: 'campaign_launched',
@@ -991,12 +986,13 @@ function registerChatRoutes(router, context) {
           await campaignService.flow.approveCampaign(prisma, { campaign: target, userId });
           target.status = 'approved';
         }
-        if (target.status !== 'approved') {
+        if (target.status !== 'approved' && target.status !== 'running') {
           throw httpError('NOT_LAUNCHABLE', 409, 'Para disparar, a campanha primeiro precisa de audiência e conteúdo — me peça para montar isso.');
         }
         const result = await campaignService.flow.runImmediateDispatch(prisma, {
           campaign: target,
           userId,
+          allowRunning: alreadyRunning,
           overrides: { dispatchImmediate: overrides.dispatchImmediate },
         });
         const launched = result.campaign;
@@ -1024,6 +1020,9 @@ function registerChatRoutes(router, context) {
         // a fila vazia — leads sem consentimento WhatsApp e canais não
         // conectados eram invisíveis).
         const launchNotes = [];
+        if (alreadyRunning) {
+          launchNotes.push('Reforço de fila executado na campanha em voo — quem já estava alocado não duplica.');
+        }
         const enrollment = result.compiled?.enrollment || {};
         if ((enrollment.whatsappSkippedNoConsent || 0) > 0) {
           launchNotes.push(

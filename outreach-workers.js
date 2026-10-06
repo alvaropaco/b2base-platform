@@ -197,9 +197,15 @@ async function generateOutreachMessage(prisma, { lead, seq = 1, campaign = null,
  *   respondeu no intervalo) → cancela (o upsert clobberia REPLIED→SCHEDULED).
  * Retorna null para prosseguir, ou o motivo do skip.
  */
-function _prepareSkipReason(existing, isFollowup) {
+function _prepareSkipReason(existing, isFollowup, hasMessage = true) {
   if (!existing) return null;
-  if (!isFollowup) return 'already_enrolled';
+  if (hasMessage && !isFollowup) return 'already_enrolled';
+  if (!isFollowup) {
+    // Matriculado mas NUNCA recebeu mensagem (pré-matrícula do compile ou
+    // lote morto pelo skip antigo) → precisa do primeiro toque.
+    if (['REPLIED', 'UNSUBSCRIBED', 'CANCELLED'].includes(existing.status)) return 'terminal_status';
+    return null;
+  }
   if (['REPLIED', 'UNSUBSCRIBED', 'CANCELLED'].includes(existing.status)) return 'terminal_status';
   return null;
 }
@@ -227,10 +233,17 @@ async function processPrepare(job) {
     select: { outreachSequence: true, status: true },
   });
 
-  // Idempotência de lançamento/follow-up (ver _prepareSkipReason): o lead
-  // nunca recebe dois primeiros toques na mesma campanha, e follow-up de
-  // contato terminal é cancelado em vez de ressuscitar o status.
-  const skipReason = _prepareSkipReason(existing, Boolean(_isFollowup));
+  // Idempotência de lançamento/follow-up: o lead nunca recebe dois primeiros
+  // toques na mesma campanha. QA 2026-10-06: o skip passou a olhar MENSAGEM,
+  // não só a matrícula — o Studio pré-matricula no compile e o contato
+  // pré-matriculado SEM mensagem (morto pelo skip antigo de
+  // startOutreachCampaign) precisa receber o primeiro toque aqui.
+  const hasMessage = existing
+    ? Boolean(
+        await prisma.outreachMessage.findFirst({ where: { contactId: existing.id }, select: { id: true } })
+      )
+    : false;
+  const skipReason = _prepareSkipReason(existing, Boolean(_isFollowup), hasMessage);
   if (skipReason) {
     console.log(`[prepare] prospect ${prospectId} em ${campaignId}: skip (${skipReason}, status ${existing.status})`);
     return { skipped: true, reason: skipReason, status: existing.status };
@@ -1143,24 +1156,20 @@ async function startOutreachCampaign(prisma, campaignId, prospectIds, emailAccou
     if (!acct) throw new Error('Email account not found');
   }
 
-  // Idempotência: lead já inscrito nesta campanha não é reenfileirado — o
-  // lançamento é o PRIMEIRO toque (follow-ups têm fluxo próprio e falhas
-  // têm retry próprio em /api/outreach/dispatches/retry). O processPrepare
-  // barra de novo (backstop contra corrida entre lista e enfileiramento).
-  const enrolled = await prisma.outreachContact.findMany({
-    where: { campaignId, prospectId: { in: prospectIds } },
-    select: { prospectId: true },
-  });
-  const alreadyEnrolled = new Set(enrolled.map((c) => c.prospectId));
-  const freshProspectIds = prospectIds.filter((id) => !alreadyEnrolled.has(id));
-
+  // Idempotência de mensagem MOVIDA para o processPrepare (hasMessage):
+  // o fluxo do Studio PRÉ-MATRICULA os contatos (bridge.compile →
+  // enrollAudience) ANTES do disparo — o skip "já inscrito" aqui zerava o
+  // prepare e o lead ficava 'Na fila' para sempre sem mensagem (QA
+  // 2026-10-06: 25 contatos alocados, 0 mensagens). O enfileiramento que
+  // chega aqui já vem fatiado pelo gate (enqueueBatch filtra alocados);
+  // quem tem mensagem não re-recebe (backstop no processPrepare).
   const queue = makeQueue('outreach:prepare');
   const jobIds = [];
 
-  for (let i = 0; i < freshProspectIds.length; i++) {
+  for (let i = 0; i < prospectIds.length; i++) {
     const job = await queue.add(
       {
-        prospectId: freshProspectIds[i],
+        prospectId: prospectIds[i],
         campaignId,
         emailAccountId,
         tenantId: campaign.tenantId,

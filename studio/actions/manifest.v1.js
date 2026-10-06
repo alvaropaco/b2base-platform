@@ -61,7 +61,11 @@ const ACTIONS_V1 = {
   // QA 2026-10-06 (dono): disparo SEM fricção — pedido de disparo de campanha
   // aprovada sai NA HORA (disparo único, e-mail + WhatsApp), sem perguntas de
   // agenda; agenda continua existindo para quem PEDIR (set_schedule).
-  launch_campaign: { version: 1, idempotency: 'params', description: 'Coloca a campanha em voo AGORA — disparo único imediato pelos canais conectados, sem agenda' },
+  // Idempotency NONE (não 'params'): re-disparo após consentir um lead é um
+  // NOVO pedido — o replay "já feito — nada duplicado" travava exatamente o
+  // fluxo pós-consentimento; a segurança vive nos estados (running → delta,
+  // nunca duplica: enqueueBatch só aloca contatos ainda não alocados).
+  launch_campaign: { version: 1, idempotency: 'none', description: 'Coloca a campanha em voo AGORA — disparo único imediato pelos canais conectados, sem agenda' },
   // QA 2026-10-06 (dono): novos usuários testam a mensagem ANTES de enviar
   // para todos os leads. Somente leitura da campanha + envio para UM destino
   // informado — nunca toca a audiência, a fila ou o saldo.

@@ -404,8 +404,13 @@ async function approveCampaign(prisma, { campaign, userId }) {
  * Sem nenhum canal de fato: 409 explicável (NO_CHANNEL_CONNECTED) e a
  * campanha segue "pendente de envio" (statusReason preservado).
  */
-async function runImmediateDispatch(prisma, { campaign, userId, overrides = {} }) {
-  assertTransition(campaign.status, 'running');
+async function runImmediateDispatch(prisma, { campaign, userId, overrides = {}, allowRunning = false }) {
+  // allowRunning (QA 2026-10-06): re-disparo em campanha já em voo é o
+  // DELTA — recompila (matricula leads recém-consentidos/canal novo) e
+  // reenfileira só quem ainda não foi alocado (filtro do enqueueBatch).
+  if (!(allowRunning && campaign.status === 'running')) {
+    assertTransition(campaign.status, 'running');
+  }
   const snapshot = await activeSnapshot(prisma, campaign);
   if (!snapshot || snapshot.includedCount === 0) {
     throw httpErr('EMPTY_AUDIENCE', 409, 'Audiência vazia.');
