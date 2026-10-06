@@ -1528,9 +1528,20 @@ function registerChatRoutes(router, context) {
         // QA 2026-10-06: "troca a mensagem por <texto>" — o modelo NÃO tem o
         // id no estado; canal + texto resolve o conteúdo base AQUI.
         if (contents.length === 0 && action.channel && (action.whatsappText != null || action.text != null || action.subject != null)) {
+          // Normaliza o canal (o modelo pode emitir "WhatsApp" — canais são
+          // minúsculos no banco; sem isso viraria no-op silencioso).
+          const channel = ['whatsapp', 'email', 'linkedin_text'].includes(String(action.channel).trim().toLowerCase())
+            ? String(action.channel).trim().toLowerCase()
+            : null;
+          if (!channel) {
+            throw httpError('INVALID_CHANNEL', 400, 'Canal de edição inválido — use whatsapp, email ou linkedin_text.');
+          }
           const rows = await prisma.studioContent.findMany({
-            where: { campaignId: campaign.id, kind: 'base', stepIndex: 1, channel: action.channel },
+            where: { campaignId: campaign.id, kind: 'base', stepIndex: 1, channel },
           });
+          if (rows.length === 0) {
+            throw httpError('NO_CONTENT', 409, 'A campanha não tem conteúdo desse canal para editar — me peça para gerar primeiro.');
+          }
           const text = action.whatsappText != null ? String(action.whatsappText) : action.text != null ? String(action.text) : null;
           contents = rows.map((row) => {
             const patch = { id: row.id };
