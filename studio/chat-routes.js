@@ -137,12 +137,13 @@ function actionParams(action) {
         cnae: typeof action.cnae === 'string' ? action.cnae : null,
         limit: Number(action.limit) || null,
       };
-    case 'edit_content':
+    case 'edit_content': {
       // Só os campos que REALMENTE vieram entram nos params (campo ausente
       // nunca vira null — null não pode apagar subject/emailDoc/ctaUrl) e a
       // lista é ordenada por id: a chave de idempotência não depende da
-      // ordem (irmão do B18).
-      return {
+      // ordem (irmão do B18). Canal/texto (QA 2026-10-06) entram só quando
+      // presentes — sem mudar a chave dos edits legados.
+      const params = {
         contents: (Array.isArray(action.contents) ? action.contents : [])
           .filter((c) => c && c.id != null)
           .map((c) => {
@@ -155,6 +156,12 @@ function actionParams(action) {
           })
           .sort((a, b) => a.id.localeCompare(b.id)),
       };
+      if (action.channel) params.channel = action.channel;
+      if (action.whatsappText != null) params.whatsappText = String(action.whatsappText);
+      if (action.text != null) params.text = String(action.text);
+      if (action.subject != null) params.subject = String(action.subject);
+      return params;
+    }
     default:
       return {};
   }
@@ -1517,9 +1524,28 @@ function registerChatRoutes(router, context) {
       case 'edit_content': {
         // Story 3.3/D9: a edição pelo chat REUSA o mesmo serviço do PATCH da
         // UI (validação, sync em voo, contentEdits — AD-6/AD-13).
+        let contents = Array.isArray(action.contents) ? action.contents : [];
+        // QA 2026-10-06: "troca a mensagem por <texto>" — o modelo NÃO tem o
+        // id no estado; canal + texto resolve o conteúdo base AQUI.
+        if (contents.length === 0 && action.channel && (action.whatsappText != null || action.text != null || action.subject != null)) {
+          const rows = await prisma.studioContent.findMany({
+            where: { campaignId: campaign.id, kind: 'base', stepIndex: 1, channel: action.channel },
+          });
+          const text = action.whatsappText != null ? String(action.whatsappText) : action.text != null ? String(action.text) : null;
+          contents = rows.map((row) => {
+            const patch = { id: row.id };
+            if (row.channel === 'whatsapp' && text != null) patch.whatsappText = text;
+            if (row.channel === 'linkedin_text' && text != null) patch.linkedinText = text;
+            if (row.channel === 'email' && action.subject != null) patch.subject = String(action.subject);
+            if (row.channel === 'email' && text != null) {
+              patch.emailDoc = { blocks: [{ type: 'text', text }] };
+            }
+            return patch;
+          });
+        }
         const result = await campaignService.flow.updateContents(prisma, {
           campaign,
-          contents: Array.isArray(action.contents) ? action.contents : [],
+          contents,
           userId,
         });
         const synced = result.sync ? [

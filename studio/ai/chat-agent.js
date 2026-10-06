@@ -201,6 +201,7 @@ const SYSTEM_PROMPT = [
   'attach_files {attachmentIds:[id]}; update_lead {prospectId, fields:{companyName?, tradeName?, contactName?, city?, state?, industry?, employees?}};',
   'show_replies {}; show_dns_records {}; show_capabilities {}; connect_email {email, provider:"smtp"|"resend", password?|apiKey?, smtpHost?, smtpPort?, fromName?};',
   'send_test_message {phone?|email?} — mensagem de TESTE da campanha para um destino, com dados de exemplo;',
+  'edit_content {channel, whatsappText?|text?|subject?} — TROCA o texto do canal pelo texto EXATO que o usuário pediu (sem ids);',
   'grant_whatsapp_consent {name} — registra o consentimento WhatsApp de um lead (atesto do dono);',
   'select_leads {add:[id], remove:[id]} ou {set:[id]}.',
   'Regras: nunca prometa disparo sem aprovação; nada é enviado automaticamente.',
@@ -533,6 +534,25 @@ function testMessageHint(userMessage) {
   ].join('\n');
 }
 
+/**
+ * TROCA DE MENSAGEM/CONTEÚDO pelo chat (QA 2026-10-06: o modelo emitia
+ * edit_content sem o contrato `contents` e a action falhava — "falou que
+ * trocou mas não trocou"). O modelo NÃO tem ids no estado: canal + texto
+ * basta (o servidor resolve o conteúdo base).
+ */
+const EDIT_CONTENT_RE = /\b(troc\w+|substitu\w+|alter\w+|edit\w+|mud\w+)\b[^.?!]{0,64}\b(mensagem|conte(ú|u)do|texto)\b/i;
+
+function editContentHint(userMessage) {
+  const msg = String(userMessage || '');
+  if (!EDIT_CONTENT_RE.test(msg)) return null;
+  return [
+    'TROCA DE CONTEÚDO — a action edit_content EXISTE e aceita canal + texto SEM ids:',
+    '{"type":"edit_content","channel":"whatsapp"|"email"|"linkedin_text","whatsappText":"<texto EXATO que o usuário pediu>"}',
+    '(para e-mail use "text" para o corpo e "subject" para o assunto). Copie o texto do usuário',
+    'ITERALMENTE — nunca resuma nem reescreva. O servidor resolve o conteúdo e pede confirmação.',
+  ].join('\n');
+}
+
 function emailConnectHint(userMessage) {
   const msg = String(userMessage || '');
   if (!EMAIL_CONNECT_RE.test(msg)) return null;
@@ -657,7 +677,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
       buildOrgBlock(extras),
       buildHistoryBlock(history),
       skills.selectFor(userMessage),
-      hintOverride || campaignManagementHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage),
+      hintOverride || campaignManagementHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage),
       `NOVA MENSAGEM DO USUÁRIO: ${userMessage}`,
       'Decida as ações e escreva a resposta para o usuário.',
     ]
@@ -805,6 +825,7 @@ module.exports = {
   extractChannelIntent,
   testMessageIntent,
   testMessageHint,
+  editContentHint,
   extractRenameTarget,
   extractCreateTarget,
   leadCaptureIntent,

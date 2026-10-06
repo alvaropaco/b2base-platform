@@ -1147,3 +1147,49 @@ test('QA: "manda a mensagem para a ANGULAR" envia TESTE ao LEAD REAL com os dado
     server.close();
   }
 });
+
+// ── QA 2026-10-06: troca de mensagem pelo chat sem ids (canal + texto) ──────
+
+test('QA: "troca a mensagem de whatsapp por X" edita o conteúdo (gate confirma, texto exato)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Vou trocar a mensagem.',
+          actions: [{ type: 'edit_content', channel: 'whatsapp', whatsappText: 'Oi! Teste direto sem rodeio.' }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Troca', channels: ['whatsapp'] });
+    prisma.studioContent.rows.push({
+      id: 'cw-1', orgId: 'org-1', campaignId: c.data.id, channel: 'whatsapp',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      whatsappText: 'Texto ANTIGO da campanha.', emailDoc: null,
+    });
+
+    // 1ª volta: gate de confirmação (alterar artefato existente pede licença).
+    const first = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'troca a mensagem de whatsapp por: Oi! Teste direto sem rodeio.',
+    });
+    const confirmCard = first.body.data.cards.find((card) => card.type === 'confirm_change');
+    assert.ok(confirmCard, 'gate pede confirmação');
+    assert.equal(prisma.studioContent.rows[0].whatsappText, 'Texto ANTIGO da campanha.', 'nada muda sem confirmar');
+
+    // 2ª volta: aprovação textual → executa com o texto EXATO.
+    const second = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'pode sim' });
+    assert.equal(second.res.status, 200);
+    const edited = second.body.data.cards.find((card) => card.type === 'content_edited');
+    assert.ok(edited, 'card de conteúdo editado');
+    assert.equal(
+      prisma.studioContent.rows[0].whatsappText,
+      'Oi! Teste direto sem rodeio.',
+      'texto EXATO do usuário gravado'
+    );
+  } finally {
+    server.close();
+  }
+});

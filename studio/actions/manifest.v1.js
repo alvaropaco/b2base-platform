@@ -274,11 +274,17 @@ function validate(action, params = {}) {
       return true;
     }
     case 'edit_content': {
-      const ok = Array.isArray(params.contents) &&
+      // QA 2026-10-06: "troca a mensagem por <texto>" — o modelo NÃO tem o id
+      // do conteúdo no estado; canal + texto basta (o handler resolve o
+      // conteúdo base da campanha server-side).
+      const hasContents = Array.isArray(params.contents) &&
         params.contents.length > 0 &&
         params.contents.every((c) => c && typeof c.id === 'string' && c.id);
-      if (!ok) {
-        const err = new Error('edit_content exige `contents` (lista não vazia de { id, ...campos }).');
+      const hasChannelText = Boolean(
+        params.channel && (params.whatsappText != null || params.text != null)
+      );
+      if (!hasContents && !hasChannelText) {
+        const err = new Error('edit_content exige `contents` (lista com ids) OU `channel` + texto (whatsappText/text).');
         err.code = 'INVALID_ACTION_PARAMS';
         err.status = 400;
         throw err;
