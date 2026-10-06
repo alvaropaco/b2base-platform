@@ -1136,7 +1136,7 @@ function registerChatRoutes(router, context) {
           const account = await prisma.emailAccount.findFirst({
             // Mesma tolerância do painel: contas antigas (Gmail) gravam userId,
             // não tenantId — filtrar só por orgId escondia a conta.
-            where: { OR: [{ orgId }, { userId }], status: 'connected' },
+            where: { OR: [{ tenantId: orgId }, { userId }], status: 'connected' },
           });
           if (!account) throw httpError('NO_CHANNEL', 409, 'Nenhuma conta de e-mail de disparo conectada — me peça para conectar.');
           const renderedBody = renderTemplate(emailBlocksToText(emailContent.emailDoc), SAMPLE);
@@ -1193,7 +1193,7 @@ function registerChatRoutes(router, context) {
           const emailContentForLead = contents.find((c) => c.channel === 'email');
           if (emailContentForLead && lead.cnpjEmail) {
             const emailAccountLead = await prisma.emailAccount.findFirst({
-              where: { OR: [{ orgId }, { userId }], status: 'connected' },
+              where: { OR: [{ tenantId: orgId }, { userId }], status: 'connected' },
             });
             if (emailAccountLead) {
               const renderedLead = renderTemplate(emailBlocksToText(emailContentForLead.emailDoc), lead);
