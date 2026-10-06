@@ -97,7 +97,7 @@ async function dispatchImmediate(prisma, { campaign, compiled, userId, overrides
   if (channels.includes('whatsapp') && compiled.whatsappExecution) {
     const account = await autoSelectWhatsAppAccount(prisma, campaign.orgId);
     result.executionConfig.whatsappAccountId = account.id;
-    await prisma.whatsappCampaign.update({
+    await prisma.whatsAppCampaign.update({
       where: { id: compiled.whatsappExecution.id },
       data: { whatsappAccountId: account.id },
     });

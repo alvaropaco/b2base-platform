@@ -105,7 +105,7 @@ function registerAnalyticsRoutes(router, context) {
           });
         }
       }
-      const waMessages = await prisma.whatsappMessage.findMany({
+      const waMessages = await prisma.whatsAppMessage.findMany({
         where: { campaign: undefined, conversation: undefined },
       });
       void waMessages; // (inbox WhatsApp já exposto no WhatsAppView; v1 mantém)

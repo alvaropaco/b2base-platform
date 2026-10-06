@@ -30,7 +30,7 @@ async function channelExecutions(prisma, campaign) {
     if (e) execs.push({ kind: 'email', row: e });
   }
   if (campaign.whatsappExecutionId) {
-    const w = await prisma.whatsappCampaign.findUnique({ where: { id: campaign.whatsappExecutionId } });
+    const w = await prisma.whatsAppCampaign.findUnique({ where: { id: campaign.whatsappExecutionId } });
     if (w) execs.push({ kind: 'whatsapp', row: w });
   }
   return execs;
@@ -69,12 +69,12 @@ async function approveFirstBatch(prisma, campaign) {
     const guardrailsData = { ...(row.guardrails || {}), firstBatchApprovedAt: approvedAt };
     await (kind === 'email'
       ? prisma.outreachCampaign.update({ where: { id: row.id }, data: { guardrails: guardrailsData } })
-      : prisma.whatsappCampaign.update({ where: { id: row.id }, data: { guardrails: guardrailsData } }));
+      : prisma.whatsAppCampaign.update({ where: { id: row.id }, data: { guardrails: guardrailsData } }));
     row.guardrails = guardrailsData;
 
     const contacts = kind === 'email'
       ? await prisma.outreachContact.findMany({ where: { campaignId: row.id } })
-      : await prisma.whatsappCampaignContact.findMany({ where: { campaignId: row.id } });
+      : await prisma.whatsAppCampaignContact.findMany({ where: { campaignId: row.id } });
     for (const contact of contacts.slice(0, 10)) {
       const prospect = await prisma.prospect.findUnique({ where: { id: contact.prospectId } });
       sample.push({ prospectId: contact.prospectId, companyName: prospect?.companyName || null, channel: kind });
@@ -132,7 +132,7 @@ async function evaluateAnomaly(prisma, campaign) {
     };
     await (kind === 'email'
       ? prisma.outreachCampaign.update({ where: { id: row.id }, data: { guardrails: guardrailsData } })
-      : prisma.whatsappCampaign.update({ where: { id: row.id }, data: { guardrails: guardrailsData } }));
+      : prisma.whatsAppCampaign.update({ where: { id: row.id }, data: { guardrails: guardrailsData } }));
   }
   await prisma.studioCampaign.update({
     where: { id: campaign.id },

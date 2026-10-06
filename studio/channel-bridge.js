@@ -105,8 +105,7 @@ async function persistResolvedAttachments(prisma, { campaign, channel, resolutio
     }).catch((err) => console.error('[studio:bridge] falha ao persistir anexos de e-mail:', err.message));
   }
   if (channel === 'whatsapp' && campaign.whatsappExecutionId) {
-    const model = prisma.whatsAppCampaign || prisma.whatsappCampaign;
-    await model.update({
+    await prisma.whatsAppCampaign.update({
       where: { id: campaign.whatsappExecutionId },
       data: { studioAttachments: resolution.included },
     }).catch((err) => console.error('[studio:bridge] falha ao persistir mídia de WhatsApp:', err.message));
@@ -115,11 +114,11 @@ async function persistResolvedAttachments(prisma, { campaign, channel, resolutio
 }
 
 /**
- * fake-prisma expõe `whatsappCampaignContact`; o client real Prisma expõe
- * `whatsAppCampaignContact`. Resolver mantém o bridge compatível com ambos.
+ * Client do model `WhatsAppCampaignContact` (casing canônico do schema — o
+ * fake-prisma aliasa para o mesmo store).
  */
 function waContactModel(prisma) {
-  return prisma.whatsAppCampaignContact || prisma.whatsappCampaignContact;
+  return prisma.whatsAppCampaignContact;
 }
 
 /**
@@ -261,27 +260,27 @@ function compileSteps(baseContent, followupContents = []) {
  */
 async function ensureWhatsAppExecution(prisma, campaign, content, followupContents = []) {
   const existing = campaign.whatsappExecutionId
-    ? await prisma.whatsappCampaign.findUnique({ where: { id: campaign.whatsappExecutionId } })
+    ? await prisma.whatsAppCampaign.findUnique({ where: { id: campaign.whatsappExecutionId } })
     : null;
   if (existing) return existing;
 
   // Mesma reconciliação da unique (ver ensureEmailExecution): re-aprovação
   // reusa a execução e RECOMPILA os steps com o conteúdo atual.
-  const byStudio = await prisma.whatsappCampaign.findUnique({ where: { studioCampaignId: campaign.id } });
+  const byStudio = await prisma.whatsAppCampaign.findUnique({ where: { studioCampaignId: campaign.id } });
   if (byStudio) {
     const steps = compileSteps(content, followupContents);
-    if (typeof prisma.whatsappSequenceStep.deleteMany === 'function') {
-      await prisma.whatsappSequenceStep.deleteMany({ where: { campaignId: byStudio.id } });
+    if (typeof prisma.whatsAppSequenceStep.deleteMany === 'function') {
+      await prisma.whatsAppSequenceStep.deleteMany({ where: { campaignId: byStudio.id } });
     }
     for (const step of steps) {
-      await prisma.whatsappSequenceStep.create({
+      await prisma.whatsAppSequenceStep.create({
         data: { campaignId: byStudio.id, ...step },
       });
     }
     return byStudio;
   }
 
-  const created = await prisma.whatsappCampaign.create({
+  const created = await prisma.whatsAppCampaign.create({
     data: {
       orgId: campaign.orgId,
       name: `[Studio] ${campaign.name}`,
@@ -295,7 +294,7 @@ async function ensureWhatsAppExecution(prisma, campaign, content, followupConten
   });
 
   for (const step of compileSteps(content, followupContents)) {
-    await prisma.whatsappSequenceStep.create({
+    await prisma.whatsAppSequenceStep.create({
       data: { campaignId: created.id, ...step },
     });
   }
@@ -343,11 +342,11 @@ async function enrollAudience(prisma, { snapshot, emailExecution, whatsappExecut
         whatsappSkippedNoConsent += 1; // fora do WhatsApp — regra `no_consent`
         continue;
       }
-      const exists = await prisma.whatsappCampaignContact.findFirst({
+      const exists = await prisma.whatsAppCampaignContact.findFirst({
         where: { campaignId: whatsappExecution.id, prospectId: member.prospectId },
       });
       if (!exists) {
-        await prisma.whatsappCampaignContact.create({
+        await prisma.whatsAppCampaignContact.create({
           data: { campaignId: whatsappExecution.id, prospectId: member.prospectId, status: 'QUEUED' },
         });
         enrolled += 1;
@@ -574,7 +573,7 @@ async function syncPendingTemplates(prisma, campaign) {
 
   // ── WhatsApp: stepIndex 1-based do Studio ↔ 0-based do motor ────────────
   if (campaign.whatsappExecutionId) {
-    const steps = await prisma.whatsappSequenceStep.findMany({
+    const steps = await prisma.whatsAppSequenceStep.findMany({
       where: { campaignId: campaign.whatsappExecutionId },
     });
     const contactIds = (await waContactModel(prisma).findMany({
@@ -600,7 +599,7 @@ async function syncPendingTemplates(prisma, campaign) {
         continue;
       }
       if (step.messageTemplate === content.whatsappText) continue; // sem mudança
-      await prisma.whatsappSequenceStep.update({
+      await prisma.whatsAppSequenceStep.update({
         where: { id: step.id },
         data: { messageTemplate: content.whatsappText },
       });

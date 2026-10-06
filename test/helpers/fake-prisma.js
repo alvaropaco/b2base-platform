@@ -242,6 +242,15 @@ function createFakePrisma() {
   // com o MESMO store (a variante `whatsappAccount` permanece para testes
   // antigos; NUNCA criar model novo com casing divergente do schema).
   db.whatsAppAccount = db.whatsappAccount;
+  // QA 2026-10-06 (disparo WhatsApp em produção): mesmo alinhamento para os
+  // demais models WhatsApp* — o código do caminho de disparo usava casing
+  // lowercase (`prisma.whatsappCampaign`) que NÃO existe no client real
+  // ("Cannot read properties of undefined (reading 'findUnique')").
+  // (whatsAppMessage/whatsAppConversation JÁ são canônicos no fake — nunca
+  // aliasar por cima de um model que já existe com o nome certo.)
+  db.whatsAppCampaign = db.whatsappCampaign;
+  db.whatsAppSequenceStep = db.whatsappSequenceStep;
+  db.whatsAppCampaignContact = db.whatsappCampaignContact;
   return db;
 }
 

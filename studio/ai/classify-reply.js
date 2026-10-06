@@ -110,7 +110,7 @@ function createReplyClassifier({ callLlm } = {}) {
       where: { prospectId, status: 'QUEUED' },
       data: { status: 'CANCELLED', cancelReason: 'unsubscribed' },
     });
-    await prisma.whatsappCampaignContact.updateMany({
+    await prisma.whatsAppCampaignContact.updateMany({
       where: { prospectId, status: 'QUEUED' },
       data: { status: 'OPTED_OUT', cancelReason: 'opted_out' },
     });

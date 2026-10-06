@@ -108,7 +108,7 @@ async function stopAllChannels(prisma, { orgId, prospectId, reason }) {
     where: { prospectId, status: 'QUEUED' },
     data: { status: 'CANCELLED', cancelReason: reason },
   });
-  await prisma.whatsappCampaignContact.updateMany({
+  await prisma.whatsAppCampaignContact.updateMany({
     where: { prospectId, status: 'QUEUED' },
     data: { status: 'CANCELLED', cancelReason: reason },
   });
