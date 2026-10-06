@@ -282,6 +282,53 @@ test('outreach processSend: falha definitiva estorna 1 unidade idempotente (AD-1
   assert.equal(credits.length, 1, 'unique (type, refId) impede duplo estorno');
 });
 
+// ── SC-011: nenhuma placeholder crua sai ao lead (gate no envio) ─────────────
+
+test('SC-011: processSend remove placeholder residual antes de enviar (incidente 2026-10)', async () => {
+  const prisma = createFakePrisma();
+  prisma.organization.rows.push({ id: 'org-1', studioSendPaused: false });
+  prisma.outreachCampaign.rows.push({ id: 'camp-1', tenantId: 'org-1', status: 'active' });
+  prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'resend', email: 'venda@empresa.com', status: 'connected' });
+  prisma.outreachContact.rows.push({
+    id: 'ct-1', campaignId: 'camp-1', prospectId: 'lead-1', status: 'SCHEDULED', emailAccount_id: 'ea-1',
+    campaign: { id: 'camp-1', tenantId: 'org-1', status: 'active', sequence: [] },
+  });
+  prisma.outreachMessage.rows.push({
+    id: 'msg-ph', contactId: 'ct-1', status: 'SCHEDULED',
+    subject: 'Garantimos Leads quentes',
+    body: 'Olá {{firstName}}, tudo bem?\n\nAqui é o(a) B2Base. Garantimos Leads quentes.',
+    htmlBody: '<p>Olá {{firstName}}, tudo bem?</p>',
+    contact: { campaign: { tenantId: 'org-1', status: 'active', studioAttachments: null }, emailAccount_id: 'ea-1', prospectId: 'lead-1', status: 'SCHEDULED' },
+  });
+  prisma.prospect.rows.push({ id: 'lead-1', orgId: 'org-1', cnpjEmail: 'contato@lead.com.br' });
+
+  const emailProvider = require('../email-provider');
+  const sent = [];
+  const realSend = emailProvider.sendEmailForAccount;
+  emailProvider.sendEmailForAccount = async (_prisma, _accountId, payload) => {
+    sent.push(payload);
+    return { messageId: 'pm-1', threadId: 'th-1' };
+  };
+  const workers = require('../outreach-workers');
+  workers._setPrismaForTests(prisma);
+  workers._setQueueFactoryForTests(() => ({ add: async () => ({ id: 'j' }), getJob: async () => null }));
+  try {
+    const result = await workers.processSend({ data: { messageId: 'msg-ph' }, attemptsMade: 0, opts: { attempts: 3 }, id: 'job-ph' });
+    assert.ok(result.messageId, 'envio seguiu após sanitizar');
+    assert.equal(sent.length, 1, 'provider chamado 1×');
+    assert.ok(!sent[0].body.includes('{{'), 'placeholder removida do corpo ENVIADO');
+    assert.ok(!sent[0].htmlBody.includes('{{'), 'placeholder removida do html ENVIADO');
+    assert.ok(!sent[0].subject.includes('{{'), 'subject limpo');
+    assert.match(sent[0].body, /Olá, tudo bem\?/, 'sem rastro de espaço pendurado');
+    const stored = prisma.outreachMessage.rows.find((m) => m.id === 'msg-ph');
+    assert.ok(!stored.body.includes('{{'), 'banco reflete o que foi enviado');
+    assert.equal(stored.status, 'SENT');
+  } finally {
+    emailProvider.sendEmailForAccount = realSend;
+    workers._setQueueFactoryForTests(() => {});
+  }
+});
+
 // ── Caminho WhatsApp do scheduler (waContactModel — AD-5/AD-14) ──────────────
 
 test('tick WA: libera via waContactModel, marca nextSendAt e debita o canal', async () => {

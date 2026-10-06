@@ -18,7 +18,7 @@ const { createWorker, registerWorker } = require('./outreach-queues');
 const { listHistory } = require('./gmail-api');
 const emailProvider = require('./email-provider');
 const { checkLimit, calculateDelay, getConfig: getRateConfig } = require('./outreach-rate-limiter');
-const { renderTemplate } = require('./whatsapp-utils');
+const { renderTemplate, stripUnresolvedPlaceholders } = require('./whatsapp-utils');
 const orgContext = require('./org-context');
 const metrics = require('./metrics');
 
@@ -302,7 +302,15 @@ async function processPrepare(job) {
       history,
     });
     if (ai) {
-      generated = ai;
+      // A IA lê a base/template do contexto e pode COPIAR placeholders
+      // ({{firstName}} etc. — incidente de 2026-10). Renderiza com o lead
+      // real: conhecidas viram dado, desconhecidas somem (SC-011).
+      generated = {
+        ...ai,
+        subject: renderTemplate(ai.subject || '', lead),
+        body: renderTemplate(ai.body || '', lead),
+        htmlBody: plainBodyToHtml(renderTemplate(ai.body || '', lead)),
+      };
       compositionOrigin = 'ai';
     } else {
       // FR-005/FR-006: sem IA e sem template do tenant, a base vem do perfil
@@ -317,10 +325,12 @@ async function processPrepare(job) {
         console.warn(`[prepare] prospect ${prospectId}: sem base de mensagem (template ausente + perfil não configurado) — envio cancelado`);
         return { skipped: true, reason: 'no_base_message' };
       }
+      // A base do perfil contém placeholders ({{firstName}} — incidente de
+      // 2026-10: saíram LITERAIS para 159 leads). Renderiza POR LEAD aqui.
       generated = {
-        subject: base.subject,
-        body: base.body,
-        htmlBody: plainBodyToHtml(base.body),
+        subject: renderTemplate(base.subject, lead),
+        body: renderTemplate(base.body, lead),
+        htmlBody: plainBodyToHtml(renderTemplate(base.body, lead)),
         reasoningFacts: ['profile_base'],
       };
       compositionOrigin = 'profile_base';
@@ -691,6 +701,21 @@ async function processSend(job) {
       attachmentsSkipped.push({ attachmentId: ref.attachmentId, fileName: ref.fileName, reason: `arquivo_ilegivel: ${attachErr.message}` });
     }
   }
+  // SC-011 — ÚLTIMA linha de defesa no envio: NENHUMA placeholder crua sai
+  // ao lead, venha o corpo de onde vier (incidente de 2026-10-06: base por
+  // perfil com "{{firstName}}" literal em 159 mensagens SENT). Sanitiza,
+  // persiste o que foi enviado e segue.
+  const sanitized = {
+    subject: stripUnresolvedPlaceholders(message.subject),
+    body: stripUnresolvedPlaceholders(message.body),
+    htmlBody: stripUnresolvedPlaceholders(message.htmlBody),
+  };
+  if (sanitized.subject !== message.subject || sanitized.body !== message.body || sanitized.htmlBody !== message.htmlBody) {
+    console.warn(`[send] ⊘ placeholder não resolvida removida da mensagem ${messageId} (SC-011)`);
+    Object.assign(message, sanitized);
+    await prisma.outreachMessage.update({ where: { id: messageId }, data: sanitized }).catch(() => {});
+  }
+
   let result;
   try {
     result = await emailProvider.sendEmailForAccount(prisma, message.contact.emailAccount_id, {

@@ -147,6 +147,12 @@ test('US3 email: sem template + IA falha + perfil configurado → base por perfi
   assert.strictEqual(message.compositionOrigin, 'profile_base');
   assert.ok(message.body.includes('MB Máquinas'), 'identidade do tenant');
   assert.ok(/corte e dobra de precisão/i.test(message.body), 'proposta de valor do tenant');
+  // QA 2026-10-06 (159 leads receberam "{{firstName}}" literal): a base do
+  // perfil é renderizada POR LEAD — nome resolvido, zero placeholder crua.
+  assert.ok(message.body.includes('Olá Mariana'), 'saudação com o nome do lead');
+  assert.ok(!message.body.includes('{{'), 'nenhum placeholder residual no body');
+  assert.ok(!message.subject.includes('{{'), 'nenhum placeholder no subject');
+  assert.ok(!message.htmlBody.includes('{{'), 'nenhum placeholder no htmlBody');
   // Nenhum texto genérico da plataforma (FR-005): sem "agendar uma conversa
   // rápida de 15 min" do antigo _templateFallback.
   assert.ok(!/agendar uma conversa rápida de 15 min/i.test(message.body));

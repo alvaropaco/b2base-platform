@@ -85,12 +85,23 @@ function renderTemplate(template, lead) {
   for (const [key, value] of Object.entries(vars)) {
     out = out.replace(new RegExp('\\{\\{\\s*' + key + '\\s*\\}\\}', 'g'), value);
   }
-  // Remove placeholders não resolvidos (evita enviar `{{...}}` cru ao lead).
-  out = out.replace(/\{\{\s*[\w.]+\s*\}\}/g, '');
-  // Placeholder vazio (lead sem pessoa de contato): a frase não pode ficar
-  // com pontuação/espaço pendurados — "Olá , tudo bem?" → "Olá, tudo bem?".
-  out = out.replace(/[ \t]+([,;.!?])/g, '$1').replace(/[ \t]{2,}/g, ' ');
-  return out.trim();
+  return stripUnresolvedPlaceholders(out);
+}
+
+/**
+ * Garantia SC-011 como função pura: nenhuma placeholder `{{...}}` residual
+ * chega ao lead. Usada no fim do renderTemplate e, como cinto-e-suspensório,
+ * no próprio envio (outreach-workers.processSend) — incidente 2026-10-06:
+ * base por perfil composta com "{{firstName}}" e enviada literal (159 leads).
+ * Remove o placeholder e arruma o rastro de espaço/pontuação pendurada
+ * ("Olá , tudo bem?" → "Olá, tudo bem?").
+ */
+function stripUnresolvedPlaceholders(text) {
+  return String(text || '')
+    .replace(/\{\{\s*[\w.]+\s*\}\}/g, '')
+    .replace(/[ \t]+([,;.!?])/g, '$1')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
 }
 
 // ─── Opt-out ─────────────────────────────────────────────────────────────────
@@ -221,6 +232,7 @@ module.exports = {
   toChatId,
   phoneFromChatId,
   renderTemplate,
+  stripUnresolvedPlaceholders,
   buildTemplateVars,
   isOptOutMessage,
   OPT_OUT_KEYWORDS,
