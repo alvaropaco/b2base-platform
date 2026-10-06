@@ -1106,10 +1106,21 @@ function registerChatRoutes(router, context) {
         if (contents.length === 0) {
           throw httpError('NO_CONTENT', 409, 'A campanha ainda não tem mensagem gerada — me peça para gerar antes do teste.');
         }
+        // Exemplo com os DADOS DO DONO (QA 2026-10-06: o teste precisa
+        // mostrar a variável de nome resolvendo com o nome do PRÓPRIO
+        // usuário — persona fictícia "Mariana" confundia o teste).
+        const [userRow, ownerSettings] = await Promise.all([
+          prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } }),
+          prisma.commercialSettings.findUnique({ where: { orgId }, select: { companyName: true } }),
+        ]);
+        const ownerName =
+          userRow?.name ||
+          (userRow?.email ? String(userRow.email.split('@')[0][0].toUpperCase() + userRow.email.split('@')[0].slice(1)) : null) ||
+          'Mariana Silva';
         const SAMPLE = {
           // Shape que o buildTemplateVars lê (firstName deriva de contactName).
-          contactName: 'Mariana Silva',
-          companyName: 'Transportes Alfa Ltda',
+          contactName: ownerName,
+          companyName: ownerSettings?.companyName || 'Transportes Alfa Ltda',
           city: 'Curitiba',
           industry: 'Transporte rodoviário de carga',
         };
@@ -1239,8 +1250,8 @@ function registerChatRoutes(router, context) {
           detail:
             (reportLines.length > 0 ? `${reportLines.join('\n')}\n\n` : '') +
             (parts.length > 0
-              ? `Destinos manuais saem com dados de exemplo (${SAMPLE.contactName}, ${SAMPLE.companyName}); leads recebem os DADOS REAIS deles. `
-              : 'Fora da fila e sem gastar o saldo — só coloco em voo quando você pedir. Teste quantas vezes quiser.'),
+              ? `Todo teste sai com a variável de nome resolvendo — para destino manual, com o SEU nome (${SAMPLE.contactName}); para leads, com o nome real deles. `
+              : 'Fora da fila e sem gastar o saldo — só coloco em voo quando você pedir. Teste quantas vezes quiser: toda mensagem sai com a variável de nome resolvendo.'),
         };
       }
 

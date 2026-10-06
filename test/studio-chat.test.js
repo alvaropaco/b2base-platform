@@ -947,6 +947,8 @@ test('QA: "envie uma mensagem padrão para o número X" envia TESTE pelo WhatsAp
     return { providerMessageId: 'wam.teste123' };
   };
   try {
+    // O exemplo do teste usa os DADOS DO DONO (não persona fictícia).
+    prisma.user.rows.push({ id: 'user-1', name: 'Alvaro Paco', email: 'alvaro@empresa.com' });
     const { body: c } = await api('POST', '/campaigns', { name: 'Teste antes', channels: ['email', 'whatsapp'] });
     prisma.studioContent.rows.push({
       id: 'cw1', orgId: 'org-1', campaignId: c.data.id, channel: 'whatsapp',
@@ -963,9 +965,11 @@ test('QA: "envie uma mensagem padrão para o número X" envia TESTE pelo WhatsAp
     const card = body.data.cards.find((card) => card.type === 'test_message_sent');
     assert.ok(card, 'card de teste enviado');
     assert.match(card.detail, /WhatsApp para 5512996572002/, 'destino normalizado com DDI no card');
+    assert.match(card.detail, /texto que saiu/, 'card mostra o texto exato enviado');
+    assert.match(card.detail, /Alvaro/, 'card revela o nome usado');
     assert.equal(sent.length, 1, 'UM envio de teste');
     assert.ok(/12\s?996572002|5512996572002/.test(sent[0].chatId), 'chatId derivado do número da frase');
-    assert.match(sent[0].text, /Mariana/, 'variáveis renderizadas com dados de exemplo');
+    assert.match(sent[0].text, /Alvaro/, 'variável de nome resolve com o NOME DO DONO (não persona fictícia)');
     assert.ok(!sent[0].text.includes('{{'), 'nenhuma placeholder crua no teste');
     // NADA foi para a fila/audiência/leads.
     assert.equal(prisma.outreachMessage.rows.length, 0, 'nenhuma mensagem de campanha criada');
