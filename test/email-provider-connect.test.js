@@ -83,6 +83,59 @@ test('connect Resend sem domínio verificado falha cedo e não registra nada', a
   }
 });
 
+test('QA 7ª bateria: domínio CADASTRADO mas pendente diz o status e o próximo passo', async () => {
+  const restore = stubResend([
+    { name: 'empresa.com', status: 'pending' },
+    { name: 'resend.empresa.com', status: 'verified' },
+  ]);
+  try {
+    const prisma = seedOrgUser(createFakePrisma());
+    await assert.rejects(
+      () =>
+        emailProvider.connectEmailAccount(prisma, {
+          provider: 'resend',
+          email: 'vendas@empresa.com',
+          secret: 're_chave',
+          userId: 'user-1',
+        }),
+      (err) => {
+        assert.match(err.message, /está cadastrado na conta dessa API key/);
+        assert.match(err.message, /status: pending/);
+        assert.match(err.message, /voce@resend\.empresa\.com/, 'sugere endereço no domínio já verificado');
+        return true;
+      }
+    );
+    assert.equal(prisma.emailAccount.rows.length, 0);
+  } finally {
+    restore();
+  }
+});
+
+test('QA 7ª bateria: domínio nem cadastrado diz para adicionar no Resend e sugere o verificado', async () => {
+  const restore = stubResend([{ name: 'resend.empresa.com', status: 'verified' }]);
+  try {
+    const prisma = seedOrgUser(createFakePrisma());
+    await assert.rejects(
+      () =>
+        emailProvider.connectEmailAccount(prisma, {
+          provider: 'resend',
+          email: 'vendas@empresa.com',
+          secret: 're_chave',
+          userId: 'user-1',
+        }),
+      (err) => {
+        assert.match(err.message, /nem cadastrado nesta conta da API key/);
+        assert.match(err.message, /adicione "empresa\.com"/);
+        assert.match(err.message, /voce@resend\.empresa\.com/);
+        return true;
+      }
+    );
+    assert.equal(prisma.emailAccount.rows.length, 0);
+  } finally {
+    restore();
+  }
+});
+
 test('reconectar Resend atualiza o estado de autenticação da conta existente', async () => {
   const restore = stubResend([{ name: 'empresa.com', status: 'verified' }]);
   try {

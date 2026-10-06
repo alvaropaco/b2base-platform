@@ -469,6 +469,11 @@ function emailConnectHint(userMessage) {
     plataformaTemKey
       ? 'A plataforma TEM key Resend própria (fato do servidor): se o usuário não tiver a dele, emita provider "resend" SEM apiKey e diga que vai usar a chave da plataforma.'
       : 'A plataforma NÃO TEM key Resend própria neste ambiente (fato do servidor): NUNCA mencione "chave da plataforma" — peça a API key do Resend do PRÓPRIO USUÁRIO (apiKey, começa com "re_") ou SMTP com senha de app (password).',
+    'RESEND + DOMÍNIO (QA 2026-10-06): o domínio do ENDEREÇO precisa constar como "Verified" na conta da API key —',
+    'subdomínio verificado (ex.: resend.dominio.com) NÃO libera endereços no domínio raiz (@dominio.com). Se o',
+    'usuário pedir um remetente no domínio raiz e só houver subdomínio verificado, ofereça os dois caminhos:',
+    '(a) conectar um endereço no subdomínio já verificado, ou (b) verificar o domínio raiz no painel do Resend',
+    '(adicionar o domínio e publicar os registros DKIM/SPF) antes de conectar.',
   ].join('\n');
 }
 

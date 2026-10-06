@@ -366,11 +366,28 @@ async function connectEmailAccount(
     const verified = domains.filter((d) => d.status === 'verified').map((d) => d.name.toLowerCase());
     resendDomain = email.split('@')[1]?.toLowerCase();
     if (!verified.includes(resendDomain)) {
-      const options = verified.length ? verified.join(', ') : 'nenhum domínio verificado';
-      throw new Error(
-        `O domínio "${resendDomain}" não está verificado no Resend (verificados: ${options}). ` +
-        'Configure SPF/DKIM do domínio no painel do Resend ou use um endereço em domínio verificado.'
-      );
+      // QA 2026-10-06: "verificados: resend.0xcloud.net" não dizia se o
+      // domínio pedido estava CADASTRADO e pendente ou nem existia — o dono
+      // ficou sem próximo passo. O diagnóstico separa os dois casos e dá o
+      // caminho curto (endereço no domínio que JÁ está verificado).
+      const registered = domains.find((d) => String(d.name).toLowerCase() === resendDomain);
+      let why;
+      if (registered) {
+        why =
+          `O domínio "${resendDomain}" está cadastrado na conta dessa API key, mas ainda não está verificado no Resend ` +
+          `(status: ${registered.status || 'pending'}). No painel do Resend → Domains, confira se os registros ` +
+          `DKIM/SPF de "${resendDomain}" estão publicados e peça a reverificação; quando ficar "Verified", me peça para conectar de novo.`;
+      } else {
+        const options = verified.length ? `verificados nesta conta: ${verified.join(', ')}` : 'a conta ainda não tem nenhum domínio verificado';
+        why =
+          `O domínio "${resendDomain}" não está verificado no Resend — nem cadastrado nesta conta da API key (${options}). ` +
+          `No painel do Resend → Domains, adicione "${resendDomain}" e publique os registros DKIM/SPF que ele sugerir; ` +
+          'quando ficar "Verified", me peça para conectar de novo.';
+      }
+      if (verified.length) {
+        why += ` Enquanto isso, já dá para conectar um endereço do domínio já verificado — por exemplo, voce@${verified[0]}.`;
+      }
+      throw new Error(why);
     }
   }
 

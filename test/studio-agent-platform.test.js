@@ -483,10 +483,12 @@ test('bug 2/6: show_replies, show_dns_records, show_capabilities e update_lead',
     });
     assert.equal(foreign.res.status, 404, 'lead de outra org nunca é tocado');
 
-    // DNS: sem conta de e-mail conectada → recusa honesta (não inventa registros).
+    // DNS: sem conta de e-mail conectada → recusa honesta (não inventa registros)
+    // e CHAT-FIRST: orienta conectar pelo próprio chat, não pelo painel.
     const dns = await api('POST', `/campaigns/${c.data.id}/actions`, { type: 'show_dns_records' });
     assert.equal(dns.body.data.card.type, 'dns_records');
-    assert.ok(dns.body.data.card.detail.includes('Conecte'));
+    assert.ok(dns.body.data.card.detail.includes('conecto aqui mesmo pelo chat'));
+    assert.ok(!dns.body.data.card.detail.includes('painel'), 'não manda para o painel');
   } finally {
     server.close();
   }

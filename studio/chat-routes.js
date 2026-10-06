@@ -969,12 +969,12 @@ function registerChatRoutes(router, context) {
           return {
             type: 'dns_records',
             label: 'Nenhum domínio de envio conectado ainda',
-            detail: 'Conecte sua conta de e-mail primeiro (painel de canais) que eu te mostro os registros DNS do domínio.',
+            detail: 'Me passe o e-mail de disparo com a API key do Resend (ou SMTP + senha de app) que eu conecto aqui mesmo pelo chat — e aí te mostro os registros DNS do domínio.',
           };
         }
         const domain = accounts[0].sendingDomain || dnsVerify.domainFromEmail(accounts[0].email);
         if (!domain) {
-          return { type: 'dns_records', label: 'Domínio de envio desconhecido', detail: 'A conta de e-mail conectada não tem domínio identificável — confira no painel de canais.' };
+          return { type: 'dns_records', label: 'Domínio de envio desconhecido', detail: 'A conta de e-mail conectada não tem domínio identificável — me informe o endereço completo que eu reverifico.' };
         }
         const detail = await dnsVerify.checkDomain(domain);
         const mark = (ok) => (ok ? '✅' : '⬜');
