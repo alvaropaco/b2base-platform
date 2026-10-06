@@ -1193,3 +1193,38 @@ test('QA: "troca a mensagem de whatsapp por X" edita o conteúdo (gate confirma,
     server.close();
   }
 });
+
+test('QA: variável snake_case do usuário ({{first_name}}) é normalizada para o catálogo ({{firstName}})', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Vou trocar.',
+          actions: [{ type: 'edit_content', channel: 'whatsapp', whatsappText: 'Oi {{first_name}}, tudo com {{company_name}}?' }],
+        }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Snake', channels: ['whatsapp'] });
+    prisma.studioContent.rows.push({
+      id: 'cw-snake', orgId: 'org-1', campaignId: c.data.id, channel: 'whatsapp',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      whatsappText: 'antigo', emailDoc: null,
+    });
+    // 1ª volta: gate; 2ª: confirma.
+    await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'troca a mensagem por: Oi {{first_name}}, tudo com {{company_name}}?' });
+    const second = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'pode' });
+    const edited = second.body.data.cards.find((card) => card.type === 'content_edited');
+    assert.ok(edited, 'validação FR-033 aceitou após normalizar');
+    assert.strictEqual(
+      prisma.studioContent.rows[0].whatsappText,
+      'Oi {{firstName}}, tudo com {{companyName}}?',
+      'apelidos normalizados para o catálogo'
+    );
+  } finally {
+    server.close();
+  }
+});

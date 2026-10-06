@@ -18,6 +18,7 @@ const { createChatAgent, extractRenameTarget, extractCreateTarget, leadCaptureIn
 const { createComposer } = require('./ai/compose');
 const { createExtractor } = require('./ai/extract');
 const { generateAndStorePackage, generateAndStoreWhatsApp } = require('./compose-service');
+const variables = require('./variables');
 const segmentService = require('./segment-service');
 const campaignService = require('./campaign-service');
 const { createMaterialService } = require('./material-service');
@@ -1543,13 +1544,21 @@ function registerChatRoutes(router, context) {
             throw httpError('NO_CONTENT', 409, 'A campanha não tem conteúdo desse canal para editar — me peça para gerar primeiro.');
           }
           const text = action.whatsappText != null ? String(action.whatsappText) : action.text != null ? String(action.text) : null;
+          // O usuário escreve variáveis em snake_case ({{first_name}}); o
+          // catálogo é camelCase ({{firstName}}) — apelidos conhecidos são
+          // normalizados aqui, senão a validação FR-033 rejeita o texto dele.
+          const normalizeVars = (t) => String(t).replace(/\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g, (raw, name) => {
+            if (variables.CATALOG[name]) return raw;
+            const camel = name.replace(/_([a-zA-Z0-9])/g, (_, c) => c.toUpperCase());
+            return variables.CATALOG[camel] ? `{{${camel}}}` : raw;
+          });
           contents = rows.map((row) => {
             const patch = { id: row.id };
-            if (row.channel === 'whatsapp' && text != null) patch.whatsappText = text;
-            if (row.channel === 'linkedin_text' && text != null) patch.linkedinText = text;
-            if (row.channel === 'email' && action.subject != null) patch.subject = String(action.subject);
+            if (row.channel === 'whatsapp' && text != null) patch.whatsappText = normalizeVars(text);
+            if (row.channel === 'linkedin_text' && text != null) patch.linkedinText = normalizeVars(text);
+            if (row.channel === 'email' && action.subject != null) patch.subject = normalizeVars(String(action.subject));
             if (row.channel === 'email' && text != null) {
-              patch.emailDoc = { blocks: [{ type: 'text', text }] };
+              patch.emailDoc = { blocks: [{ type: 'text', text: normalizeVars(text) }] };
             }
             return patch;
           });
