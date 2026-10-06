@@ -996,10 +996,21 @@ function registerChatRoutes(router, context) {
         // MESMO serviço do POST /api/email/connect: valida as credenciais
         // (SMTP real / Resend API) ANTES de salvar; recusas viram card
         // explicável. Secret resolvido aqui — o Resend pode usar a key da
-        // plataforma quando o usuário não tem a dele.
+        // plataforma QUANDO ELA EXISTE (QA 2026-10-06: sem ela no ambiente a
+        // falha crua "API key obrigatória." não diz o que fazer; o erro tem
+        // que ser acionável e o modelo não pode prometer a chave).
         const emailProvider = overrides.emailProvider || require('../email-provider');
         const provider = action.provider === 'smtp' ? 'smtp' : 'resend';
         const secret = provider === 'smtp' ? action.password : (action.apiKey || process.env.RESEND_API_KEY);
+        if (!secret) {
+          throw httpError(
+            'EMAIL_CREDENTIAL_REQUIRED',
+            400,
+            provider === 'smtp'
+              ? 'Falta a senha de app do SMTP — me informe a App Password (e o host/porta, se não for Gmail).'
+              : 'Este ambiente não tem a chave Resend da plataforma — me passe a SUA API key do Resend (começa com "re_") ou prefira conectar por SMTP com uma senha de app.'
+          );
+        }
         const account = await emailProvider.connectEmailAccount(prisma, {
           provider,
           email: String(action.email),
@@ -1031,9 +1042,9 @@ function registerChatRoutes(router, context) {
             '**Campanhas** — criar, listar as da sua organização, renomear, duplicar e apagar (sempre confirmo antes de apagar).\n' +
             '**Jornada da campanha aberta** — objetivo, audiência por linguagem natural, ajuste fino de leads, captura de leads novos, conteúdo (gerar, editar e MOSTRAR aqui no chat) e agendamento.\n' +
             '**Aprovação** — aprovar a campanha pelo mesmo fluxo do Pré-voo e mostrar o que falta para poder disparar (saldo, certificado).\n' +
-            '**Canais** — mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
+            '**Canais** — conectar a conta de e-mail de disparo (Resend com a sua API key ou SMTP com senha de app), mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
             '**Leads** — consultar e editar dados de empresa/contato, e mostrar as respostas dos leads (interessados, reuniões, opt-outs).\n\n' +
-            'Não faço ainda: configurar o remetente no provedor de e-mail (só oriento os registros) e ler a caixa de entrada inteira fora das respostas classificadas.',
+            'Não faço ainda: publicar os registros DNS no provedor do domínio (eu mostro, você publica) e ler a caixa de entrada inteira fora das respostas classificadas.',
         };
 
       case 'set_schedule': {

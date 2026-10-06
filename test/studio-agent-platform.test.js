@@ -635,3 +635,43 @@ test('QA 6ª bateria: reconectar e-mail existente pede confirmação (gate do do
     server.close();
   }
 });
+
+test('QA 7ª bateria: connect_email Resend sem chave nenhuma → erro acionável, nunca promete chave da plataforma', async () => {
+  const llmImpl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Vou conectar pelo Resend.',
+          actions: [{ type: 'connect_email', email: 'vendas@empresa.com', provider: 'resend' }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl });
+  try {
+    delete process.env.RESEND_API_KEY; // ambiente SEM a key da plataforma (igual ao pod)
+    prisma.user.rows.push({ id: 'user-1', orgId: 'org-1' });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Sem chave', channels: ['email'] });
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'cadastra o email vendas@empresa.com para os disparos',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'error');
+    assert.ok(card, 'card de erro no thread');
+    assert.match(card.detail, /não tem a chave Resend da plataforma/i, 'erro diz o que fazer');
+    assert.doesNotMatch(card.detail, /API key obrigatória/i, 'não é mais a falha crua');
+    assert.ok(!prisma.emailAccount.rows.some((row) => row.email === 'vendas@empresa.com'), 'nada persistido');
+
+    // O hint carrega o fato determinístico para o modelo nunca prometer a chave.
+    const { emailConnectHint } = require('../studio/ai/chat-agent');
+    const hint = emailConnectHint('quero cadastrar meu email de disparo');
+    assert.match(hint, /NÃO TEM key Resend própria/i, 'hint reflete o ambiente real');
+    process.env.RESEND_API_KEY = 're_x';
+    assert.match(emailConnectHint('quero cadastrar meu email de disparo'), /TEM key Resend própria/i, 'hint reflete a key presente');
+  } finally {
+    delete process.env.RESEND_API_KEY;
+    server.close();
+  }
+});

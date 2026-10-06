@@ -128,7 +128,8 @@ const SYSTEM_PROMPT = [
   '  4. Agenda e disparo (set_schedule), aprovar a campanha (approve_campaign) e mostrar o que falta',
   '     para poder disparar (show_balance / certificado).',
   '  5. Domínio e canais: CONECTAR a conta de e-mail de disparo pelo chat',
-  '     (connect_email — SMTP com App Password ou Resend), mostrar os registros DNS',
+  '     (connect_email — SMTP com App Password ou Resend; no Resend, a API key é do USUÁRIO a menos que',
+  '     o servidor diga que a plataforma tem a própria), mostrar os registros DNS',
   '     (SPF/DKIM/DMARC) a publicar (show_dns_records) e parear o WhatsApp por QR',
   '     (start_whatsapp_pairing).',
   '  6. Leads: consultar dados do lead pelo estado, editar dados de empresa/contato (update_lead) e',
@@ -173,7 +174,7 @@ const SYSTEM_PROMPT = [
   '            {"type":"list_campaigns"},',
   '            {"type":"create_campaign","name":"Outbound indústrias"},',
   '            {"type":"rename_campaign","name":"Outbound indústrias 2026"},',
-  '            {"type":"connect_email","email":"vendas@empresa.com","provider":"resend"}',
+  '            {"type":"connect_email","email":"vendas@empresa.com","provider":"resend","apiKey":"re_..."},',
   '            {"type":"set_schedule","mode":"scheduled","windows":[{"days":[1,2,3,4,5],"startHour":9,"endHour":18}],"hourlyLimit":20,"dailyLimit":100,"timezone":"America/Sao_Paulo"},',
   '            {"type":"show_balance"},',
   '            {"type":"start_whatsapp_pairing"},',
@@ -454,13 +455,20 @@ function emailConnectHint(userMessage) {
   if (!EMAIL_CONNECT_RE.test(msg)) return null;
   // "email de X" em contexto de LEAD/audiência não é conexão de canal.
   if (/\b(leads?|contatos?|prospec\w*)\b/i.test(msg) && !/disparo|remetente|conectar|cadastr/i.test(msg)) return null;
+  // Estado REAL da chave Resend da plataforma (QA 2026-10-06: o modelo
+  // prometeu "a chave da própria plataforma" que não existia no ambiente e a
+  // action falhou com "API key obrigatória."). O fato é determinístico aqui —
+  // o modelo nunca deve supor o que o ambiente tem.
+  const plataformaTemKey = Boolean(process.env.RESEND_API_KEY);
   return [
     'CONEXÃO DE E-MAIL DE DISPARO DETECTADO — a action connect_email EXISTE e executa pelo chat:',
-    '{"type":"connect_email","email":"<endereço>","provider":"resend"|"smtp","password":"<app password smtp>","apiKey":"<key resend opcional>","fromName":"<nome opcional>"}',
+    '{"type":"connect_email","email":"<endereço>","provider":"resend"|"smtp","password":"<app password smtp>","apiKey":"<key resend>","fromName":"<nome opcional>"}',
     'Fluxo: se faltar informação, pergunte UMA coisa por vez — (1) o endereço de e-mail, (2) o provedor',
     '(Resend ou SMTP — SMTP pede senha de app e, opcionalmente, host/porta), (3) a senha/key. Depois EMITA',
     'a action. NUNCA diga que não dá pelo chat; NUNCA repita a action com a mesma actionId.',
-    'Se o usuário só informou o endereço e a plataforma tem key Resend própria, use provider "resend".',
+    plataformaTemKey
+      ? 'A plataforma TEM key Resend própria (fato do servidor): se o usuário não tiver a dele, emita provider "resend" SEM apiKey e diga que vai usar a chave da plataforma.'
+      : 'A plataforma NÃO TEM key Resend própria neste ambiente (fato do servidor): NUNCA mencione "chave da plataforma" — peça a API key do Resend do PRÓPRIO USUÁRIO (apiKey, começa com "re_") ou SMTP com senha de app (password).',
   ].join('\n');
 }
 
