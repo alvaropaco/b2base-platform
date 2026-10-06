@@ -805,15 +805,11 @@ test('QA: "mensagem para whatsapp" gera WhatsApp (não e-mail) e entra nos canai
       }
       return { content: JSON.stringify({ reply: 'Ok!', actions: [{ type: 'none' }] }) };
     }
-    if (user.includes('pacote de campanha')) {
+    if (user.includes('MENSAGEM DE WHATSAPP')) {
+      // Composer DEDICADO de WhatsApp (uma chamada só — nunca passa pelo
+      // caminho de e-mail, que é o que truncava no deepseek).
       return {
-        content: JSON.stringify({
-          title: 'Leads',
-          email: { subject: 'Assunto e-mail', preheader: 'p', blocks: [{ type: 'text', text: 'Corpo do e-mail.' }] },
-          whatsapp: { text: 'Oi {{firstName}}, tudo bem? Curto e direto.' },
-          linkedinText: 'texto',
-          timing: 'terça 10h',
-        }),
+        content: JSON.stringify({ whatsapp: { text: 'Oi {{firstName}}, tudo bem? Curto e direto.' } }),
       };
     }
     return { content: '{}' };

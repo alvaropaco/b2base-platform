@@ -89,4 +89,47 @@ async function generateAndStorePackage(prisma, composer, { campaign, sourceText,
   return created;
 }
 
-module.exports = { generateAndStorePackage };
+/**
+ * Geração DEDICADA de WhatsApp (QA 2026-10-06: o caminho multicanal truncava
+ * e o usuário nunca recebia a mensagem). UMA chamada pequena por tom — sem
+ * depender do e-mail — e persistência direta em channel='whatsapp'.
+ * Lança o erro de LLM por tom (o handler trata como failedTone honesto).
+ */
+async function generateAndStoreWhatsApp(prisma, composer, { campaign, sourceText, tones, orgId, orgContext, origin = 'ai_from_material' }) {
+  const created = [];
+  for (const tone of tones) {
+    const { text } = await composer.composeWhatsApp({
+      tone,
+      sourceText,
+      orgContext,
+      objective: campaign.objective,
+      offer: campaign.offer,
+    });
+    created.push(
+      await prisma.studioContent.create({
+        data: {
+          orgId,
+          campaignId: campaign.id,
+          channel: 'whatsapp',
+          variantLabel: String(tone).slice(0, 20),
+          kind: 'base',
+          stepIndex: 1,
+          whatsappText: text,
+          tone,
+          origin,
+        },
+      })
+    );
+  }
+  // Pacote cai em revisão — nunca dispara (FR-002).
+  if (campaign.status === 'draft') {
+    await prisma.studioCampaign.update({
+      where: { id: campaign.id },
+      data: { status: 'in_review' },
+    });
+    campaign.status = 'in_review';
+  }
+  return created;
+}
+
+module.exports = { generateAndStorePackage, generateAndStoreWhatsApp };

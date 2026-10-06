@@ -17,7 +17,7 @@ const { httpError } = require('./errors');
 const { createChatAgent, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery, extractCaptureState, extractChannelIntent } = require('./ai/chat-agent');
 const { createComposer } = require('./ai/compose');
 const { createExtractor } = require('./ai/extract');
-const { generateAndStorePackage } = require('./compose-service');
+const { generateAndStorePackage, generateAndStoreWhatsApp } = require('./compose-service');
 const segmentService = require('./segment-service');
 const campaignService = require('./campaign-service');
 const { createMaterialService } = require('./material-service');
@@ -696,7 +696,11 @@ function registerChatRoutes(router, context) {
         let lastError = null;
         for (const tone of tones) {
           try {
-            const part = await generateAndStorePackage(prisma, composer, {
+            // WhatsApp tem composer DEDICADO (uma chamada pequena): o caminho
+            // multicanal truncava no deepseek e o WhatsApp (tratado como
+            // bônus) nunca saía — QA 2026-10-06, 2º round.
+            const storeFn = requestedChannel === 'whatsapp' ? generateAndStoreWhatsApp : generateAndStorePackage;
+            const part = await storeFn(prisma, composer, {
               campaign,
               sourceText,
               tones: [tone],

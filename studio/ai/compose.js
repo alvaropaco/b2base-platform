@@ -106,7 +106,8 @@ function createComposer({ callLlm } = {}) {
         system: SYSTEM,
         buildUser: buildShortUser,
         validate: (p) => (p.whatsapp?.text || p.linkedinText ? null : 'canais curtos ausentes'),
-        maxTokens: 700,
+        // 700 truncava no deepseek (finish_reason=length — QA 2026-10-06).
+        maxTokens: 1200,
         temperature: 0.7,
         timeoutMs: 45_000,
         parseAttempts: 2,
@@ -131,7 +132,55 @@ function createComposer({ callLlm } = {}) {
     }
   }
 
-  return { composeForTone };
+  /**
+   * Composer DEDICADO de WhatsApp (QA 2026-10-06, 2º round: o caminho
+   * multicanal truncava — deepseek cortava o JSON curto em 700 tokens e o
+   * "bônus best-effort" nunca saía; o usuário pedia WhatsApp e a IA falhava
+   * "não deu para concluir"). UMA chamada pequena, orçamento de tokens
+   * próprio, sem depender do e-mail.
+   */
+  async function composeWhatsApp({ tone, sourceText, orgContext, objective, offer }) {
+    const buildUser = (previousRaw) => {
+      const prompt = [
+        `Gere a MENSAGEM DE WHATSAPP de prospecção no tom "${tone}" — somente o canal WhatsApp.`,
+        ...contextLines({ sourceText, orgContext, objective, offer }),
+        '',
+        'Responda SOMENTE com JSON no formato:',
+        '{"whatsapp":{"text":"mensagem curta (4-8 linhas) com {{firstName}} e um CTA claro"}}',
+        'Regras: mensagem CURTA e direta (WhatsApp), com {{firstName}} e um chamado para ação;',
+        'Use apenas variáveis do catálogo: {{firstName}}, {{companyName}}, {{city}}, {{industry}}, {{state}}.',
+        'Nunca invente números ou benefícios que não estejam na base.',
+      ]
+        .filter(Boolean)
+        .join('\n');
+      if (!previousRaw) return prompt;
+      return [
+        'Sua resposta anterior NÃO foi JSON utilizável.',
+        'Responda novamente com o JSON COMPLETO, sem texto fora do JSON, mantendo o mesmo tom.',
+        '--- RESPOSTA ANTERIOR (inválida) ---',
+        String(previousRaw).slice(0, 800),
+        '',
+        prompt,
+      ].join('\n');
+    };
+    const out = await callLlmJson(llm, {
+      system: SYSTEM,
+      buildUser,
+      validate: (p) => {
+        const text = p.whatsapp?.text || p.text;
+        return typeof text === 'string' && text.trim() ? null : 'mensagem de WhatsApp ausente';
+      },
+      maxTokens: 1024,
+      temperature: 0.7,
+      timeoutMs: 30_000,
+      parseAttempts: 3,
+      tag: 'studio:compose',
+    });
+    const text = out.whatsapp?.text || out.text;
+    return { text: String(text).trim() };
+  }
+
+  return { composeForTone, composeWhatsApp };
 }
 
 module.exports = { createComposer };
