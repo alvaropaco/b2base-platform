@@ -180,6 +180,25 @@ async function ensureEmailExecution(prisma, campaign, content) {
     : null;
   if (existing) return existing;
 
+  // Reconcilia pela unique `studioCampaignId` (QA 2026-10-06: um approve que
+  // falhou DEPOIS de criar a execução deixava a row órfã e todo re-approve
+  // morria em P2002 — o erro de unique mascarava a causa original). Reusa e
+  // ATUALIZA o template: aprovar → editar conteúdo → reaprovar segue correto.
+  const byStudio = await prisma.outreachCampaign.findUnique({ where: { studioCampaignId: campaign.id } });
+  if (byStudio) {
+    const subject = content?.subject || campaign.name;
+    const rawBody = content?.emailDoc ? emailDocToText(content.emailDoc) : null;
+    const bodyText = rawBody != null ? `${rawBody}\n\n${unsubscribeFooter({ unsubscribeMailto: content?.unsubscribeMailto })}` : null;
+    return prisma.outreachCampaign.update({
+      where: { id: byStudio.id },
+      data: {
+        emailTemplateSubject: subject,
+        ...(bodyText != null ? { emailTemplateBody: bodyText } : {}),
+        emailHeaders: unsubscribeHeaders({ unsubscribeUrl: content?.unsubscribeUrl, unsubscribeMailto: content?.unsubscribeMailto }),
+      },
+    });
+  }
+
   const subject = content?.subject || campaign.name;
   // D8/V7 (alinhado ao syncPendingTemplates): corpo derivado SOMENTE de
   // emailDoc — sem fallback whatsappText/offer (peça de WhatsApp nunca vira
@@ -245,6 +264,22 @@ async function ensureWhatsAppExecution(prisma, campaign, content, followupConten
     ? await prisma.whatsappCampaign.findUnique({ where: { id: campaign.whatsappExecutionId } })
     : null;
   if (existing) return existing;
+
+  // Mesma reconciliação da unique (ver ensureEmailExecution): re-aprovação
+  // reusa a execução e RECOMPILA os steps com o conteúdo atual.
+  const byStudio = await prisma.whatsappCampaign.findUnique({ where: { studioCampaignId: campaign.id } });
+  if (byStudio) {
+    const steps = compileSteps(content, followupContents);
+    if (typeof prisma.whatsappSequenceStep.deleteMany === 'function') {
+      await prisma.whatsappSequenceStep.deleteMany({ where: { campaignId: byStudio.id } });
+    }
+    for (const step of steps) {
+      await prisma.whatsappSequenceStep.create({
+        data: { campaignId: byStudio.id, ...step },
+      });
+    }
+    return byStudio;
+  }
 
   const created = await prisma.whatsappCampaign.create({
     data: {

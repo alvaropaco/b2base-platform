@@ -58,6 +58,10 @@ const ACTIONS_V1 = {
   duplicate_campaign: { version: 1, idempotency: 'params', description: 'Duplica uma campanha da organização como rascunho' },
   delete_campaign: { version: 1, idempotency: 'none', description: 'Apaga uma campanha da organização — SEMPRE passa pelo card de confirmação' },
   approve_campaign: { version: 1, idempotency: 'params', description: 'Aprova a campanha (in_review → approved) pelo mesmo fluxo do Pré-voo' },
+  // QA 2026-10-06 (dono): disparo SEM fricção — pedido de disparo de campanha
+  // aprovada sai NA HORA (disparo único, e-mail + WhatsApp), sem perguntas de
+  // agenda; agenda continua existindo para quem PEDIR (set_schedule).
+  launch_campaign: { version: 1, idempotency: 'params', description: 'Coloca a campanha em voo AGORA — disparo único imediato pelos canais conectados, sem agenda' },
   update_lead: { version: 1, idempotency: 'none', description: 'Edita dados de um lead (empresa, contato, localidade, porte, setor) com escopo de organização' },
   show_replies: { version: 1, idempotency: 'none', description: 'Mostra as respostas classificadas dos leads (interessados, reuniões, opt-outs) — a caixa de entrada do agente' },
   show_dns_records: { version: 1, idempotency: 'none', description: 'Mostra os registros DNS (SPF/DKIM/DMARC) do domínio de envio e o status de cada um' },
@@ -177,6 +181,8 @@ function validate(action, params = {}) {
       return true; // campaignId opcional (default = campanha aberta)
     }
     case 'approve_campaign':
+    case 'launch_campaign':
+      // campaignId opcional em ambas: default = campanha aberta no handler.
       return true;
     case 'update_lead': {
       const FIELDS = ['companyName', 'tradeName', 'contactName', 'city', 'state', 'industry', 'employees'];

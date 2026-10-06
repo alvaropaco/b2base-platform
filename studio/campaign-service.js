@@ -431,6 +431,13 @@ async function runImmediateDispatch(prisma, { campaign, userId, overrides = {} }
     channels: campaign.channels || [],
   });
   compiled.snapshot = snapshot;
+  // Links das execuções no objeto EM MEMÓRIA ANTES do dispatch: o
+  // enqueueBatch lê campaign.emailExecutionId/whatsappExecutionId — no
+  // T-UNLOCK (aprovou sem canal, conectou depois) os links estavam null e o
+  // primeiro disparo saía CANAL_NAO_CONFIGURADO mesmo com execução
+  // recém-compilada (QA 2026-10-06). O update final persiste os mesmos ids.
+  if (compiled.emailExecution?.id) campaign.emailExecutionId = compiled.emailExecution.id;
+  if (compiled.whatsappExecution?.id) campaign.whatsappExecutionId = compiled.whatsappExecution.id;
 
   const members = await prisma.studioAudienceMember.findMany({
     where: { snapshotId: snapshot.id, included: true },

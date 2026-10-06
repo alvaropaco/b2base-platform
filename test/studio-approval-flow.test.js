@@ -293,3 +293,39 @@ test('campanha retida pelo saneamento aparece com motivo e volta a revisão no r
     server.close();
   }
 });
+
+// ── QA 2026-10-06: re-aprovação reconcilia execução órfã (fim do P2002) ──────
+
+test('ensureEmailExecution reconcilia execução órfã pela unique e atualiza o template', async () => {
+  const bridge = require('../studio/channel-bridge');
+  const prisma = createFakePrisma();
+  // Row deixada por um approve anterior que falhou DEPOIS do create (o
+  // write-back do emailExecutionId nunca aconteceu) — todo re-approve morria
+  // em P2002 ("Unique constraint failed: studioCampaignId").
+  prisma.outreachCampaign.rows.push({
+    id: 'exec-antiga', tenantId: 'org-1', name: '[Studio] Camp',
+    studioCampaignId: 'camp-1', emailTemplateSubject: 'ANTIGO', emailTemplateBody: 'ANTIGO',
+  });
+  const campaign = { id: 'camp-1', orgId: 'org-1', name: 'Camp', emailExecutionId: null, channels: ['email'] };
+  const content = { subject: 'NOVO assunto', emailDoc: { blocks: [{ type: 'text', text: 'novo corpo' }] } };
+
+  const exec = await bridge.ensureEmailExecution(prisma, campaign, content);
+  assert.equal(exec.id, 'exec-antiga', 'reusa a execução existente em vez de criar');
+  assert.equal(exec.emailTemplateSubject, 'NOVO assunto', 'template atualizado para o conteúdo atual');
+  assert.equal(prisma.outreachCampaign.rows.length, 1, 'nada duplicado');
+});
+
+test('ensureWhatsAppExecution reconcilia órfã e RECOMPILA os steps com o conteúdo atual', async () => {
+  const bridge = require('../studio/channel-bridge');
+  const prisma = createFakePrisma();
+  prisma.whatsappCampaign.rows.push({ id: 'wexec-1', orgId: 'org-1', studioCampaignId: 'camp-1', status: 'DRAFT' });
+  prisma.whatsappSequenceStep.rows.push({ id: 'step-velho', campaignId: 'wexec-1', orderIndex: 1, messageTemplate: 'VELHO', aiPersonalized: false, delayMinutes: 0 });
+  const campaign = { id: 'camp-1', orgId: 'org-1', name: 'Camp', whatsappExecutionId: null };
+  const content = { whatsappText: 'NOVO texto da mensagem' };
+
+  const exec = await bridge.ensureWhatsAppExecution(prisma, campaign, content);
+  assert.equal(exec.id, 'wexec-1', 'reusa a execução existente');
+  const steps = prisma.whatsappSequenceStep.rows.filter((s) => s.campaignId === 'wexec-1');
+  assert.equal(steps.length, 1, 'step velho substituído');
+  assert.equal(steps[0].messageTemplate, 'NOVO texto da mensagem', 'step recompilado');
+});

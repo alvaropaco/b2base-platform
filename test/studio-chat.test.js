@@ -88,7 +88,7 @@ function llm() {
   };
 }
 
-async function startServer({ orgPlan = 'premium', llmImpl } = {}) {
+async function startServer({ orgPlan = 'premium', llmImpl, overrides: extraOverrides = {} } = {}) {
   const app = express();
   app.use(express.json());
   const prisma = createFakePrisma();
@@ -108,6 +108,7 @@ async function startServer({ orgPlan = 'premium', llmImpl } = {}) {
           text: async () => '<html><body><h1>ERP industrial</h1><p>implantação em 30 dias</p></body></html>',
         }),
       },
+      ...extraOverrides,
     },
   }));
   const server = await new Promise((resolve) => {
@@ -870,6 +871,57 @@ test('QA: revisar a mensagem de whatsapp mostra SÓ o WhatsApp (não os e-mails)
     assert.match(card.label, /1 item/, 'só o WhatsApp na lista');
     assert.match(card.detail, /WHATSAPP aqui/, 'texto do WhatsApp no card');
     assert.ok(!card.detail.includes('Assunto do EMAIL'), 'e-mail NÃO vaza na revisão do WhatsApp');
+  } finally {
+    server.close();
+  }
+});
+
+// ── QA 2026-10-06: disparo sem fricção (launch_campaign) ─────────────────────
+
+test('QA: "dispara agora" coloca em voo SEM perguntas de agenda (disparo único)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({ reply: 'Colocando em voo!', actions: [{ type: 'launch_campaign' }] }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({
+    llmImpl: impl,
+    overrides: {
+      dispatchImmediate: async (args) => ({
+        email: { enqueued: [...args.prospectIds], blocked: null },
+        whatsapp: null,
+      }),
+    },
+  });
+  try {
+    // Canal conectado + conteúdo aprovado + audiência congelada.
+    prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Voo', channels: ['email'] });
+    prisma.studioCampaign.rows[0].status = 'approved';
+    prisma.studioContent.rows.push({
+      id: 'ce1', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'Assunto', whatsappText: null,
+      emailDoc: { blocks: [{ type: 'text', text: 'Olá {{firstName}}, tudo bem? Não quer mais receber? Faça o descadastro.' }] },
+    });
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-1', orgId: 'org-1', campaignId: c.data.id,
+      criteriaVersion: {}, totalCount: 1, includedCount: 1, excludedCount: 0, status: 'active',
+    });
+    prisma.studioAudienceMember.rows.push({ id: 'm1', snapshotId: 'snap-1', orgId: 'org-1', prospectId: 'lead-1', included: true, excludeReason: null });
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'dispara agora',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'campaign_launched');
+    assert.ok(card, 'card de campanha em voo');
+    assert.match(card.detail, /1 por e-mail/, 'número honesto de enfileirados');
+    assert.match(card.detail, /Disparo único em andamento/, 'sem fricção de agenda');
+    assert.equal(prisma.studioCampaign.rows[0].status, 'running', 'campanha em voo');
   } finally {
     server.close();
   }

@@ -66,6 +66,7 @@ function actionParams(action) {
     case 'rename_campaign':
     case 'delete_campaign':
     case 'approve_campaign':
+    case 'launch_campaign':
       // campaignId opcional: default = campanha aberta (escopo org no handler).
       return {
         name: action.name || null,
@@ -939,9 +940,83 @@ function registerChatRoutes(router, context) {
         return {
           type: 'campaign_approved',
           label: `Campanha "${approved.name}" aprovada`,
-          detail: 'Audiência congelada e conformidade checada. Próximo passo: agendar (ou colocar em voo) — posso configurar a agenda se você quiser.',
+          detail: 'Audiência congelada e conformidade checada. Me diga **dispara** que eu coloco em voo AGORA (disparo único, e-mail e WhatsApp) — ou me diga quando agendar, se preferir programar.',
           campaignId: approved.id,
           campaignStatus: approved.status,
+        };
+      }
+
+      case 'launch_campaign': {
+        // Disparo SEM fricção (QA 2026-10-06, pedido do dono): campanha
+        // aprovada sai NA HORA — disparo único pelos canais conectados
+        // (e-mail + WhatsApp), SEM perguntas de agenda. Agenda existe para
+        // quem PEDIR (set_schedule continua intacto).
+        const target = action.campaignId
+          ? await prisma.studioCampaign.findUnique({ where: { id: String(action.campaignId) } })
+          : campaign;
+        if (!target || target.orgId !== orgId) throw httpError('NOT_FOUND', 404, 'Campanha não encontrada');
+        await context.requirePremiumOrg(orgId);
+        if (target.status === 'running') {
+          return {
+            type: 'campaign_launched',
+            label: `Campanha "${target.name}" já está em voo`,
+            detail: 'A fila sai pelo ritmo do Orçamento de Reputação — nada re-dispara por engano. Me peça "ver o saldo" para acompanhar.',
+            campaignId: target.id,
+            campaignStatus: target.status,
+          };
+        }
+        if (target.status === 'scheduled') {
+          return {
+            type: 'campaign_launched',
+            label: `Campanha "${target.name}" já tem agenda`,
+            detail: 'Ela dispara nas janelas configuradas. Se quiser sair AGORA, me peça para trocar para disparo único.',
+            campaignId: target.id,
+            campaignStatus: target.status,
+          };
+        }
+        // Conteúdo pronto mas pendente: o pedido de disparo aprova pelo MESMO
+        // fluxo do Pré-voo (congela audiência + compliance) — nada pula o gate.
+        if (target.status === 'in_review') {
+          await campaignService.flow.approveCampaign(prisma, { campaign: target, userId });
+          target.status = 'approved';
+        }
+        if (target.status !== 'approved') {
+          throw httpError('NOT_LAUNCHABLE', 409, 'Para disparar, a campanha primeiro precisa de audiência e conteúdo — me peça para montar isso.');
+        }
+        const result = await campaignService.flow.runImmediateDispatch(prisma, {
+          campaign: target,
+          userId,
+          overrides: { dispatchImmediate: overrides.dispatchImmediate },
+        });
+        const launched = result.campaign;
+        const d = result.dispatch || {};
+        const parts = [];
+        let queuedTotal = 0;
+        const blockedNotes = [];
+        for (const [channel, info] of [['e-mail', d.email], ['WhatsApp', d.whatsapp]]) {
+          if (!info) continue;
+          const n = Array.isArray(info.enqueued) ? info.enqueued.length : 0;
+          queuedTotal += n;
+          if (n > 0) parts.push(`${n} por ${channel}`);
+          if (info.blocked) {
+            blockedNotes.push(`${channel}: ${info.blocked.reason || info.blocked.code}`);
+          }
+        }
+        const detail =
+          (queuedTotal > 0
+            ? `Disparo único em andamento — ${parts.join(' + ') || `${queuedTotal} lead(s)`} entrando na fila agora.`
+            : 'A fila não começou ainda') +
+          (blockedNotes.length
+            ? ` ⚠️ ${blockedNotes.join(' · ')} — me peça "ver o saldo" que eu mostro o que falta para liberar.`
+            : ' O ritmo é controlado pelo Orçamento de Reputação e você pode pausar quando quiser.');
+        return {
+          type: 'campaign_launched',
+          label: `Campanha "${launched.name}" em voo`,
+          detail,
+          campaignId: launched.id,
+          campaignStatus: launched.status,
+          queuedTotal,
+          blocked: d.blocked || null,
         };
       }
 
@@ -1084,7 +1159,7 @@ function registerChatRoutes(router, context) {
           detail:
             '**Campanhas** — criar, listar as da sua organização, renomear, duplicar e apagar (sempre confirmo antes de apagar).\n' +
             '**Jornada da campanha aberta** — objetivo, audiência por linguagem natural, ajuste fino de leads, captura de leads novos, conteúdo (gerar, editar e MOSTRAR aqui no chat) e agendamento.\n' +
-            '**Aprovação** — aprovar a campanha pelo mesmo fluxo do Pré-voo e mostrar o que falta para poder disparar (saldo, certificado).\n' +
+            '**Aprovação e disparo** — aprovar a campanha pelo mesmo fluxo do Pré-voo, COLOCAR EM VOO na hora (disparo único, e-mail e WhatsApp — sem perguntas de agenda) e mostrar o que falta para poder disparar (saldo, certificado).\n' +
             '**Canais** — conectar a conta de e-mail de disparo (Resend com a sua API key ou SMTP com senha de app), mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
             '**Leads** — consultar e editar dados de empresa/contato, e mostrar as respostas dos leads (interessados, reuniões, opt-outs).\n\n' +
             'Não faço ainda: publicar os registros DNS no provedor do domínio (eu mostro, você publica) e ler a caixa de entrada inteira fora das respostas classificadas.',
@@ -1743,6 +1818,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     duplicate_campaign: 'Duplicando a campanha…',
     delete_campaign: 'Apagando a campanha…',
     approve_campaign: 'Aprovando a campanha…',
+    launch_campaign: 'Colocando em voo…',
     update_lead: 'Atualizando o lead…',
     show_replies: 'Vendo as respostas dos leads…',
     show_dns_records: 'Conferindo o DNS do seu domínio…',
