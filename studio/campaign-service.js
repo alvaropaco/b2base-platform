@@ -469,7 +469,17 @@ async function runImmediateDispatch(prisma, { campaign, userId, overrides = {} }
       whatsappExecutionId: compiled.whatsappExecution?.id || campaign.whatsappExecutionId || null,
     },
   });
-  return { campaign: updated, dispatch: dispatchResult };
+  // Diagnóstico para o card do disparo (QA 2026-10-06: "disparo feito" com a
+  // fila vazia e NENHUMA explicação — leads fora do WhatsApp por consentimento
+  // e canais pulados ficavam invisíveis).
+  return {
+    campaign: updated,
+    dispatch: dispatchResult,
+    compiled: {
+      enrollment: compiled.enrollment,
+      channels: compiled.channels,
+    },
+  };
 }
 
 /**

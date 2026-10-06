@@ -66,6 +66,10 @@ const ACTIONS_V1 = {
   // para todos os leads. Somente leitura da campanha + envio para UM destino
   // informado — nunca toca a audiência, a fila ou o saldo.
   send_test_message: { version: 1, idempotency: 'none', description: 'Envia a mensagem da campanha como TESTE (dados de exemplo) para um WhatsApp ou e-mail informado — nada vai para os leads' },
+  // Caminho para consentir (FR-35) pelo chat: o DONO atesta o consentimento
+  // do lead para WhatsApp (registro auditável); sem ele a matrícula pula o
+  // lead (anti-bloqueio/LGPD).
+  grant_whatsapp_consent: { version: 1, idempotency: 'params', description: 'Registra o consentimento WhatsApp de um lead (atesto do dono) — destrava a matrícula no disparo' },
   update_lead: { version: 1, idempotency: 'none', description: 'Edita dados de um lead (empresa, contato, localidade, porte, setor) com escopo de organização' },
   show_replies: { version: 1, idempotency: 'none', description: 'Mostra as respostas classificadas dos leads (interessados, reuniões, opt-outs) — a caixa de entrada do agente' },
   show_dns_records: { version: 1, idempotency: 'none', description: 'Mostra os registros DNS (SPF/DKIM/DMARC) do domínio de envio e o status de cada um' },
@@ -191,6 +195,15 @@ function validate(action, params = {}) {
     case 'send_test_message': {
       if (!params.phone && !params.email) {
         const err = new Error('send_test_message exige `phone` (WhatsApp) ou `email` de destino.');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
+    case 'grant_whatsapp_consent': {
+      if (!params.prospectId && !params.name) {
+        const err = new Error('grant_whatsapp_consent exige `prospectId` ou `name` do lead.');
         err.code = 'INVALID_ACTION_PARAMS';
         err.status = 400;
         throw err;

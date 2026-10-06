@@ -77,6 +77,11 @@ function actionParams(action) {
         phone: action.phone ? String(action.phone) : null,
         email: action.email ? String(action.email) : null,
       };
+    case 'grant_whatsapp_consent':
+      return {
+        prospectId: action.prospectId ? String(action.prospectId) : null,
+        name: action.name ? String(action.name) : null,
+      };
     case 'duplicate_campaign':
       return {
         campaignId: action.campaignId ? String(action.campaignId) : null,
@@ -1014,14 +1019,69 @@ function registerChatRoutes(router, context) {
           (blockedNotes.length
             ? ` ⚠️ ${blockedNotes.join(' · ')} — me peça "ver o saldo" que eu mostro o que falta para liberar.`
             : ' O ritmo é controlado pelo Orçamento de Reputação e você pode pausar quando quiser.');
+        // Diagnóstico do PORQUÊ (QA 2026-10-06: card dizia "disparo feito" com
+        // a fila vazia — leads sem consentimento WhatsApp e canais não
+        // conectados eram invisíveis).
+        const launchNotes = [];
+        const enrollment = result.compiled?.enrollment || {};
+        if ((enrollment.whatsappSkippedNoConsent || 0) > 0) {
+          launchNotes.push(
+            `⚠️ ${enrollment.whatsappSkippedNoConsent} lead(s) ficaram FORA do WhatsApp sem consentimento registrado ` +
+            '(regra anti-bloqueio/LGPD). Se o lead autorizou, me diga "<nome do lead> autorizou WhatsApp" que eu registro e sigo o disparo.'
+          );
+        }
+        for (const sk of result.compiled?.channels?.skipped || []) {
+          launchNotes.push(
+            sk.channel === 'email'
+              ? '⚠️ E-mail ficou de fora: nenhuma conta de disparo conectada — me peça para conectar seu e-mail.'
+              : `⚠️ ${sk.channel} ficou de fora: canal não conectado.`
+          );
+        }
         return {
           type: 'campaign_launched',
           label: `Campanha "${launched.name}" em voo`,
-          detail,
+          detail: queuedTotal > 0 ? detail : `${detail} ${launchNotes.join(' ')}`.trim(),
+          notes: launchNotes,
           campaignId: launched.id,
           campaignStatus: launched.status,
           queuedTotal,
           blocked: d.blocked || null,
+        };
+      }
+
+      case 'grant_whatsapp_consent': {
+        // Caminho para consentir (FR-35) pelo chat: o DONO atesta que o lead
+        // autorizou; o registro leva source/evidence para auditoria. Sem isso
+        // a matrícula do WhatsApp pula o lead (regra anti-bloqueio/LGPD).
+        let lead = null;
+        if (action.prospectId) {
+          lead = await prisma.prospect.findUnique({ where: { id: String(action.prospectId) } });
+        } else if (action.name) {
+          const term = String(action.name).trim();
+          if (term.length < 3) throw httpError('INVALID_NAME', 400, 'Nome do lead muito curto — me diga a empresa (ou contato).');
+          lead =
+            (await prisma.prospect.findFirst({ where: { orgId, companyName: { contains: term } } })) ||
+            (await prisma.prospect.findFirst({ where: { orgId, tradeName: { contains: term } } })) ||
+            (await prisma.prospect.findFirst({ where: { orgId, contactName: { contains: term } } }));
+        }
+        if (!lead || lead.orgId !== orgId) {
+          throw httpError('NOT_FOUND', 404, 'Lead não encontrado nesta organização — me diga o nome da empresa como está na lista.');
+        }
+        const certificate = require('./certificate');
+        const { consent, replayed } = await certificate.grantConsent(prisma, {
+          orgId,
+          prospectId: lead.id,
+          source: 'manual',
+          grantedById: userId,
+          evidence: { declaredBy: 'owner-chat', campaignId: campaign.id },
+        });
+        return {
+          type: 'consent_granted',
+          label: replayed ? `Consentimento de ${lead.companyName} já estava registrado` : `Consentimento WhatsApp registrado: ${lead.companyName}`,
+          detail:
+            (replayed ? 'Nada mudou — ' : 'Registrado em auditoria (fonte: atesto do dono pelo chat) — ') +
+            'agora o lead entra na matrícula do WhatsApp. Me peça "dispara" que eu sigo o disparo.',
+          prospectId: lead.id,
         };
       }
 

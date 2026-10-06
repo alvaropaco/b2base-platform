@@ -1014,3 +1014,63 @@ test('QA: "manda a mensagem pro 12 996399943" (sem a palavra "teste") também é
     server.close();
   }
 });
+
+// ── QA 2026-10-06: consentimento WhatsApp — fim do "disparo feito" com fila vazia ──
+
+test('QA: disparo com lead sem consentimento WhatsApp diagnosTICA no card; atesto destrava', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      if (user.includes('autorizou')) {
+        return {
+          content: JSON.stringify({
+            reply: 'Registrando o consentimento.',
+            actions: [{ type: 'grant_whatsapp_consent', name: 'Ang' }],
+          }),
+        };
+      }
+      return {
+        content: JSON.stringify({ reply: 'Colocando em voo!', actions: [{ type: 'launch_campaign' }] }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    // WhatsApp conectado; lead SEM consentimento; SEM conta de e-mail.
+    prisma.whatsAppAccount.rows.push({ id: 'wacc-3', orgId: 'org-1', sessionName: 'sess-3', status: 'CONNECTED' });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Consentimento', channels: ['whatsapp'] });
+    const camp = prisma.studioCampaign.rows[0];
+    camp.status = 'approved';
+    prisma.studioContent.rows.push({
+      id: 'cwa', orgId: 'org-1', campaignId: c.data.id, channel: 'whatsapp',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      whatsappText: 'Oi {{firstName}}!', emailDoc: null,
+    });
+    prisma.prospect.rows.push({ id: 'lead-ang', orgId: 'org-1', companyName: 'CONSTRUTORA ANGULAR LTDA', contactName: 'Ana', cnpjPhones: ['12999999999'] });
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-c', orgId: 'org-1', campaignId: c.data.id,
+      criteriaVersion: {}, totalCount: 1, includedCount: 1, excludedCount: 0, status: 'active',
+    });
+    prisma.studioAudienceMember.rows.push({ id: 'mc1', snapshotId: 'snap-c', orgId: 'org-1', prospectId: 'lead-ang', included: true, excludeReason: null });
+
+    // 1) Disparo: fila vazia e diagnóstico EXPLICITANDO o consentimento.
+    const { body: launch } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'dispara' });
+    const card = launch.data.cards.find((card) => card.type === 'campaign_launched');
+    assert.ok(card, 'card de launch');
+    assert.match(card.detail, /FORA do WhatsApp sem consentimento/, 'diagnóstico do porquê');
+    assert.match(card.detail, /autorizou WhatsApp/, 'caminho para destravar');
+    assert.equal(card.queuedTotal, 0, 'nada entrou na fila (honesto)');
+
+    // 2) Dono atesta: "Ang autorizou WhatsApp" → consentimento registrado.
+    const { body: grant } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'a Ang autorizou whatsapp' });
+    const grantCard = grant.data.cards.find((card) => card.type === 'consent_granted');
+    assert.ok(grantCard, 'card de consentimento');
+    const consentRow = prisma.studioLeadConsent.rows[0];
+    assert.ok(consentRow, 'StudioLeadConsent persistido');
+    assert.equal(consentRow.prospectId, 'lead-ang');
+    assert.equal(consentRow.source, 'manual', 'fonte auditável');
+    assert.equal(prisma.studioLeadConsent.rows.length, 1, 'idempotência: um registro só');
+  } finally {
+    server.close();
+  }
+});
