@@ -123,8 +123,10 @@ const SYSTEM_PROMPT = [
   '  2. Objetivo e oferta da campanha (set_objective); audiência por linguagem natural (set_audience),',
   '     ajuste fino de leads (select_leads) e captura de leads novos (capture_leads).',
   '  3. Conteúdo: anexar material por URL (attach_url) ou arquivo, gerar e-mail/WhatsApp/LinkedIn',
-  '     (generate_content), editar o que já existe (edit_content) e MOSTRAR o texto completo no chat',
-  '     (show_content) — quando pedirem para ver/revisar, use show_content.',
+  '     (generate_content — quando o usuário pedir WhatsApp use channel:"whatsapp"; o servidor também',
+  '     deduz o canal da frase), editar o que já existe (edit_content) e MOSTRAR o texto completo no chat',
+  '     (show_content — channel:"whatsapp" mostra SÓ a mensagem de WhatsApp). NUNCA diga que gerou',
+  '     WhatsApp se o card não confirmar — o card diz o que de fato foi criado.',
   '  4. Agenda e disparo (set_schedule), aprovar a campanha (approve_campaign) e mostrar o que falta',
   '     para poder disparar (show_balance / certificado).',
   '  5. Domínio e canais: CONECTAR a conta de e-mail de disparo pelo chat',
@@ -450,6 +452,26 @@ function extractCaptureQuery(userMessage) {
  */
 const EMAIL_CONNECT_RE = /\b(cadastr(?:a|ar|e)|conectar?|conecte|configur(?:a|ar|e)|registrar?|registre|adicion(?:a|ar|e)|definir?|defin[ae]|trocar?|troc[ae]|mudar?|mud[ae])\b[^.?!]{0,64}\b(e-?mail|remetente|disparo)s?\b|\b(e-?mail|remetente)\s+(de\s+)?disparos?\b/i;
 
+/**
+ * Intenção de CANAL na frase (QA 2026-10-06: "faz uma mensagem para enviar
+ * por whatsapp" gerava só E-MAIL e a revisão só mostrava e-mails). Fato
+ * determinístico do servidor: whatsapp > linkedin > e-mail. Retorna
+ * 'whatsapp' | 'linkedin_text' | 'email' | null.
+ */
+const CHANNEL_INTENT_RULES = [
+  ['whatsapp', /\b(whatsa?p?p?|wpp|zap\s*zap)\b/i],
+  ['linkedin_text', /\blinked?in\b/i],
+  ['email', /\be-?\s?mails?\b/i],
+];
+
+function extractChannelIntent(userMessage) {
+  const msg = String(userMessage || '');
+  for (const [channel, re] of CHANNEL_INTENT_RULES) {
+    if (re.test(msg)) return channel;
+  }
+  return null;
+}
+
 function emailConnectHint(userMessage) {
   const msg = String(userMessage || '');
   if (!EMAIL_CONNECT_RE.test(msg)) return null;
@@ -719,6 +741,7 @@ module.exports = {
   extractReplySoFar,
   campaignManagementHint,
   emailConnectHint,
+  extractChannelIntent,
   extractRenameTarget,
   extractCreateTarget,
   leadCaptureIntent,

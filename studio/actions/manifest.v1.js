@@ -138,7 +138,17 @@ function validate(action, params = {}) {
       }
       return true;
     case 'generate_content':
+    case 'show_content': {
+      // channel é OPCIONAL e fechado (QA 2026-10-06): sem ele o comportamento
+      // legado (pacote completo / todos os conteúdos) permanece idêntico.
+      if (params.channel && !['email', 'whatsapp', 'linkedin_text'].includes(params.channel)) {
+        const err = new Error('channel deve ser "email", "whatsapp" ou "linkedin_text".');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
       return true; // tones opcional (default no serviço)
+    }
     case 'create_campaign':
     case 'duplicate_campaign': {
       const isDup = action === 'duplicate_campaign';

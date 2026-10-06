@@ -7,8 +7,12 @@
  * mesmos conteúdos (adaptação real por canal, FR-025/026).
  */
 
-async function generateAndStorePackage(prisma, composer, { campaign, sourceText, tones, orgId, orgContext, origin = 'ai_from_material' }) {
+async function generateAndStorePackage(prisma, composer, { campaign, sourceText, tones, orgId, orgContext, origin = 'ai_from_material', onlyChannel = null }) {
   const created = [];
+  // onlyChannel (QA 2026-10-06: "mensagem para whatsapp" criava 2 e-mails e
+  // NENHUM whatsapp): quando o usuário pede UM canal, só ele persiste — o
+  // resto do pack (o compose é multicanal) é descartado, sem duplicar linhas.
+  const wants = (channel) => (onlyChannel ? channel === onlyChannel : (campaign.channels || []).includes(channel));
   for (const tone of tones) {
     const pack = await composer.composeForTone({
       tone,
@@ -18,7 +22,7 @@ async function generateAndStorePackage(prisma, composer, { campaign, sourceText,
       offer: campaign.offer,
     });
     const variantLabel = String(tone).slice(0, 20);
-    if ((campaign.channels || []).includes('email') && pack.email) {
+    if (wants('email') && pack.email) {
       created.push(
         await prisma.studioContent.create({
           data: {
@@ -39,7 +43,7 @@ async function generateAndStorePackage(prisma, composer, { campaign, sourceText,
         })
       );
     }
-    if ((campaign.channels || []).includes('whatsapp') && pack.whatsapp?.text) {
+    if (wants('whatsapp') && pack.whatsapp?.text) {
       created.push(
         await prisma.studioContent.create({
           data: {
@@ -56,7 +60,7 @@ async function generateAndStorePackage(prisma, composer, { campaign, sourceText,
         })
       );
     }
-    if ((campaign.channels || []).includes('linkedin_text') && pack.linkedinText) {
+    if (wants('linkedin_text') && pack.linkedinText) {
       created.push(
         await prisma.studioContent.create({
           data: {

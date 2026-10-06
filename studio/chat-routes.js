@@ -14,7 +14,7 @@
 
 const crypto = require('crypto');
 const { httpError } = require('./errors');
-const { createChatAgent, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery, extractCaptureState } = require('./ai/chat-agent');
+const { createChatAgent, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery, extractCaptureState, extractChannelIntent } = require('./ai/chat-agent');
 const { createComposer } = require('./ai/compose');
 const { createExtractor } = require('./ai/extract');
 const { generateAndStorePackage } = require('./compose-service');
@@ -45,8 +45,15 @@ function actionParams(action) {
       return { url: action.url || null };
     case 'confirm_material':
       return { materialId: action.materialId || null };
-    case 'generate_content':
-      return { tones: action.tones || null };
+    case 'generate_content': {
+      // Mesma tática do `criteria` (AD-6): canal entra nos params SÓ quando
+      // veio — chaves antigas continuam batendo replay.
+      const params = { tones: action.tones || null };
+      if (action.channel) params.channel = action.channel;
+      return params;
+    }
+    case 'show_content':
+      return action.channel ? { channel: action.channel } : {};
     case 'show_balance':
     case 'start_whatsapp_pairing':
     case 'list_campaigns':
@@ -666,6 +673,17 @@ function registerChatRoutes(router, context) {
           ? JSON.stringify(confirmed.extraction)
           : [campaign.objective, campaign.offer].filter(Boolean).join(' — ') || campaign.name;
         const tones = (Array.isArray(action.tones) && action.tones.length ? action.tones : ['formal', 'comercial']).slice(0, 3);
+        // Canal pedido (action.channel vem do modelo OU da frase — injeção
+        // determinística no runChatTurn). QA 2026-10-06: "mensagem para
+        // whatsapp" tem que criar WhatsApp e NÃO mais e-mails.
+        const requestedChannel = ['whatsapp', 'linkedin_text', 'email'].includes(action.channel) ? action.channel : null;
+        // Pedido explícito entra nos CANAIS da campanha — sem isso o bridge
+        // nunca compila a execução do canal no disparo.
+        if (requestedChannel && requestedChannel !== 'email' && !(campaign.channels || []).includes(requestedChannel)) {
+          const channels = [...(campaign.channels || []), requestedChannel];
+          await prisma.studioCampaign.update({ where: { id: campaign.id }, data: { channels } });
+          campaign.channels = channels;
+        }
         const settings = await prisma.commercialSettings.findUnique({ where: { orgId } });
         // QA 2026-10-02 (bug 3 do dono): um tom falhando (LLM timeout/JSON
         // num pacote grande) derrubava o pacote INTEIRO — mesmo com o outro
@@ -684,7 +702,16 @@ function registerChatRoutes(router, context) {
               tones: [tone],
               orgId,
               orgContext: settings ? `${settings.companyName || ''} vende ${settings.productDescription || '?'}` : null,
+              onlyChannel: requestedChannel,
             });
+            if (requestedChannel && requestedChannel !== 'email' && part.length === 0) {
+              // O compose dos canais curtos é best-effort: o pack veio sem o
+              // canal pedido — honesto, NÃO conta como criado (a IA nunca
+              // mais diz "está feito" sem estar).
+              failedTones.push(tone);
+              lastError = Object.assign(new Error('pack sem o canal pedido'), { code: 'LLM_JSON_FAILED' });
+              continue;
+            }
             created.push(...part);
           } catch (err) {
             if (!['LLM_JSON_FAILED', 'LLM_TIMEOUT', 'LLM_HTTP_ERROR'].includes(err.code)) throw err;
@@ -710,14 +737,19 @@ function registerChatRoutes(router, context) {
         const failedNote = failedTones.length
           ? ` O tom ${failedTones.join(', ')} não conseguiu agora — me peça para gerar de novo só ele.`
           : '';
+        const CHANNEL_NOUN = { whatsapp: 'mensagem de WhatsApp', linkedin_text: 'texto de LinkedIn', email: 'e-mail' };
+        const channelNote = requestedChannel && requestedChannel !== 'email'
+          ? `${CHANNEL_NOUN[requestedChannel]}(s) criada(s) — e o canal WhatsApp entrou nos canais da campanha.`
+          : `${okTones.length} variação(ões) criada(s): ${okTones.join(', ')}.`;
+        const peekLabel = requestedChannel === 'whatsapp' ? 'me mostra a mensagem do WhatsApp' : 'me mostra o e-mail';
         return {
           type: 'content',
           label: 'Conteúdo gerado (em revisão)',
           detail:
-            `${okTones.length} variação(ões) criada(s): ${okTones.join(', ')}.` +
-            `${failedNote} Me peça "me mostra o e-mail" para ler tudo aqui no chat.`,
+            `${channelNote}${failedNote} Me peça "${peekLabel}" para ler tudo aqui no chat.`,
           sources,
           failedTones,
+          channel: requestedChannel || undefined,
         };
       }
 
@@ -726,14 +758,21 @@ function registerChatRoutes(router, context) {
         // virava troca de assunto — o agente não tinha como mostrar o texto
         // no chat (o estado só carrega um resumo de 60 caracteres). Card com
         // o conteúdo COMPLETO por canal; somente leitura, sem idempotência.
-        const contents = await prisma.studioContent.findMany({
-          where: { campaignId: campaign.id, kind: 'base', stepIndex: 1 },
-        });
+        // QA 2026-10-06: "revisa a mensagem de whatsapp" mostrava os E-MAILS
+        // (não havia filtro) — o canal pedido (action.channel, do modelo ou
+        // da frase) filtra; sem canal, mostra tudo como antes.
+        const where = { campaignId: campaign.id, kind: 'base', stepIndex: 1 };
+        const requestedChannel = ['whatsapp', 'linkedin_text', 'email'].includes(action.channel) ? action.channel : null;
+        if (requestedChannel) where.channel = requestedChannel;
+        const contents = await prisma.studioContent.findMany({ where });
         if (contents.length === 0) {
           return {
             type: 'content_empty',
-            label: 'Ainda não há conteúdo gerado',
-            detail: 'Não gerei conteúdo para esta campanha ainda. Me peça para gerar que eu crio o e-mail e a mensagem do WhatsApp.',
+            label: requestedChannel === 'whatsapp' ? 'Ainda não há mensagem de WhatsApp nesta campanha' : 'Ainda não há conteúdo gerado',
+            detail:
+              requestedChannel === 'whatsapp'
+                ? 'Não gerei a mensagem de WhatsApp ainda (só existem e-mails). Me peça para gerar que eu crio aqui mesmo.'
+                : 'Não gerei conteúdo para esta campanha ainda. Me peça para gerar que eu crio o e-mail e a mensagem do WhatsApp.',
           };
         }
         const parts = contents.map((c) => {
@@ -2073,6 +2112,13 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
           : sameTurnAudience && action.type === 'select_leads'
             ? { ...action, confirmed: true }
             : action;
+      // QA 2026-10-06: a FRASE do usuário manda no canal ("mensagem para
+      // enviar por whatsapp" gerava só e-mail e a revisão só mostrava
+      // e-mails). Injeção determinística — o modelo não decide o canal.
+      if ((effective.type === 'generate_content' || effective.type === 'show_content') && !effective.channel) {
+        const channelIntent = extractChannelIntent(message);
+        if (channelIntent) effective.channel = channelIntent;
+      }
       const label = ACTION_LABELS[effective.type];
       if (label) emit({ type: 'status', label });
       if (effective && effective.type && effective.type !== 'none') actionTypes.push(effective.type);

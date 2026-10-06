@@ -788,3 +788,93 @@ test('histórico: timeline mista de e-mail + WhatsApp por lead, mais recente pri
     server.close();
   }
 });
+
+// ── QA 2026-10-06: canal pedido na FRASE manda (WhatsApp ≠ e-mail) ───────────
+
+test('QA: "mensagem para whatsapp" gera WhatsApp (não e-mail) e entra nos canais da campanha', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      if (user.includes('whatsapp')) {
+        return {
+          content: JSON.stringify({
+            reply: 'Vou gerar a mensagem de WhatsApp.',
+            // Sem channel: o servidor deduz da frase (injeção determinística).
+            actions: [{ type: 'generate_content' }],
+          }),
+        };
+      }
+      return { content: JSON.stringify({ reply: 'Ok!', actions: [{ type: 'none' }] }) };
+    }
+    if (user.includes('pacote de campanha')) {
+      return {
+        content: JSON.stringify({
+          title: 'Leads',
+          email: { subject: 'Assunto e-mail', preheader: 'p', blocks: [{ type: 'text', text: 'Corpo do e-mail.' }] },
+          whatsapp: { text: 'Oi {{firstName}}, tudo bem? Curto e direto.' },
+          linkedinText: 'texto',
+          timing: 'terça 10h',
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Só email', channels: ['email'] });
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'faz uma mensagem pra eu enviar por whatsapp',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'content');
+    assert.ok(card, 'card de conteúdo');
+    assert.match(card.detail, /mensagem de WhatsApp/, 'card diz o que de fato criou');
+    const wa = prisma.studioContent.rows.find((row) => row.channel === 'whatsapp');
+    assert.ok(wa, 'conteúdo WhatsApp persistido');
+    assert.match(wa.whatsappText, /tudo bem\?/);
+    const emails = prisma.studioContent.rows.filter((row) => row.channel === 'email');
+    assert.equal(emails.length, 0, 'NENHUM e-mail novo (para de duplicar e-mail)');
+    const camp = prisma.studioCampaign.rows.find((row) => row.id === c.data.id);
+    assert.ok(camp.channels.includes('whatsapp'), 'canal WhatsApp entrou na campanha (bridge compila no disparo)');
+  } finally {
+    server.close();
+  }
+});
+
+test('QA: revisar a mensagem de whatsapp mostra SÓ o WhatsApp (não os e-mails)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({ reply: 'Claro!', actions: [{ type: 'show_content' }] }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Multi', channels: ['email', 'whatsapp'] });
+    prisma.studioContent.rows.push(
+      {
+        id: 'ce1', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+        kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+        subject: 'Assunto do EMAIL', whatsappText: null,
+        emailDoc: { blocks: [{ type: 'text', text: 'corpo do email' }] },
+      },
+      {
+        id: 'cw1', orgId: 'org-1', campaignId: c.data.id, channel: 'whatsapp',
+        kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+        whatsappText: 'Mensagem de WHATSAPP aqui', emailDoc: null,
+      }
+    );
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'revisa a mensagem de whatsapp que você fez',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'content_review');
+    assert.ok(card, 'card de revisão');
+    assert.match(card.label, /1 item/, 'só o WhatsApp na lista');
+    assert.match(card.detail, /WHATSAPP aqui/, 'texto do WhatsApp no card');
+    assert.ok(!card.detail.includes('Assunto do EMAIL'), 'e-mail NÃO vaza na revisão do WhatsApp');
+  } finally {
+    server.close();
+  }
+});
