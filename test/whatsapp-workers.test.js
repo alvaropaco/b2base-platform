@@ -50,6 +50,16 @@ function makeFakePrisma() {
         if (row) Object.assign(row, data);
         return row;
       },
+      async upsert({ where, create, update }) {
+        const row = find(db.contacts, where);
+        if (row) {
+          Object.assign(row, update);
+          return row;
+        }
+        const created = { id: id('cc'), ...create };
+        db.contacts.push(created);
+        return created;
+      },
       async count({ where } = {}) {
         return db.contacts.filter((r) => matches(r, where)).length;
       },
@@ -316,4 +326,78 @@ test('US3: org degradada para trial usa o template direto (sem gasto de LLM)', a
   assert.strictEqual(llmStub.callLlm.calls.length, 0, 'trial não consome LLM');
   assert.ok(message.content.includes('MB Máquinas'));
   assert.strictEqual(message.compositionOrigin, 'ai_fallback_template');
+});
+
+// ── QA 2026-10-06: pré-matriculado ALOCADO pelo gate recebe seu job ──────────
+
+test('startCampaign: contato pré-matriculado com nextSendAt (alocado pelo gate) enfileira o job da etapa', async () => {
+  const prisma = makeFakePrisma();
+  prisma.db.campaigns.push({
+    id: 'camp_1', orgId: 'org_1', status: 'DRAFT', source: 'manual',
+    objective: null, offer: null, whatsappAccountId: 'acc_1',
+  });
+  prisma.db.accounts.push({ id: 'acc_1', orgId: 'org_1', sessionName: 'sess', status: 'CONNECTED' });
+  prisma.db.steps.push({
+    id: 'step_1', campaignId: 'camp_1', orderIndex: 0,
+    messageTemplate: 'Olá {{firstName}}.', aiPersonalized: false, delayMinutes: 0,
+  });
+  prisma.db.prospects.push(
+    { id: 'pr_1', orgId: 'org_1', companyName: 'Ang', contactName: 'Ana', cnpjPhones: ['12999887766'] },
+    { id: 'pr_2', orgId: 'org_1', companyName: 'Nova', contactName: 'Bruno', cnpjPhones: ['11999998888'] }
+  );
+  // pr_1: pré-matriculado pelo compile do Studio E ALOCADO pelo gate
+  // (nextSendAt marcado) — o skip antigo o deixava 'Na fila' para sempre.
+  prisma.db.contacts.push({
+    id: 'cc_1', campaignId: 'camp_1', prospectId: 'pr_1', phoneNumber: '12999887766',
+    status: 'QUEUED', currentStepIndex: 0, nextSendAt: new Date('2026-10-06T19:08:00Z'),
+  });
+
+  const queues = makeFakeQueues();
+  workers._setPrismaForTests(prisma);
+  workers._setQueuesForTests(queues);
+
+  const result = await workers.startCampaign(prisma, {
+    campaignId: 'camp_1',
+    prospectIds: ['pr_1', 'pr_2'],
+    orgId: 'org_1',
+  });
+
+  assert.strictEqual(result.jobsQueued, 2, 'alocado + novo entram na sequência');
+  assert.strictEqual(result.skippedAlreadyEnrolled, 0, 'nada pulado');
+  assert.strictEqual(prisma.db.campaigns[0].status, 'RUNNING', 'campanha desperta');
+  assert.strictEqual(queues.sequence.adds.length, 2);
+  const jobAlocado = queues.sequence.adds.find((a) => a.job.contactId === 'cc_1');
+  assert.ok(jobAlocado, 'job do pré-matriculado alocado');
+  assert.strictEqual(jobAlocado.opts.delay, 0, 'sai na hora (gate já liberou)');
+});
+
+test('startCampaign: pré-matriculado SEM alocação (nextSendAt null) continua aguardando o gate', async () => {
+  const prisma = makeFakePrisma();
+  prisma.db.campaigns.push({
+    id: 'camp_1', orgId: 'org_1', status: 'DRAFT', source: 'manual',
+    objective: null, offer: null, whatsappAccountId: 'acc_1',
+  });
+  prisma.db.accounts.push({ id: 'acc_1', orgId: 'org_1', sessionName: 'sess', status: 'CONNECTED' });
+  prisma.db.steps.push({
+    id: 'step_1', campaignId: 'camp_1', orderIndex: 0,
+    messageTemplate: 'Olá {{firstName}}.', aiPersonalized: false, delayMinutes: 0,
+  });
+  prisma.db.prospects.push({ id: 'pr_1', orgId: 'org_1', companyName: 'Ang', cnpjPhones: ['12999887766'] });
+  prisma.db.contacts.push({
+    id: 'cc_1', campaignId: 'camp_1', prospectId: 'pr_1', phoneNumber: '12999887766',
+    status: 'QUEUED', currentStepIndex: 0, nextSendAt: null,
+  });
+
+  const queues = makeFakeQueues();
+  workers._setPrismaForTests(prisma);
+  workers._setQueuesForTests(queues);
+
+  const result = await workers.startCampaign(prisma, {
+    campaignId: 'camp_1',
+    prospectIds: ['pr_1'],
+    orgId: 'org_1',
+  });
+  assert.strictEqual(result.skippedAlreadyEnrolled, 1, 'sem alocação do gate → aguarda');
+  assert.strictEqual(result.jobsQueued, 0);
+  assert.strictEqual(queues.sequence.adds.length, 0);
 });

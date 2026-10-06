@@ -595,3 +595,28 @@ test('AC: saldo 30 e lote 100 → exatamente 30 enfileiradas (STUDIO_REP_FLOOR=0
     delete require.cache[require.resolve('../studio/channel-bridge')];
   }
 });
+
+// ── QA 2026-10-06: cura de órfãs — alocados sem mensagem voltam à fila ───────
+
+test('enqueueBatch: órfãs alocadas sem mensagem voltam à fila; quem tem mensagem não duplica', async () => {
+  const prisma = seed(createFakePrisma());
+  prisma.studioCampaign.rows.push(campaignFixture());
+  const alocadoEm = new Date('2026-10-06T17:06:00Z');
+  prisma.outreachContact.rows.push(
+    // Órfã do skip antigo: alocada às 17:06, mensagem JAMAIS criada.
+    { id: 'oc-orfa', campaignId: 'exec-1', prospectId: 'lead-1', status: 'QUEUED', scheduledAt: alocadoEm },
+    // Em voo de verdade: alocada E com mensagem — NÃO pode reentrar.
+    { id: 'oc-viva', campaignId: 'exec-1', prospectId: 'lead-2', status: 'SCHEDULED', scheduledAt: alocadoEm }
+  );
+  prisma.outreachMessage.rows.push({ id: 'msg-viva', contactId: 'oc-viva', status: 'SCHEDULED' });
+  const enqueued = [];
+  const result = await bridge.enqueueBatch(prisma, {
+    campaign: prisma.studioCampaign.rows[0],
+    channel: 'email',
+    prospectIds: ['lead-1', 'lead-2'],
+    enqueue: async (channel, ids) => enqueued.push({ channel, ids }),
+  });
+  assert.deepEqual(result.enqueued, ['lead-1'], 'órfã realocada; em voo não duplica');
+  const orfa = prisma.outreachContact.rows.find((c) => c.id === 'oc-orfa');
+  assert.ok(orfa.scheduledAt, 're-alocada pelo lote');
+});

@@ -670,11 +670,24 @@ async function startCampaign(prisma, { campaignId, prospectIds, orgId }) {
     // chega depois (ex.: enriquecimento completou após o lançamento).
     const prior = await prisma.whatsAppCampaignContact.findUnique({
       where: { campaignId_prospectId: { campaignId, prospectId } },
-      select: { status: true, cancelReason: true },
+      select: { id: true, status: true, cancelReason: true, nextSendAt: true },
     });
     const retryableNoPhone = prior?.status === 'CANCELLED' && prior.cancelReason === 'no_phone';
     if (prior && !retryableNoPhone) {
-      skippedAlreadyEnrolled++;
+      // QA 2026-10-06: contato pré-matriculado ALOCADO pelo gate do Studio
+      // (nextSendAt marcado por enqueueBatch) precisa do job da etapa — o
+      // skip antigo o deixava 'Na fila' para sempre, sem remetente. Quem não
+      // foi alocado continua aguardando o gate; quem já tem sequência em
+      // curso (job idempotente pelo status do contato) não duplica.
+      if (prior.status === CONTACT_STATUS.QUEUED && prior.nextSendAt) {
+        await queue.sequence.add(
+          { contactId: prior.id, stepIndex: 0, prospectId, campaignId },
+          { delay: 0, attempts: 1000 }
+        );
+        queued++;
+      } else {
+        skippedAlreadyEnrolled++;
+      }
       continue;
     }
 

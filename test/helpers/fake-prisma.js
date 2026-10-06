@@ -36,6 +36,10 @@ function matches(record, where = {}) {
           .includes(String(expected.contains).toLowerCase());
       }
       if ('equals' in expected) return record[field] === expected.equals;
+      if ('not' in expected) {
+        // {not: null} = campo preenchido; {not: <valor>} = diferente do valor.
+        return expected.not === null ? record[field] != null : record[field] !== expected.not;
+      }
       if ('array_contains' in expected) {
         const v = record[field];
         return Array.isArray(v) ? v.includes(expected.array_contains) : false;

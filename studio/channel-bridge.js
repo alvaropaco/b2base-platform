@@ -426,6 +426,32 @@ async function enqueueBatch(prisma, { campaign, channel, prospectIds, now = new 
   const emailExecutionId = campaign.emailExecutionId;
   const whatsappExecutionId = campaign.whatsappExecutionId;
 
+  // 0) Cura de órfãs (QA 2026-10-06): contatos ALOCADOS (scheduledAt marcado)
+  // cuja mensagem JAMAIS nasceu — mortos pelo skip 'already_enrolled' do
+  // prepare antigo. Voltam à fila; quem tem mensagem (em voo/entregue)
+  // permanece intocado.
+  if (channel === 'email' && emailExecutionId) {
+    const allocated = await prisma.outreachContact.findMany({
+      where: { campaignId: emailExecutionId, scheduledAt: { not: null } },
+      select: { id: true },
+    }).catch(() => []);
+    if (allocated.length > 0) {
+      const withMessage = new Set(
+        (await prisma.outreachMessage.findMany({
+          where: { contactId: { in: allocated.map((c) => c.id) } },
+          select: { contactId: true },
+        }).catch(() => [])).map((m) => m.contactId)
+      );
+      const orphans = allocated.filter((c) => !withMessage.has(c.id)).map((c) => c.id);
+      if (orphans.length > 0) {
+        await prisma.outreachContact
+          .updateMany({ where: { id: { in: orphans } }, data: { scheduledAt: null } })
+          .catch(() => {});
+        console.warn(`[studio:bridge] ${orphans.length} contato(s) órfão(s) devolvido(s) à fila do e-mail (alocados sem mensagem)`);
+      }
+    }
+  }
+
   // 1) Filtro first-touch: só inscritos, ainda QUEUED e não liberados.
   let enrolled = [];
   if (channel === 'email' && emailExecutionId) {
