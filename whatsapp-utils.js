@@ -79,8 +79,20 @@ function buildTemplateVars(lead) {
   };
 }
 
+// Apelidos snake_case escritos pelo usuário → chaves canônicas do motor
+// (QA 2026-10-06: {{first_name}} era limpo em silêncio no render).
+const TEMPLATE_ALIAS_RE = /\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g;
+
+function normalizeTemplateAliases(template) {
+  return String(template || '').replace(TEMPLATE_ALIAS_RE, (raw, name) => {
+    if (name in buildTemplateVars({})) return raw;
+    const camel = name.replace(/_([a-zA-Z0-9])/g, (_, c) => c.toUpperCase());
+    return camel in buildTemplateVars({}) ? `{{${camel}}}` : raw;
+  });
+}
+
 function renderTemplate(template, lead) {
-  let out = String(template || '');
+  let out = normalizeTemplateAliases(template);
   const vars = buildTemplateVars(lead);
   for (const [key, value] of Object.entries(vars)) {
     out = out.replace(new RegExp('\\{\\{\\s*' + key + '\\s*\\}\\}', 'g'), value);

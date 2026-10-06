@@ -141,3 +141,12 @@ test('US2 firstName: placeholder vazio em outros formatos não quebra a frase', 
   const comNome = renderTemplate('Bom dia {{firstName}}. Tudo bem?', { ...lead, contactName: 'Ana' });
   assert.strictEqual(comNome, 'Bom dia Ana. Tudo bem?');
 });
+
+test('QA 2026-10-06: apelido snake_case ({{first_name}}) resolve no render — conteúdo antigo não perde variável', () => {
+  const lead = { contactName: 'Ana Souza', companyName: 'Acme', city: 'Joinville', industry: 'Metalurgia' };
+  const utils = require('../whatsapp-utils');
+  const out = utils.renderTemplate('Oi {{first_name}} da {{company_name}} em {{city}}?', lead);
+  assert.strictEqual(out, 'Oi Ana da Acme em Joinville?');
+  // Canônico segue intacto.
+  assert.strictEqual(utils.renderTemplate('Oi {{firstName}}!', lead), 'Oi Ana!');
+});

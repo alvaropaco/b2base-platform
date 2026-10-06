@@ -1228,3 +1228,11 @@ test('QA: variável snake_case do usuário ({{first_name}}) é normalizada para 
     server.close();
   }
 });
+
+test('QA 2026-10-06: renderTemplate normaliza apelidos snake_case do catálogo', () => {
+  const variables = require('../studio/variables');
+  const out = variables.renderTemplate('Olá {{first_name}} — {{company_name}} ({{city}})', {
+    contactName: 'Mariana Silva', companyName: 'Transportes Alfa', city: 'Curitiba',
+  });
+  assert.strictEqual(out, 'Olá Mariana — Transportes Alfa (Curitiba)');
+});

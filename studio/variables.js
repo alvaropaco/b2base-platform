@@ -59,9 +59,20 @@ function usedPlaceholders(text) {
  * - sem valor → fallback da variável (options.fallbacks[var]) ou string vazia
  * Garantia SC-011: o resultado nunca contém "{{...}}".
  */
+// Catálogo em apelido snake_case → nome canônico (QA 2026-10-06: o usuário
+// escreve {{first_name}}/{{company_name}} e o render limpava a variável em
+// silêncio — conteúdo salvo antes da normalização da edição funciona aqui).
+function normalizeAliases(text) {
+  return String(text || '').replace(/\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g, (raw, name) => {
+    if (CATALOG[name]) return raw;
+    const camel = name.replace(/_([a-zA-Z0-9])/g, (_, c) => c.toUpperCase());
+    return CATALOG[camel] ? `{{${camel}}}` : raw;
+  });
+}
+
 function renderTemplate(text, lead, options = {}) {
   const fallbacks = options.fallbacks || {};
-  const out = String(text || '').replace(PLACEHOLDER_RE, (_all, name) => {
+  const out = normalizeAliases(text).replace(PLACEHOLDER_RE, (_all, name) => {
     if (!CATALOG[name]) return fallbacks[name] != null ? String(fallbacks[name]) : '';
     const raw = CATALOG[name].source(lead || {});
     if (raw == null || raw === '') {
@@ -81,4 +92,4 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-module.exports = { CATALOG, validatePlaceholders, usedPlaceholders, renderTemplate, escapeHtml };
+module.exports = { CATALOG, normalizeAliases, validatePlaceholders, usedPlaceholders, renderTemplate, escapeHtml };
