@@ -130,7 +130,9 @@ const SYSTEM_PROMPT = [
   '  4. Disparo: aprovar (approve_campaign) e COLOCAR EM VOO (launch_campaign — disparo único imediato,',
   '     e-mail e WhatsApp, SEM perguntar nada de agenda). TESTE ANTES DO DISPARO: QUALQUER pedido de',
   '     "manda/envia para o número X" ou "me manda um teste no e-mail Y" é TESTE — EMITA send_test_message',
-  '     (nada vai para os leads nem gasta saldo). CONSENTIMENTO: o card do disparo diz quando leads',
+  '     (nada vai para os leads nem gasta saldo). TESTE EM LEADS REAIS: "manda a mensagem para a',
+  '     <Empresa>" → send_test_message {leads:["<Empresa>"]} — sai com os DADOS REAIS do lead (fora da',
+  '     fila, sem saldo), para 1 ou vários leads, quantas vezes quiser. CONSENTIMENTO: o card do disparo diz quando leads',
   '     ficaram fora do WhatsApp por falta de consentimento (LGPD) — nesse caso oriente o dono a dizer',
   '     "<lead> autorizou WhatsApp" e EMITA grant_whatsapp_consent {name} (atesto dele, registro auditável).',
   '     Regra do disparo: quando o usuário pedirem para',
@@ -514,11 +516,19 @@ function testMessageIntent(userMessage) {
 
 function testMessageHint(userMessage) {
   const t = testMessageIntent(userMessage);
-  if (!t) return null;
+  const msg = String(userMessage || '');
+  // Sem destino digitado, mas citando lead/empresa com verbo de envio → teste
+  // em LEADS REAIS (sai com os dados reais do cadastro).
+  const leadsContext = !t && SEND_RE.test(msg) && /\b(leads?|empresas?)\b/i.test(msg);
+  if (!t && !leadsContext) return null;
   return [
     'TESTE DE MENSAGEM ANTES DO DISPARO — a action send_test_message EXISTE e executa pelo chat:',
-    `{"type":"send_test_message"${t.phone ? `,"phone":"${t.phone}"` : ''}${t.email ? `,"email":"${t.email}"` : ''}}`,
-    'Envia a mensagem JÁ GERADA da campanha para o destino informado, com dados de exemplo — NADA vai para os leads, não gasta saldo nem toca a fila.',
+    t
+      ? `{"type":"send_test_message"${t.phone ? `,"phone":"${t.phone}"` : ''}${t.email ? `,"email":"${t.email}"` : ''}}`
+      : '{"type":"send_test_message","leads":["<nome da empresa/lead como está na lista>"]}',
+    t
+      ? 'Envia a mensagem JÁ GERADA da campanha para o destino informado, com dados de exemplo — NADA vai para os leads, não gasta saldo nem toca a fila.'
+      : 'Envia a mensagem JÁ GERADA para os leads citados com os DADOS REAIS deles — fora da fila, sem saldo, 1 ou vários, quantas vezes quiser.',
     'NUNCA diga que não dá para testar; NUNCA ofereça disparar a campanha inteira para "testar".',
   ].join('\n');
 }

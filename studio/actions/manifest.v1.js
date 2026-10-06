@@ -65,7 +65,7 @@ const ACTIONS_V1 = {
   // QA 2026-10-06 (dono): novos usuários testam a mensagem ANTES de enviar
   // para todos os leads. Somente leitura da campanha + envio para UM destino
   // informado — nunca toca a audiência, a fila ou o saldo.
-  send_test_message: { version: 1, idempotency: 'none', description: 'Envia a mensagem da campanha como TESTE (dados de exemplo) para um WhatsApp ou e-mail informado — nada vai para os leads' },
+  send_test_message: { version: 1, idempotency: 'none', description: 'Envia a mensagem da campanha como TESTE para um WhatsApp/e-mail informado ou para leads reais pelo nome (dados reais do lead, fora da fila e sem saldo) — nada vai para a audiência' },
   // Caminho para consentir (FR-35) pelo chat: o DONO atesta o consentimento
   // do lead para WhatsApp (registro auditável); sem ele a matrícula pula o
   // lead (anti-bloqueio/LGPD).
@@ -193,8 +193,9 @@ function validate(action, params = {}) {
       // campaignId opcional em ambas: default = campanha aberta no handler.
       return true;
     case 'send_test_message': {
-      if (!params.phone && !params.email) {
-        const err = new Error('send_test_message exige `phone` (WhatsApp) ou `email` de destino.');
+      const hasLeads = Array.isArray(params.leads) && params.leads.length > 0;
+      if (!params.phone && !params.email && !hasLeads) {
+        const err = new Error('send_test_message exige `phone` (WhatsApp), `email` ou `leads` (nomes) de destino.');
         err.code = 'INVALID_ACTION_PARAMS';
         err.status = 400;
         throw err;

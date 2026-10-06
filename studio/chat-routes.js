@@ -76,6 +76,7 @@ function actionParams(action) {
       return {
         phone: action.phone ? String(action.phone) : null,
         email: action.email ? String(action.email) : null,
+        leads: Array.isArray(action.leads) ? action.leads.map(String).slice(0, 50) : null,
       };
     case 'grant_whatsapp_consent':
       return {
@@ -1154,15 +1155,78 @@ function registerChatRoutes(router, context) {
           parts.push(`✉️ E-mail para ${to}`);
         }
 
-        if (parts.length === 0) {
-          throw httpError('NO_DESTINATION', 400, 'Me diga para onde vai o teste — um número de WhatsApp ou um e-mail.');
+        if (parts.length === 0 && !(Array.isArray(action.leads) && action.leads.length)) {
+          throw httpError('NO_DESTINATION', 400, 'Me diga para onde vai o teste — um número de WhatsApp, um e-mail ou o nome de um lead.');
         }
+        // Leads REAIS pelo nome (QA 2026-10-06: "manda a mensagem para a
+        // CONSTRUTORA ANGULAR") — a mensagem sai com os DADOS REAIS do lead
+        // (nome/empresa/cidade do cadastro), fora da fila e sem saldo. Quantas
+        // vezes e para quantos leads o usuário quiser.
+        const leadReports = [];
+        const leadNames = Array.isArray(action.leads) ? action.leads : [];
+        for (const name of leadNames) {
+          const term = String(name).trim();
+          if (!term) continue;
+          const lead =
+            (await prisma.prospect.findFirst({ where: { orgId, companyName: { contains: term } } })) ||
+            (await prisma.prospect.findFirst({ where: { orgId, tradeName: { contains: term } } })) ||
+            (await prisma.prospect.findFirst({ where: { orgId, contactName: { contains: term } } }));
+          if (!lead) {
+            leadReports.push(`⚠️ ${term}: não encontrei na base da organização — confira o nome.`);
+            continue;
+          }
+          const sentVia = [];
+          const waContentForLead = contents.find((c) => c.channel === 'whatsapp' && c.whatsappText);
+          const phones = Array.isArray(lead.cnpjPhones) ? lead.cnpjPhones.filter(Boolean) : [];
+          if (waContentForLead && phones.length > 0) {
+            const waAccount = await prisma.whatsAppAccount.findFirst({ where: { orgId, status: 'CONNECTED' } });
+            if (waAccount) {
+              const chatIdLead = toChatId(String(phones[0]));
+              const wahaLead = require('../waha-provider');
+              const resultLead = await wahaLead.WAHAWhatsAppProvider.sendText(
+                waAccount.sessionName,
+                chatIdLead,
+                renderTemplate(waContentForLead.whatsappText, lead)
+              );
+              if (resultLead?.providerMessageId) sentVia.push('WhatsApp');
+            }
+          }
+          const emailContentForLead = contents.find((c) => c.channel === 'email');
+          if (emailContentForLead && lead.cnpjEmail) {
+            const emailAccountLead = await prisma.emailAccount.findFirst({
+              where: { OR: [{ orgId }, { userId }], status: 'connected' },
+            });
+            if (emailAccountLead) {
+              const renderedLead = renderTemplate(emailBlocksToText(emailContentForLead.emailDoc), lead);
+              const emailProviderLead = require('../email-provider');
+              await emailProviderLead.sendEmailForAccount(prisma, emailAccountLead.id, {
+                to: lead.cnpjEmail,
+                subject: renderTemplate(emailContentForLead.subject || campaign.name, lead),
+                body: renderedLead,
+                htmlBody: `<p>${renderedLead
+                  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                  .replace(/\n{2,}/g, '</p><p>')
+                  .replace(/\n/g, '<br/>')}</p>`,
+                messageId: `teste-${crypto.randomUUID()}`,
+              });
+              sentVia.push('e-mail');
+            }
+          }
+          leadReports.push(
+            sentVia.length > 0
+              ? `✅ ${lead.companyName}: teste enviado por ${sentVia.join(' + ')} (dados reais do cadastro).`
+              : `⚠️ ${lead.companyName}: nada enviado — ${phones.length === 0 ? 'sem telefone no cadastro' : ''}${phones.length === 0 && !lead.cnpjEmail ? ' e ' : ''}${!lead.cnpjEmail ? 'sem e-mail no cadastro' : ''} ou canal não conectado.`
+          );
+        }
+        const reportLines = [...parts.map((p) => `📱✉️ ${p}`), ...leadReports].filter(Boolean);
         return {
           type: 'test_message_sent',
           label: 'Mensagem de teste enviada',
           detail:
-            `${parts.join(' e ')} — com dados de exemplo (${SAMPLE.contactName}, ${SAMPLE.companyName}). ` +
-            'Confira como o lead vai receber e ajuste o que quiser: só coloco em voo quando você pedir.',
+            (reportLines.length > 0 ? `${reportLines.join('\n')}\n\n` : '') +
+            (parts.length > 0
+              ? `Destinos manuais saem com dados de exemplo (${SAMPLE.contactName}, ${SAMPLE.companyName}); leads recebem os DADOS REAIS deles. `
+              : 'Fora da fila e sem gastar o saldo — só coloco em voo quando você pedir. Teste quantas vezes quiser.'),
         };
       }
 

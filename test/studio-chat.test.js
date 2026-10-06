@@ -1074,3 +1074,76 @@ test('QA: disparo com lead sem consentimento WhatsApp diagnosTICA no card; atest
     server.close();
   }
 });
+
+test('QA: "manda a mensagem para a ANGULAR" envia TESTE ao LEAD REAL com os dados dele (fila intocada)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Mandando para o lead.',
+          actions: [{ type: 'send_test_message', leads: ['ANGULAR'] }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  const waha = require('../waha-provider');
+  const sent = [];
+  const realSendText = waha.WAHAWhatsAppProvider.sendText;
+  waha.WAHAWhatsAppProvider.sendText = async (_session, chatId, text) => {
+    sent.push({ chatId, text });
+    return { providerMessageId: 'wam.lead-teste' };
+  };
+  const emailProvider = require('../email-provider');
+  const emailsSent = [];
+  const realSendEmail = emailProvider.sendEmailForAccount;
+  emailProvider.sendEmailForAccount = async (_prisma, _accountId, payload) => {
+    emailsSent.push(payload);
+    return { messageId: 'pm-teste', threadId: 'th-teste' };
+  };
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Leads reais', channels: ['email', 'whatsapp'] });
+    prisma.studioContent.rows.push(
+      {
+        id: 'cwa2', orgId: 'org-1', campaignId: c.data.id, channel: 'whatsapp',
+        kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+        whatsappText: 'Oi {{firstName}}, a {{companyName}} em {{city}} recebeu este teste.', emailDoc: null,
+      },
+      {
+        id: 'ce2', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+        kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+        subject: 'Teste para {{companyName}}', whatsappText: null,
+        emailDoc: { blocks: [{ type: 'text', text: 'Olá {{firstName}}, teste real.' }] },
+      }
+    );
+    prisma.whatsAppAccount.rows.push({ id: 'wacc-4', orgId: 'org-1', sessionName: 'sess-4', status: 'CONNECTED' });
+    prisma.emailAccount.rows.push({ id: 'ea-4', orgId: 'org-1', userId: 'user-1', provider: 'resend', email: 'venda@empresa.com', status: 'connected' });
+    prisma.prospect.rows.push({
+      id: 'lead-real', orgId: 'org-1', companyName: 'CONSTRUTORA ANGULAR LTDA', contactName: 'Ana Souza',
+      city: 'São José dos Campos', cnpjPhones: ['12999887766'], cnpjEmail: 'contato@angular.com.br',
+    });
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'manda a mensagem para a ANGULAR',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'test_message_sent');
+    assert.ok(card, 'card de teste');
+    assert.match(card.detail, /✅ CONSTRUTORA ANGULAR LTDA: teste enviado por WhatsApp \+ e-mail/, 'relatório por lead');
+    assert.match(card.detail, /dados reais do cadastro/i, 'deixa claro que o lead recebeu dados reais');
+    assert.equal(sent.length, 1, 'UM WhatsApp');
+    assert.match(sent[0].text, /Oi Ana,/, 'firstName com os dados reais do lead (primeiro nome do contato)');
+    assert.match(sent[0].text, /CONSTRUTORA ANGULAR LTDA/, 'empresa real na mensagem');
+    assert.ok(!sent[0].text.includes('Transportes Alfa'), 'NÃO usou dados de exemplo');
+    assert.equal(emailsSent.length, 1, 'UM e-mail para o lead');
+    assert.equal(emailsSent[0].to, 'contato@angular.com.br', 'e-mail do cadastro do lead');
+    // Fila/audiência intocadas.
+    assert.equal(prisma.outreachMessage.rows.length, 0);
+    assert.equal(prisma.whatsAppCampaignContact.rows.length, 0);
+  } finally {
+    waha.WAHAWhatsAppProvider.sendText = realSendText;
+    emailProvider.sendEmailForAccount = realSendEmail;
+    server.close();
+  }
+});
