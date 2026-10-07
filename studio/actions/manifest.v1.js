@@ -77,6 +77,10 @@ const ACTIONS_V1 = {
   // LOTE (QA 2026-10-07): 1 action para N leads — o modelo emitindo 1 por
   // lead estourava o turno (CHAT_FAILED com 50 actions).
   grant_whatsapp_consent_batch: { version: 1, idempotency: 'params', description: 'Registra o consentimento WhatsApp em LOTE — {all:true} para toda a audiência ou {names:[...]} para citados' },
+  // Escolha de variante (QA 2026-10-07: o dono escolhia 'comercial' e as
+  // DUAS variantes seguiam no pré-voo/disparo). Archiva as não escolhidas —
+  // o conteúdo escolhido vira O conteúdo do canal.
+  select_content_variant: { version: 1, idempotency: 'none', description: 'Escolhe qual variante de mensagem por canal segue no disparo — as outras são arquivadas' },
   update_lead: { version: 1, idempotency: 'none', description: 'Edita dados de um lead (empresa, contato, localidade, porte, setor) com escopo de organização' },
   show_replies: { version: 1, idempotency: 'none', description: 'Mostra as respostas classificadas dos leads (interessados, reuniões, opt-outs) — a caixa de entrada do agente' },
   show_dns_records: { version: 1, idempotency: 'none', description: 'Mostra os registros DNS (SPF/DKIM/DMARC) do domínio de envio e o status de cada um' },
@@ -221,6 +225,15 @@ function validate(action, params = {}) {
     case 'grant_whatsapp_consent_batch': {
       // Sem all/names = TODOS (QA 2026-10-07: "registra" sem especificar
       // registra a audiência inteira de uma vez — nada de lotes de 3).
+      return true;
+    }
+    case 'select_content_variant': {
+      if (!params.channel || !params.tone) {
+        const err = new Error('select_content_variant exige `channel` e `tone` (o tom que o usuário escolheu).');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
       return true;
     }
     case 'update_lead': {

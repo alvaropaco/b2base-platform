@@ -203,6 +203,7 @@ const SYSTEM_PROMPT = [
   'launch_campaign {campaignId?};',
   'attach_files {attachmentIds:[id]}; update_lead {prospectId, fields:{companyName?, tradeName?, contactName?, city?, state?, industry?, employees?, cnpjPhones?}} — cnpjPhones destrava lead no_phone;',
   'grant_whatsapp_consent_batch {all:true} ou {names:["Empresa A","Empresa B"]} — registra consentimento em LOTE (NUNCA emita 1 action por lead; leads capturados JÁ nascem com consentimento);',
+  'select_content_variant {channel, tone} — o usuário ESCOLHEU qual variante segue no disparo (as outras são arquivadas);',
   'show_replies {}; show_dns_records {}; show_capabilities {}; connect_email {email, provider:"smtp"|"resend", password?|apiKey?, smtpHost?, smtpPort?, fromName?};',
   'send_test_message {phone?|email?} — mensagem de TESTE da campanha para um destino, com dados de exemplo;',
   'edit_content {channel, whatsappText?|text?|subject?} — TROCA o texto do canal pelo texto EXATO que o usuário pediu (sem ids);',
@@ -544,6 +545,23 @@ function testMessageHint(userMessage) {
  * trocou mas não trocou"). O modelo NÃO tem ids no estado: canal + texto
  * basta (o servidor resolve o conteúdo base).
  */
+/**
+ * ESCOLHA DE VARIANTE (QA 2026-10-07: o dono escolhia 'comercial' e as DUAS
+ * variantes seguiam — o disparo saía em dobro). UMA action arquiva as outras.
+ */
+const SELECT_VARIANT_RE = /\b(usar|escolh\w+|selecion\w+|prefir\w+|fica\w*|manter|validar?|vale)\b[^.?!]{0,64}\b(a\s+)?(comercial|diret[ao]|formal|urgente|tecnic[ao]|vers(ã|a)o)\b/i;
+
+function selectVariantHint(userMessage) {
+  const msg = String(userMessage || '');
+  if (!SELECT_VARIANT_RE.test(msg)) return null;
+  return [
+    'ESCOLHA DE VARIANTE — o usuário escolheu qual TOM/versão segue no disparo. UMA action:',
+    '{"type":"select_content_variant","channel":"whatsapp"|"email","tone":"<tom escolhido, ex.: comercial>"}',
+    'As outras variações são ARQUIVADAS (o disparo segue só com a escolhida). NUNCA diga que',
+    'as duas vão; NUNCA use edit_content para isso.',
+  ].join('\n');
+}
+
 const EDIT_CONTENT_RE = /\b(troc\w+|substitu\w+|alter\w+|edit\w+|mud\w+)\b[^.?!]{0,64}\b(mensagem|conte(ú|u)do|texto)\b/i;
 
 function editContentHint(userMessage) {
@@ -700,7 +718,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
       buildOrgBlock(extras),
       buildHistoryBlock(history),
       skills.selectFor(userMessage),
-      hintOverride || campaignManagementHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage) || consentBatchHint(userMessage),
+      hintOverride || campaignManagementHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage) || consentBatchHint(userMessage) || selectVariantHint(userMessage),
       `NOVA MENSAGEM DO USUÁRIO: ${userMessage}`,
       'Decida as ações e escreva a resposta para o usuário.',
     ]
@@ -850,6 +868,7 @@ module.exports = {
   testMessageHint,
   editContentHint,
   consentBatchHint,
+  selectVariantHint,
   extractRenameTarget,
   extractCreateTarget,
   leadCaptureIntent,

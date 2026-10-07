@@ -698,4 +698,5 @@ module.exports = {
   enqueueBatch,
   waContactModel,
   unsubscribeHeaders,
+  unsubscribeFooter,
 };

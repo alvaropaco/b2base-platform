@@ -91,6 +91,11 @@ function actionParams(action) {
       if (Array.isArray(action.names) && action.names.length > 0) params.names = action.names.map(String).slice(0, 200);
       return params;
     }
+    case 'select_content_variant':
+      return {
+        channel: action.channel ? String(action.channel) : null,
+        tone: action.tone ? String(action.tone) : null,
+      };
     case 'duplicate_campaign':
       return {
         campaignId: action.campaignId ? String(action.campaignId) : null,
@@ -819,10 +824,13 @@ function registerChatRoutes(router, context) {
           }
           return `• ${c.channel} (${c.tone || 'tom padrão'})`;
         });
+        const variantOffer = contents.length > 1
+          ? `\n\nHá ${contents.length} variações — me diga "usar a ${contents[0].tone || 'primeira'}" (ou qual preferir) que o disparo segue SÓ com ela.`
+          : '';
         return {
           type: 'content_review',
           label: `Seu conteúdo para revisar (${contents.length} item(ns))`,
-          detail: parts.join('\n\n—\n\n') + '\n\nQuer ajustar algo? Me diga o que mudar que eu edito aqui mesmo.',
+          detail: parts.join('\n\n—\n\n') + variantOffer + '\n\nQuer ajustar algo? Me diga o que mudar que eu edito aqui mesmo.',
         };
       }
 
@@ -1097,6 +1105,67 @@ function registerChatRoutes(router, context) {
             (replayed ? 'Nada mudou — ' : 'Registrado em auditoria (fonte: atesto do dono pelo chat) — ') +
             'agora o lead entra na matrícula do WhatsApp. Me peça "dispara" que eu sigo o disparo.',
           prospectId: lead.id,
+        };
+      }
+
+      case 'select_content_variant': {
+        // Escolha de VARIANTE (QA 2026-10-07: o dono escolhia 'comercial' e
+        // as duas variantes seguiam no pré-voo/disparo — duas mensagens pro
+        // mesmo lead). A escolhida permanece base; as irmãs são ARQUIVADAS
+        // (preservadas para re-seleção) e as execuções em voo ressincronizam.
+        const channel = ['whatsapp', 'email', 'linkedin_text'].includes(String(action.channel || '').trim().toLowerCase())
+          ? String(action.channel).trim().toLowerCase()
+          : null;
+        if (!channel) throw httpError('INVALID_CHANNEL', 400, 'Canal inválido — use whatsapp, email ou linkedin_text.');
+        const tone = String(action.tone || '').trim().toLowerCase();
+        const rows = await prisma.studioContent.findMany({
+          where: { campaignId: campaign.id, kind: 'base', stepIndex: 1, channel },
+        });
+        if (rows.length === 0) throw httpError('NO_CONTENT', 409, 'A campanha não tem conteúdo desse canal — me peça para gerar.');
+        const chosen =
+          rows.find((r) => String(r.tone || '').toLowerCase() === tone) ||
+          rows.find((r) => String(r.variantLabel || '').toLowerCase() === tone);
+        if (!chosen) {
+          throw httpError('TONE_NOT_FOUND', 404, `Variações disponíveis para ${channel}: ${rows.map((r) => r.tone || r.variantLabel).join(', ')}.`);
+        }
+        const archived = [];
+        for (const row of rows) {
+          if (row.id === chosen.id) continue;
+          await prisma.studioContent.update({ where: { id: row.id }, data: { kind: 'archived' } });
+          archived.push(row.tone || row.variantLabel || row.id);
+        }
+        // Sincroniza execuções em voo: O conteúdo do canal passa a ser a
+        // escolhida (mesmo refresh do reconcile do bridge).
+        const bridge = require('./channel-bridge');
+        const { emailDocToText, unsubscribeHeaders, unsubscribeFooter, compileSteps } = bridge;
+        if (channel === 'email' && campaign.emailExecutionId) {
+          await prisma.outreachCampaign.update({
+            where: { id: campaign.emailExecutionId },
+            data: {
+              emailTemplateSubject: chosen.subject || campaign.name,
+              ...(chosen.emailDoc ? { emailTemplateBody: `${emailDocToText(chosen.emailDoc)}\n\n${unsubscribeFooter({ unsubscribeMailto: chosen.unsubscribeMailto })}` } : {}),
+              emailHeaders: unsubscribeHeaders({ unsubscribeUrl: chosen.unsubscribeUrl, unsubscribeMailto: chosen.unsubscribeMailto }),
+            },
+          }).catch(() => {});
+        }
+        if (channel === 'whatsapp' && campaign.whatsappExecutionId) {
+          const steps = compileSteps(chosen, []);
+          await prisma.whatsAppSequenceStep.deleteMany({ where: { campaignId: campaign.whatsappExecutionId } }).catch(() => {});
+          for (const step of steps) {
+            await prisma.whatsAppSequenceStep.create({ data: { campaignId: campaign.whatsappExecutionId, ...step } }).catch(() => {});
+          }
+        }
+        return {
+          type: 'content_variant_selected',
+          label: `Variante selecionada: ${channel} (${chosen.tone || chosen.variantLabel || 'padrão'})`,
+          detail:
+            (archived.length > 0
+              ? `As outras variação(ões) (${archived.join(', ')}) foram arquivadas — o disparo segue SÓ com a escolhida. `
+              : 'Ela é a única deste canal. ') +
+            'Me peça "dispara" quando quiser colocar em voo.',
+          channel,
+          tone: chosen.tone,
+          contentId: chosen.id,
         };
       }
 

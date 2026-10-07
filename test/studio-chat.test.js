@@ -1383,3 +1383,48 @@ test('QA 2026-10-07: "registra" sem especificar = TODOS de uma vez (default all,
     server.close();
   }
 });
+
+// ── QA 2026-10-07: escolha de variante arquiva as outras (uma mensagem por lead) ──
+
+test('QA: "quero usar a comercial" seleciona a variante e ARQUIVA as outras (pré-voo/disparo só dela)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      if (user.includes('me mostra o conteúdo')) {
+        return { content: JSON.stringify({ reply: 'Aqui.', actions: [{ type: 'show_content' }] }) };
+      }
+      return {
+        content: JSON.stringify({
+          reply: 'Fica a comercial.',
+          actions: [{ type: 'select_content_variant', channel: 'whatsapp', tone: 'comercial' }],
+        }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Variantes', channels: ['whatsapp'] });
+    prisma.studioContent.rows.push(
+      { id: 'cv-com', orgId: 'org-1', campaignId: c.data.id, channel: 'whatsapp', kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial', whatsappText: 'comercial aqui', emailDoc: null },
+      { id: 'cv-dir', orgId: 'org-1', campaignId: c.data.id, channel: 'whatsapp', kind: 'base', stepIndex: 1, variantLabel: 'B', tone: 'direto', whatsappText: 'direto aqui', emailDoc: null }
+    );
+
+    // 1) Seleção.
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'quero usar a comercial' });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'content_variant_selected');
+    assert.ok(card, 'card de variante selecionada');
+    assert.equal(prisma.studioContent.rows.find((row) => row.id === 'cv-com').kind, 'base', 'escolhida intacta');
+    assert.equal(prisma.studioContent.rows.find((row) => row.id === 'cv-dir').kind, 'archived', 'outra arquivada');
+
+    // 2) Revisão mostra SÓ a escolhida.
+    const review = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'me mostra o conteúdo' });
+    const reviewCard = review.body.data.cards.find((card) => card.type === 'content_review');
+    assert.ok(reviewCard, 'card de revisão');
+    assert.match(reviewCard.label, /1 item/, 'só a escolhida na revisão');
+    assert.match(reviewCard.detail, /comercial aqui/);
+    assert.ok(!reviewCard.detail.includes('direto aqui'), 'a arquivada sai da revisão');
+  } finally {
+    server.close();
+  }
+});
