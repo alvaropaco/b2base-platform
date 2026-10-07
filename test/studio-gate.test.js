@@ -645,3 +645,26 @@ test('enqueueBatch: CANCELLED por removido_da_selecao SEM mensagem ressuscita; q
   const enviou = prisma.outreachContact.rows.find((c) => c.id === 'oc-enviou');
   assert.equal(enviou.status, 'CANCELLED', 'quem já recebeu permanece descartado');
 });
+
+test('enqueueBatch WA: órfãs alocadas sem mensagem voltam à fila do WhatsApp', async () => {
+  const prisma = seed(createFakePrisma());
+  prisma.whatsappAccount.rows.push({ id: 'wacc-1', orgId: 'org-1', status: 'CONNECTED' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 50, floor: 10, ceiling: 50, rampStage: 0, domainAuthStatus: 'unverified' });
+  prisma.studioCampaign.rows.push(campaignFixture({ channels: ['whatsapp'], emailExecutionId: null, whatsappExecutionId: 'exec-1' }));
+  prisma.whatsAppCampaignContact.rows.push(
+    // Órfã: alocada ontem (nextSendAt vencido), job JAMAIS enfileirado.
+    { id: 'wcc-orfa', campaignId: 'exec-1', prospectId: 'lead-1', status: 'QUEUED', nextSendAt: new Date('2026-10-06T19:10:00Z') }
+  );
+  const enqueued = [];
+  const result = await bridge.enqueueBatch(prisma, {
+    campaign: prisma.studioCampaign.rows[0],
+    channel: 'whatsapp',
+    prospectIds: ['lead-1'],
+    enqueue: async (channel, ids) => enqueued.push({ channel, ids }),
+  });
+  assert.deepEqual(result.enqueued, ['lead-1'], 'órfã WA realocada');
+  assert.ok(
+    prisma.whatsAppCampaignContact.rows.find((c) => c.id === 'wcc-orfa').nextSendAt,
+    're-alocada pelo lote'
+  );
+});

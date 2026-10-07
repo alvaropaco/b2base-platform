@@ -485,6 +485,28 @@ async function enqueueBatch(prisma, { campaign, channel, prospectIds, now = new 
       where: { campaignId: emailExecutionId, prospectId: { in: requestedIds }, status: 'QUEUED', scheduledAt: null },
     });
   } else if (channel === 'whatsapp' && whatsappExecutionId) {
+    // Cura de órfãs WA (QA 2026-10-07): alocados (nextSendAt marcado) cujo
+    // job JAMAIS foi enfileirado voltam ao filtro — o startCampaign (fix
+    // 75c1fc1e) enfileira a etapa de alocados; quem tem mensagem não toca.
+    const allocatedWa = await waContactModel(prisma).findMany({
+      where: { campaignId: whatsappExecutionId, status: 'QUEUED', nextSendAt: { not: null } },
+      select: { id: true },
+    }).catch(() => []);
+    if (allocatedWa.length > 0) {
+      const withMsg = new Set(
+        (await prisma.whatsAppMessage.findMany({
+          where: { campaignContactId: { in: allocatedWa.map((c) => c.id) } },
+          select: { campaignContactId: true },
+        }).catch(() => [])).map((m) => m.campaignContactId)
+      );
+      const orphansWa = allocatedWa.filter((c) => !withMsg.has(c.id)).map((c) => c.id);
+      if (orphansWa.length > 0) {
+        await waContactModel(prisma)
+          .updateMany({ where: { id: { in: orphansWa } }, data: { nextSendAt: null } })
+          .catch(() => {});
+        console.warn(`[studio:bridge] ${orphansWa.length} contato(s) WA órfão(s) devolvido(s) à fila (alocados sem mensagem)`);
+      }
+    }
     enrolled = await waContactModel(prisma).findMany({
       where: { campaignId: whatsappExecutionId, prospectId: { in: requestedIds }, status: 'QUEUED', nextSendAt: null },
     });
