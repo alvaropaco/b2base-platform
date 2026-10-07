@@ -230,7 +230,7 @@ async function processPrepare(job) {
     where: {
       prospectId_campaignId: { prospectId, campaignId },
     },
-    select: { outreachSequence: true, status: true },
+    select: { id: true, outreachSequence: true, status: true },
   });
 
   // Idempotência de lançamento/follow-up: o lead nunca recebe dois primeiros
