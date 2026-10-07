@@ -216,7 +216,9 @@ function validate(action, params = {}) {
       return true;
     }
     case 'update_lead': {
-      const FIELDS = ['companyName', 'tradeName', 'contactName', 'city', 'state', 'industry', 'employees'];
+      // cnpjPhones (QA 2026-10-07): telefone do lead atualizável pelo chat —
+      // leads com 'no_phone' no cadastro destravam o WhatsApp sem sair dele.
+      const FIELDS = ['companyName', 'tradeName', 'contactName', 'city', 'state', 'industry', 'employees', 'cnpjPhones'];
       const fields = params.fields;
       const hasField =
         fields && typeof fields === 'object' && !Array.isArray(fields) &&

@@ -1126,8 +1126,10 @@ function registerChatRoutes(router, context) {
         };
         const parts = [];
         const crypto = require('crypto');
+        const leadNames = (Array.isArray(action.leads) ? action.leads : []).map(String).filter((n) => n.trim());
+        const previewMode = leadNames.length > 0; // leads + destino = PRÉVIA (dados do lead, entrega no destino)
 
-        if (action.phone) {
+        if (action.phone && !previewMode) {
           const phone = normalizePhone(String(action.phone));
           const chatId = toChatId(String(action.phone));
           if (!phone || phone.length < 10) {
@@ -1146,7 +1148,7 @@ function registerChatRoutes(router, context) {
           parts.push(`📱 WhatsApp para ${phone} — texto que saiu: "${String(renderedWa).slice(0, 180)}"`);
         }
 
-        if (action.email) {
+        if (action.email && !previewMode) {
           const to = String(action.email).trim();
           if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
             throw httpError('INVALID_EMAIL', 400, 'E-mail de teste inválido.');
@@ -1174,7 +1176,7 @@ function registerChatRoutes(router, context) {
           parts.push(`✉️ E-mail para ${to}`);
         }
 
-        if (parts.length === 0 && !(Array.isArray(action.leads) && action.leads.length)) {
+        if (parts.length === 0 && leadNames.length === 0) {
           throw httpError('NO_DESTINATION', 400, 'Me diga para onde vai o teste — um número de WhatsApp, um e-mail ou o nome de um lead.');
         }
         // Leads REAIS pelo nome (QA 2026-10-06: "manda a mensagem para a
@@ -1182,7 +1184,8 @@ function registerChatRoutes(router, context) {
         // (nome/empresa/cidade do cadastro), fora da fila e sem saldo. Quantas
         // vezes e para quantos leads o usuário quiser.
         const leadReports = [];
-        const leadNames = Array.isArray(action.leads) ? action.leads : [];
+        const previewPhone = previewMode && action.phone ? String(action.phone) : null;
+        const previewEmail = previewMode && action.email ? String(action.email).trim() : null;
         for (const name of leadNames) {
           const term = String(name).trim();
           if (!term) continue;
@@ -1195,23 +1198,26 @@ function registerChatRoutes(router, context) {
             continue;
           }
           const sentVia = [];
+          let renderedLead = '';
           const waContentForLead = contents.find((c) => c.channel === 'whatsapp' && c.whatsappText);
-          const phones = Array.isArray(lead.cnpjPhones) ? lead.cnpjPhones.filter(Boolean) : [];
-          if (waContentForLead && phones.length > 0) {
+          // Destino WhatsApp: PRÉVIA no número informado (dados do lead,
+          // entrega no SEU número) ou, sem destino, o telefone do cadastro.
+          const waTarget = previewPhone
+            ? previewPhone
+            : (Array.isArray(lead.cnpjPhones) ? lead.cnpjPhones.filter(Boolean)[0] : null);
+          if (waContentForLead && waTarget) {
             const waAccount = await prisma.whatsAppAccount.findFirst({ where: { orgId, status: 'CONNECTED' } });
             if (waAccount) {
-              const chatIdLead = toChatId(String(phones[0]));
+              const chatIdLead = toChatId(String(waTarget));
               const wahaLead = require('../waha-provider');
-              const resultLead = await wahaLead.WAHAWhatsAppProvider.sendText(
-                waAccount.sessionName,
-                chatIdLead,
-                renderTemplate(waContentForLead.whatsappText, lead)
-              );
+              renderedLead = renderTemplate(waContentForLead.whatsappText, lead);
+              const resultLead = await wahaLead.WAHAWhatsAppProvider.sendText(waAccount.sessionName, chatIdLead, renderedLead);
               if (resultLead?.providerMessageId) sentVia.push('WhatsApp');
             }
           }
           const emailContentForLead = contents.find((c) => c.channel === 'email');
-          if (emailContentForLead && lead.cnpjEmail) {
+          const emailTarget = previewEmail || lead.cnpjEmail;
+          if (emailContentForLead && emailTarget) {
             const emailAccountLead = await prisma.emailAccount.findFirst({
               where: { OR: [{ tenantId: orgId }, { userId }], status: 'connected' },
             });
@@ -1219,7 +1225,7 @@ function registerChatRoutes(router, context) {
               const renderedLead = renderTemplate(emailBlocksToText(emailContentForLead.emailDoc), lead);
               const emailProviderLead = require('../email-provider');
               await emailProviderLead.sendEmailForAccount(prisma, emailAccountLead.id, {
-                to: lead.cnpjEmail,
+                to: emailTarget,
                 subject: renderTemplate(emailContentForLead.subject || campaign.name, lead),
                 body: renderedLead,
                 htmlBody: `<p>${renderedLead
@@ -1231,16 +1237,17 @@ function registerChatRoutes(router, context) {
               sentVia.push('e-mail');
             }
           }
+          const renderedForReport = renderedLead || (emailContentForLead ? renderTemplate(emailBlocksToText(emailContentForLead.emailDoc), lead) : '');
+          const destinoLabel = (previewPhone || previewEmail)
+            ? `prévia com os DADOS DESTE LEAD entregue em ${[previewPhone ? `WhatsApp ${previewPhone}` : null, previewEmail ? `e-mail ${previewEmail}` : null].filter(Boolean).join(' e ')}`
+            : 'nos contatos do cadastro dele';
+          const semNomeNota = !lead.contactName
+            ? ' · ℹ️ cadastro sem nome de contato: a saudação sai sem nome (me peça para atualizar o lead).'
+            : '';
           leadReports.push(
             sentVia.length > 0
-              ? `✅ ${lead.companyName}: teste enviado por ${sentVia.join(' + ')} — "${String(
-                  waContentForLead && sentVia.includes('WhatsApp')
-                    ? renderTemplate(waContentForLead.whatsappText, lead)
-                    : emailContentForLead
-                      ? renderTemplate(emailBlocksToText(emailContentForLead.emailDoc), lead)
-                      : ''
-                ).slice(0, 140)}" (dados reais do cadastro).`
-              : `⚠️ ${lead.companyName}: nada enviado — ${phones.length === 0 ? 'sem telefone no cadastro' : ''}${phones.length === 0 && !lead.cnpjEmail ? ' e ' : ''}${!lead.cnpjEmail ? 'sem e-mail no cadastro' : ''} ou canal não conectado.`
+              ? `✅ ${lead.companyName}: teste por ${sentVia.join(' + ')} (${destinoLabel}) — "${String(renderedForReport).slice(0, 140)}"${semNomeNota}`
+              : `⚠️ ${lead.companyName}: nada enviado — sem telefone/e-mail utilizáveis no cadastro ou canal não conectado.`
           );
         }
         const reportLines = [...parts.map((p) => `📱✉️ ${p}`), ...leadReports].filter(Boolean);
@@ -1266,6 +1273,18 @@ function registerChatRoutes(router, context) {
         for (const f of FIELDS) {
           if (action.fields[f] === undefined || action.fields[f] === null) continue;
           data[f] = f === 'employees' ? Math.max(0, Math.round(Number(action.fields[f]) || 0)) : String(action.fields[f]).slice(0, 200);
+        }
+        // Telefone (QA 2026-10-07): leads cancelados 'no_phone' destravam o
+        // WhatsApp quando o dono informa o número — normaliza e SUBSTITUI a
+        // lista (o valor novo passa a ser a fonte da verdade).
+        if (action.fields.cnpjPhones != null) {
+          const { normalizePhone } = require('../whatsapp-utils');
+          const raw = String(action.fields.cnpjPhones);
+          const phones = raw.split(/[,;\/]+/).map((p) => normalizePhone(p)).filter(Boolean);
+          if (phones.length === 0) {
+            throw httpError('INVALID_PHONE', 400, 'Nenhum telefone válido em "' + raw.slice(0, 40) + '" — informe com DDD (ex.: 12 98873-9001).');
+          }
+          data.cnpjPhones = phones;
         }
         const updated = await prisma.prospect.update({ where: { id: lead.id }, data });
         return {

@@ -1134,8 +1134,8 @@ test('QA: "manda a mensagem para a ANGULAR" envia TESTE ao LEAD REAL com os dado
     assert.equal(res.status, 200);
     const card = body.data.cards.find((card) => card.type === 'test_message_sent');
     assert.ok(card, 'card de teste');
-    assert.match(card.detail, /✅ CONSTRUTORA ANGULAR LTDA: teste enviado por WhatsApp \+ e-mail/, 'relatório por lead');
-    assert.match(card.detail, /dados reais do cadastro/i, 'deixa claro que o lead recebeu dados reais');
+    assert.match(card.detail, /✅ CONSTRUTORA ANGULAR LTDA: teste por WhatsApp \+ e-mail/, 'relatório por lead');
+    assert.match(card.detail, /nos contatos do cadastro dele/, 'deixa claro que o lead recebeu nos contatos dele');
     assert.equal(sent.length, 1, 'UM WhatsApp');
     assert.match(sent[0].text, /Oi Ana,/, 'firstName com os dados reais do lead (primeiro nome do contato)');
     assert.match(sent[0].text, /CONSTRUTORA ANGULAR LTDA/, 'empresa real na mensagem');
@@ -1239,4 +1239,38 @@ test('QA 2026-10-06: renderTemplate normaliza apelidos snake_case do catálogo',
     contactName: 'Mariana Silva', companyName: 'Transportes Alfa', city: 'Curitiba',
   });
   assert.strictEqual(out, 'Olá Mariana — Transportes Alfa (Curitiba)');
+});
+
+
+test('QA 2026-10-07: update_lead aceita TELEFONE com DDD (destrava lead no_phone do WhatsApp)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Atualizando o telefone.',
+          actions: [{ type: 'update_lead', prospectId: 'lead-tel', fields: { cnpjPhones: '12 98873-9001' } }],
+        }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Telefone', channels: ['whatsapp'] });
+    prisma.prospect.rows.push({
+      id: 'lead-tel', orgId: 'org-1', companyName: 'CONSTRUTORA ANGULAR LTDA',
+      cnpjPhones: ['000000000000'],
+    });
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'atualiza o telefone da ANGULAR para 12 98873-9001',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'lead_updated');
+    assert.ok(card, 'card de lead atualizado');
+    assert.match(card.detail, /cnpjPhones/, 'campo de telefone no relatório');
+    const lead = prisma.prospect.rows.find((row) => row.id === 'lead-tel');
+    assert.deepEqual(lead.cnpjPhones, ['5512988739001'], 'telefone normalizado com DDI');
+  } finally {
+    server.close();
+  }
 });
