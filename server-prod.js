@@ -1497,6 +1497,18 @@ app.post('/api/prospects', async (req, res) => {
       }
     });
 
+    // Consentimento WhatsApp AUTOMÁTICO no cadastro (QA 2026-10-07, diretriz
+    // do dono: lead cadastrado já nasce habilitado para a matrícula WA).
+    require('./studio/certificate')
+      .grantConsent(prisma, {
+        orgId: targetOrgId,
+        prospectId: prospect.id,
+        source: 'manual-import',
+        grantedById: req.user?.id || null,
+        evidence: { declaredBy: 'owner-policy', via: 'painel' },
+      })
+      .catch((err) => console.error('[prospects] consentimento WhatsApp falhou (lead segue):', err.message));
+
     // Enriquecimento roteado por plano (NATS premium; BrasilAPI trial).
     const enrichedProspect = await dispatchEnrichmentForPlan(prisma, prospect);
 

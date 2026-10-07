@@ -230,6 +230,23 @@ function createCaptureService(prisma, deps = {}) {
       }
       if (existing) duplicates += 1;
     }
+    // Consentimento WhatsApp AUTOMÁTICO na captura (QA 2026-10-07, diretriz
+    // do dono: o cliente não pode depender de registrar lead por lead —
+    // todo lead capturado já nasce habilitado para a matrícula WhatsApp;
+    // trilha de auditoria preservada com a fonte do consentimento).
+    if (created.length > 0) {
+      const certificate = require('./certificate');
+      for (const prospect of created) {
+        await certificate
+          .grantConsent(prisma, {
+            orgId,
+            prospectId: prospect.id,
+            source: 'capture',
+            evidence: { declaredBy: 'owner-policy', captureSource: 'mcp-cnpj' },
+          })
+          .catch((err) => console.error('[capture] consentimento WhatsApp falhou (lead segue):', err.message));
+      }
+    }
     return { created, duplicates, skipped };
   }
 

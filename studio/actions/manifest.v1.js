@@ -74,6 +74,9 @@ const ACTIONS_V1 = {
   // do lead para WhatsApp (registro auditável); sem ele a matrícula pula o
   // lead (anti-bloqueio/LGPD).
   grant_whatsapp_consent: { version: 1, idempotency: 'params', description: 'Registra o consentimento WhatsApp de um lead (atesto do dono) — destrava a matrícula no disparo' },
+  // LOTE (QA 2026-10-07): 1 action para N leads — o modelo emitindo 1 por
+  // lead estourava o turno (CHAT_FAILED com 50 actions).
+  grant_whatsapp_consent_batch: { version: 1, idempotency: 'params', description: 'Registra o consentimento WhatsApp em LOTE — {all:true} para toda a audiência ou {names:[...]} para citados' },
   update_lead: { version: 1, idempotency: 'none', description: 'Edita dados de um lead (empresa, contato, localidade, porte, setor) com escopo de organização' },
   show_replies: { version: 1, idempotency: 'none', description: 'Mostra as respostas classificadas dos leads (interessados, reuniões, opt-outs) — a caixa de entrada do agente' },
   show_dns_records: { version: 1, idempotency: 'none', description: 'Mostra os registros DNS (SPF/DKIM/DMARC) do domínio de envio e o status de cada um' },
@@ -209,6 +212,16 @@ function validate(action, params = {}) {
     case 'grant_whatsapp_consent': {
       if (!params.prospectId && !params.name) {
         const err = new Error('grant_whatsapp_consent exige `prospectId` ou `name` do lead.');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
+    case 'grant_whatsapp_consent_batch': {
+      const hasNames = Array.isArray(params.names) && params.names.length > 0;
+      if (!params.all && !hasNames) {
+        const err = new Error('grant_whatsapp_consent_batch exige `all: true` ou `names: [...]`.');
         err.code = 'INVALID_ACTION_PARAMS';
         err.status = 400;
         throw err;

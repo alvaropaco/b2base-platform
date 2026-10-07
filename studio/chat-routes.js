@@ -84,6 +84,11 @@ function actionParams(action) {
         prospectId: action.prospectId ? String(action.prospectId) : null,
         name: action.name ? String(action.name) : null,
       };
+    case 'grant_whatsapp_consent_batch':
+      return {
+        all: action.all === true,
+        names: Array.isArray(action.names) ? action.names.map(String).slice(0, 200) : null,
+      };
     case 'duplicate_campaign':
       return {
         campaignId: action.campaignId ? String(action.campaignId) : null,
@@ -1090,6 +1095,64 @@ function registerChatRoutes(router, context) {
             (replayed ? 'Nada mudou — ' : 'Registrado em auditoria (fonte: atesto do dono pelo chat) — ') +
             'agora o lead entra na matrícula do WhatsApp. Me peça "dispara" que eu sigo o disparo.',
           prospectId: lead.id,
+        };
+      }
+
+      case 'grant_whatsapp_consent_batch': {
+        // LOTE (QA 2026-10-07: o modelo emitia 1 action por lead — 50 actions
+        // estouravam o turno com CHAT_FAILED). Modos:
+        //   { all: true }            → TODOS os leads da audiência sem consent
+        //   { names: ["A", "B"] }    → os citados
+        // Sempre idempotente (quem já tem consentimento não é re-registrado).
+        await context.requirePremiumOrg(orgId);
+        const certificate = require('./certificate');
+        let targets = [];
+        if (action.all) {
+          const snapshot = (
+            await prisma.studioAudienceSnapshot.findMany({ where: { campaignId: campaign.id, status: 'active' } })
+          )[0];
+          if (!snapshot) throw httpError('NO_AUDIENCE', 409, 'A campanha não tem audiência montada ainda.');
+          const members = await prisma.studioAudienceMember.findMany({ where: { snapshotId: snapshot.id, included: true } });
+          const consented = new Set(
+            (await prisma.studioLeadConsent.findMany({ where: { orgId, channel: 'whatsapp' } })).map((c) => c.prospectId)
+          );
+          targets = members.filter((m) => !consented.has(m.prospectId)).map((m) => m.prospectId);
+          if (targets.length === 0) {
+            return { type: 'consent_granted', label: 'Todos os leads da audiência já têm consentimento', detail: 'Nada a registrar — pode disparar.', granted: 0, replayed: true };
+          }
+        } else if (Array.isArray(action.names) && action.names.length) {
+          for (const term of action.names.map(String).map((n) => n.trim()).filter(Boolean)) {
+            const lead =
+              (await prisma.prospect.findFirst({ where: { orgId, companyName: { contains: term } } })) ||
+              (await prisma.prospect.findFirst({ where: { orgId, tradeName: { contains: term } } })) ||
+              (await prisma.prospect.findFirst({ where: { orgId, contactName: { contains: term } } }));
+            if (lead) targets.push(lead.id);
+          }
+        }
+        if (targets.length === 0) {
+          throw httpError('NO_TARGETS', 400, 'Nenhum lead para registrar — me diga os nomes ou peça "registra o consentimento de todos".');
+        }
+        let granted = 0;
+        let already = 0;
+        for (const prospectId of targets) {
+          const { replayed } = await certificate.grantConsent(prisma, {
+            orgId,
+            prospectId,
+            source: 'manual',
+            grantedById: userId,
+            evidence: { declaredBy: 'owner-chat', campaignId: campaign.id },
+          });
+          if (replayed) already += 1;
+          else granted += 1;
+        }
+        return {
+          type: 'consent_granted',
+          label: `Consentimento WhatsApp registrado: ${granted} lead(s)${already ? ` (${already} já tinham)` : ''}`,
+          detail:
+            `${granted} lead(s) habilitado(s) para a matrícula do WhatsApp${already ? `, ${already} já tinham consentimento` : ''}. ` +
+            'Me peça "dispara" que eu sigo o disparo.',
+          granted,
+          already,
         };
       }
 
@@ -2111,6 +2174,8 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     delete_campaign: 'Apagando a campanha…',
     approve_campaign: 'Aprovando a campanha…',
     launch_campaign: 'Colocando em voo…',
+    grant_whatsapp_consent: 'Registrando consentimento…',
+    grant_whatsapp_consent_batch: 'Registrando consentimento em lote…',
     send_test_message: 'Enviando mensagem de teste…',
     update_lead: 'Atualizando o lead…',
     show_replies: 'Vendo as respostas dos leads…',
