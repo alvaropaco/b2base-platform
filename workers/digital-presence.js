@@ -147,6 +147,11 @@ function createDigitalPresenceWorker({ prisma, js, jsm = null, deps = {} } = {})
   const { makeResultPublisher } = require('./sdk/result-publisher');
   return createWorkerRuntime({
     name: 'digital-presence',
+    // Subject real da capability: enrichment.task.company.digital_presence.v1
+    // (o nome do worker NÃO é o prefixo do subject — sem este filtro explícito
+    // o durable consumia o subject errado e as tasks voltavam 'sem executor').
+    filterSubject: 'enrichment.task.company.digital_presence.>',
+    durable: 'enrichment-engine-company-digital-presence',
     capabilities: require('../enrichment-capabilities'),
     workerVersion: process.env.GIT_SHA || 'dev',
     deps: {
