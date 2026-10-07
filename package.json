@@ -15,6 +15,7 @@
     "db:generate": "npx prisma generate",
     "start": "node server-prod.js",
     "worker:identity": "node workers/identity.js",
+    "worker:digital-presence": "node workers/digital-presence.js",
     "worker:search": "node workers/search.js",
     "worker:company-deep": "node workers/company-deep.js",
     "worker:discovery": "node workers/discovery.js",

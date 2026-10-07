@@ -47,7 +47,7 @@ test('validateCapabilityInput: input inválido → INVALID_INPUT', () => {
 test('eligibleCapabilities: gating por plano (FR-030/033) e enabled', () => {
   const trial = caps.eligibleCapabilities({ plan: 'trial' });
   const premium = caps.eligibleCapabilities({ plan: 'premium' });
-  assert.deepStrictEqual(trial.sort(), ['identity.cnpj.basic', 'identity.domain.verify', 'search.news']);
+  assert.deepStrictEqual(trial.sort(), ['company.digital_presence', 'identity.cnpj.basic', 'identity.domain.verify', 'search.news']);
   assert.ok(premium.length >= trial.length);
   // enabled:false nunca é elegível, nem para premium.
   assert.ok(!caps.eligibleCapabilities({ plan: 'premium' }).includes('company.deepgraph'));

@@ -76,6 +76,22 @@ const CAPABILITIES = {
     ],
   },
 
+  'company.digital_presence': {
+    // QA 2026-10-07: extrai o WhatsApp do SITE da empresa (wa.me /
+    // api.whatsapp.com) — o melhor número para disparo; o enrichment-manager
+    // aplica na FRENTE de cnpjPhones. Basic: todos os planos precisam.
+    family: 'company',
+    tier: 'basic',
+    enabled: true,
+    entityType: ['prospect', 'company'],
+    timeoutMs: 30000,
+    maxAttempts: 2,
+    priority: 2,
+    providers: ['site.crawl'],
+    inputSchema: { domain: { type: 'string', required: false }, companyName: { type: 'string', required: false } },
+    expand: [],
+  },
+
   'search.news': {
     family: 'search',
     tier: 'basic',

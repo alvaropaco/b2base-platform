@@ -487,6 +487,7 @@ async function shutdown() {
 module.exports = {
   isNatsEnabled,
   connectNats,
+  getJs: () => _js,
   requestEnrichment,
   startEnrichmentConsumer,
   startDlqMonitor,
