@@ -594,6 +594,26 @@ function consentBatchHint(userMessage) {
   ].join('\n');
 }
 
+/**
+ * DISPARO PARCIAL (QA 2026-10-07: 'dispara para os primeiros 15 leads' — o
+ * modelo tentou listar 15 leads na saída e truncou o turno inteiro). Extrai
+ * o N da frase: UMA action curta launch_campaign {limit:N}.
+ */
+const LAUNCH_LIMIT_RE = /\b(dispar\w*|envi\w*|mand\w*|coloc\w*.*voo)\b[^.?!]{0,80}?(primeiros?|s\u00f3|apenas|maximo|m\u00e1ximo|limite)\b[^.?!]{0,24}?\b(\d{1,3})\s*(leads?|empresas?|contatos?)\b/i;
+
+function launchLimitHint(userMessage) {
+  const msg = String(userMessage || '');
+  const m = msg.match(LAUNCH_LIMIT_RE);
+  if (!m) return null;
+  const limit = Math.min(200, Math.max(1, parseInt(m[3], 10)));
+  return [
+    'DISPARO PARCIAL — o usuário quer disparar para os PRIMEIROS ' + limit + ' leads. UMA action:',
+    `{"type":"launch_campaign","limit":${limit}}`,
+    'O servidor envia só os primeiros ' + limit + ' da fila; o resto fica para o próximo disparo.',
+    'NUNCA liste os leads na saída; NUNCA use select_leads/capture para isso.',
+  ].join('\n');
+}
+
 function emailConnectHint(userMessage) {
   const msg = String(userMessage || '');
   if (!EMAIL_CONNECT_RE.test(msg)) return null;
@@ -718,7 +738,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
       buildOrgBlock(extras),
       buildHistoryBlock(history),
       skills.selectFor(userMessage),
-      hintOverride || campaignManagementHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage) || consentBatchHint(userMessage) || selectVariantHint(userMessage),
+      hintOverride || campaignManagementHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage) || consentBatchHint(userMessage) || selectVariantHint(userMessage) || launchLimitHint(userMessage),
       `NOVA MENSAGEM DO USUÁRIO: ${userMessage}`,
       'Decida as ações e escreva a resposta para o usuário.',
     ]
@@ -817,7 +837,9 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
         },
         validate: (parsed) =>
           typeof parsed.reply === 'string' && parsed.reply.trim() ? null : 'reply ausente ou vazio',
-        maxTokens: 1200,
+        // 1200 truncava turnos com lista de leads/limit (QA 2026-10-07:
+        // 'dispara para os primeiros 15' — 4 tentativas, todas cortadas).
+        maxTokens: 2000,
         temperature: 0.4,
         tag: 'studio:chat',
       });
@@ -869,6 +891,7 @@ module.exports = {
   editContentHint,
   consentBatchHint,
   selectVariantHint,
+  launchLimitHint,
   extractRenameTarget,
   extractCreateTarget,
   leadCaptureIntent,

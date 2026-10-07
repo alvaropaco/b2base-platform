@@ -404,7 +404,7 @@ async function approveCampaign(prisma, { campaign, userId }) {
  * Sem nenhum canal de fato: 409 explicável (NO_CHANNEL_CONNECTED) e a
  * campanha segue "pendente de envio" (statusReason preservado).
  */
-async function runImmediateDispatch(prisma, { campaign, userId, overrides = {}, allowRunning = false }) {
+async function runImmediateDispatch(prisma, { campaign, userId, overrides = {}, allowRunning = false, limit = null }) {
   // allowRunning (QA 2026-10-06): re-disparo em campanha já em voo é o
   // DELTA — recompila (matricula leads recém-consentidos/canal novo) e
   // reenfileira só quem ainda não foi alocado (filtro do enqueueBatch).
@@ -447,7 +447,14 @@ async function runImmediateDispatch(prisma, { campaign, userId, overrides = {}, 
   const members = await prisma.studioAudienceMember.findMany({
     where: { snapshotId: snapshot.id, included: true },
   });
-  const prospectIds = members.map((m) => m.prospectId);
+  let prospectIds = members.map((m) => m.prospectId);
+  const audienceTotal = prospectIds.length;
+  // Disparo PARCIAL (QA 2026-10-07: 'vamos mandar primeiro para 15 leads') —
+  // corta na ordem da fila; o restante fica QUEUED para o próximo disparo.
+  if (limit != null) {
+    const n = Math.max(1, Math.min(audienceTotal, Math.round(Number(limit)) || audienceTotal));
+    prospectIds = prospectIds.slice(0, n);
+  }
   const channels = campaign.channels || [];
   const channel = channels.includes('email') ? 'email' : channels.includes('whatsapp') ? 'whatsapp' : null;
 
@@ -480,6 +487,8 @@ async function runImmediateDispatch(prisma, { campaign, userId, overrides = {}, 
   return {
     campaign: updated,
     dispatch: dispatchResult,
+    audienceTotal,
+    dispatched: prospectIds.length,
     compiled: {
       enrollment: compiled.enrollment,
       channels: compiled.channels,

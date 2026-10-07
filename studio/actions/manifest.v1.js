@@ -202,6 +202,16 @@ function validate(action, params = {}) {
     case 'approve_campaign':
     case 'launch_campaign':
       // campaignId opcional em ambas: default = campanha aberta no handler.
+      // limit (launch): disparo parcial — primeiros N leads.
+      if (action === 'launch_campaign' && params.limit != null) {
+        const n = Number(params.limit);
+        if (!Number.isFinite(n) || n < 1 || n > 500) {
+          const err = new Error('limit deve ser um número entre 1 e 500.');
+          err.code = 'INVALID_ACTION_PARAMS';
+          err.status = 400;
+          throw err;
+        }
+      }
       return true;
     case 'send_test_message': {
       const hasLeads = Array.isArray(params.leads) && params.leads.length > 0;

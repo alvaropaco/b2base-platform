@@ -1428,3 +1428,63 @@ test('QA: "quero usar a comercial" seleciona a variante e ARQUIVA as outras (pr�
     server.close();
   }
 });
+
+// ── QA 2026-10-07: disparo PARCIAL ("mandar primeiro para 15 leads") ─────────
+
+test('QA: "dispara os primeiros N" envia SÓ N leads (resto fica para o próximo disparo)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Disparo parcial.',
+          actions: [{ type: 'launch_campaign', limit: 2 }],
+        }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const dispatched = [];
+  const { server, prisma, api } = await startServer({
+    llmImpl: impl,
+    overrides: {
+      dispatchImmediate: async (args) => {
+        dispatched.push(args);
+        return { email: { enqueued: [...args.prospectIds], blocked: null }, whatsapp: null };
+      },
+    },
+  });
+  try {
+    prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Parcial', channels: ['email'] });
+    prisma.studioCampaign.rows[0].status = 'approved';
+    prisma.studioContent.rows.push({
+      id: 'ce-1', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'Teste', whatsappText: null,
+      emailDoc: { blocks: [{ type: 'text', text: 'Olá {{firstName}}! Não quer mais receber? Descadastro.' }] },
+    });
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-p', orgId: 'org-1', campaignId: c.data.id,
+      criteriaVersion: {}, totalCount: 3, includedCount: 3, excludedCount: 0, status: 'active',
+    });
+    for (const pid of ['lp1', 'lp2', 'lp3']) {
+      prisma.studioAudienceMember.rows.push({ id: `m-${pid}`, snapshotId: 'snap-p', orgId: 'org-1', prospectId: pid, included: true, excludeReason: null });
+    }
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'disparo imediato, mas vamos mandar primeiro para 2 leads',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'campaign_launched');
+    assert.ok(card, 'card de launch');
+    assert.match(card.detail, /primeiros 2/, 'deixa claro o parcial');
+    assert.equal(dispatched.length, 1, 'dispatch 1x');
+    assert.equal(dispatched[0].prospectIds.length, 2, 'SÓ os primeiros 2 leads no disparo');
+    assert.equal(prisma.studioCampaign.rows[0].status, 'running', 'em voo');
+    // O 3º lead NÃO foi alocado — fica para o próximo disparo (sem limite).
+    const naFila = prisma.outreachContact.rows.filter((row) => row.status === 'QUEUED' && !row.scheduledAt && row.campaignId !== c.data.id);
+    assert.ok(naFila.length >= 1, 'lead restante continua na fila sem alocar');
+  } finally {
+    server.close();
+  }
+});

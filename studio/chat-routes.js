@@ -14,7 +14,7 @@
 
 const crypto = require('crypto');
 const { httpError } = require('./errors');
-const { createChatAgent, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery, extractCaptureState, extractChannelIntent, testMessageIntent } = require('./ai/chat-agent');
+const { createChatAgent, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery, extractCaptureState, extractChannelIntent, testMessageIntent, launchLimitHint } = require('./ai/chat-agent');
 const { createComposer } = require('./ai/compose');
 const { createExtractor } = require('./ai/extract');
 const { generateAndStorePackage, generateAndStoreWhatsApp } = require('./compose-service');
@@ -69,9 +69,13 @@ function actionParams(action) {
     case 'approve_campaign':
     case 'launch_campaign':
       // campaignId opcional: default = campanha aberta (escopo org no handler).
+      // limit opcional no launch (QA 2026-10-07: disparo parcial).
       return {
         name: action.name || null,
         campaignId: action.campaignId ? String(action.campaignId) : null,
+        ...(action.type === 'launch_campaign' && action.limit != null
+          ? { limit: Math.max(1, Math.min(500, Math.round(Number(action.limit)) || 0)) || undefined }
+          : {}),
       };
     case 'send_test_message':
       return {
@@ -1016,6 +1020,7 @@ function registerChatRoutes(router, context) {
           campaign: target,
           userId,
           allowRunning: alreadyRunning,
+          limit: action.limit != null ? Number(action.limit) : undefined,
           overrides: { dispatchImmediate: overrides.dispatchImmediate },
         });
         const launched = result.campaign;
@@ -1034,7 +1039,7 @@ function registerChatRoutes(router, context) {
         }
         const detail =
           (queuedTotal > 0
-            ? `Disparo único em andamento — ${parts.join(' + ') || `${queuedTotal} lead(s)`} entrando na fila agora.`
+            ? `Disparo único em andamento${action.limit ? ` (primeiros ${queuedTotal} de ${result.audienceTotal || queuedTotal + 1}+)` : ''} — ${parts.join(' + ') || `${queuedTotal} lead(s)`} entrando na fila agora.`
             : 'A fila não começou ainda') +
           (blockedNotes.length
             ? ` ⚠️ ${blockedNotes.join(' · ')} — me peça "ver o saldo" que eu mostro o que falta para liberar.`
@@ -2628,6 +2633,15 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
       if ((effective.type === 'generate_content' || effective.type === 'show_content') && !effective.channel) {
         const channelIntent = extractChannelIntent(message);
         if (channelIntent) effective.channel = channelIntent;
+      }
+      // QA 2026-10-07: LIMITE do disparo extraído da frase ("vamos mandar
+      // primeiro para 15 leads") — o modelo não lista leads na saída.
+      if (effective.type === 'launch_campaign' && effective.limit == null) {
+        const hint = launchLimitHint(message);
+        if (hint) {
+          const m = hint.match(/"limit":(\d+)/);
+          if (m) effective.limit = parseInt(m[1], 10);
+        }
       }
       // QA 2026-10-06: destino do TESTE extraído da PRÓPRIA frase ("envie uma
       // mensagem padrão para o número 12 99657-7200") — o modelo não decide.
