@@ -159,6 +159,8 @@ function createDigitalPresenceWorker({ prisma, js, jsm = null, deps = {} } = {})
       ...deps,
     },
   });
+  runtime.registerExecutors(executors);
+  return runtime;
 }
 
 // Boot direto: `node workers/digital-presence.js`
