@@ -450,6 +450,32 @@ async function enqueueBatch(prisma, { campaign, channel, prospectIds, now = new 
         console.warn(`[studio:bridge] ${orphans.length} contato(s) órfão(s) devolvido(s) à fila do e-mail (alocados sem mensagem)`);
       }
     }
+    // Ressuscita CANCELLED por 'removido_da_selecao' SEM mensagem nenhuma
+    // (QA 2026-10-07: o sync cancelou 25 contatos com a audiência antiga
+    // ativa; a audiência atual voltou a incluí-los e o enroll pulava quem já
+    // tinha row). Cancelado que JÁ recebeu mensagem continua descartado.
+    const cancelled = await prisma.outreachContact.findMany({
+      where: { campaignId: emailExecutionId, status: 'CANCELLED', cancelReason: 'removido_da_selecao' },
+      select: { id: true },
+    }).catch(() => []);
+    if (cancelled.length > 0) {
+      const withMessage = new Set(
+        (await prisma.outreachMessage.findMany({
+          where: { contactId: { in: cancelled.map((c) => c.id) } },
+          select: { contactId: true },
+        }).catch(() => [])).map((m) => m.contactId)
+      );
+      const resurrect = cancelled.filter((c) => !withMessage.has(c.id)).map((c) => c.id);
+      if (resurrect.length > 0) {
+        await prisma.outreachContact
+          .updateMany({
+            where: { id: { in: resurrect } },
+            data: { status: 'QUEUED', cancelReason: null, scheduledAt: null },
+          })
+          .catch(() => {});
+        console.warn(`[studio:bridge] ${resurrect.length} contato(s) CANCELADO(s) sem mensagem ressuscitado(s) para QUEUED (removido_da_selecao)`);
+      }
+    }
   }
 
   // 1) Filtro first-touch: só inscritos, ainda QUEUED e não liberados.

@@ -620,3 +620,28 @@ test('enqueueBatch: órfãs alocadas sem mensagem voltam à fila; quem tem mensa
   const orfa = prisma.outreachContact.rows.find((c) => c.id === 'oc-orfa');
   assert.ok(orfa.scheduledAt, 're-alocada pelo lote');
 });
+
+test('enqueueBatch: CANCELLED por removido_da_selecao SEM mensagem ressuscita; quem recebeu não', async () => {
+  const prisma = seed(createFakePrisma());
+  prisma.studioCampaign.rows.push(campaignFixture());
+  prisma.outreachContact.rows.push(
+    // Cancelado pelo sync com a audiência antiga — nunca recebeu nada.
+    { id: 'oc-morto', campaignId: 'exec-1', prospectId: 'lead-1', status: 'CANCELLED', cancelReason: 'removido_da_selecao', scheduledAt: null },
+    // Cancelado DEPOIS de enviar — descartado de verdade.
+    { id: 'oc-enviou', campaignId: 'exec-1', prospectId: 'lead-2', status: 'CANCELLED', cancelReason: 'removido_da_selecao', scheduledAt: null }
+  );
+  prisma.outreachMessage.rows.push({ id: 'msg-enviada', contactId: 'oc-enviou', status: 'SENT' });
+  const enqueued = [];
+  const result = await bridge.enqueueBatch(prisma, {
+    campaign: prisma.studioCampaign.rows[0],
+    channel: 'email',
+    prospectIds: ['lead-1', 'lead-2'],
+    enqueue: async (channel, ids) => enqueued.push({ channel, ids }),
+  });
+  assert.deepEqual(result.enqueued, ['lead-1'], 'só o que nunca recebeu volta');
+  const morto = prisma.outreachContact.rows.find((c) => c.id === 'oc-morto');
+  assert.equal(morto.status, 'QUEUED', 'ressuscitado');
+  assert.equal(morto.cancelReason, null, 'motivo limpo');
+  const enviou = prisma.outreachContact.rows.find((c) => c.id === 'oc-enviou');
+  assert.equal(enviou.status, 'CANCELLED', 'quem já recebeu permanece descartado');
+});
