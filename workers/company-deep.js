@@ -12,6 +12,9 @@
 // =============================================================================
 
 const { createWorkerRuntime } = require('./sdk/runtime');
+// QA 2026-10-07: company.digital_presence pertence à família company (subject
+// enrichment.task.company.>) — o executor vive no módulo digital-presence.
+const digitalPresence = require('./digital-presence');
 const { makeResultPublisher } = require('./sdk/result-publisher');
 const capabilities = require('../enrichment-capabilities');
 const { createLogger } = require('../logger');
@@ -33,6 +36,8 @@ function makeExecutors(deps = {}) {
   } = deps;
 
   return {
+    'company.digital_presence': digitalPresence.executors['company.digital_presence'],
+
     async 'company.profile.deep'(task, { logger }) {
       let profile;
       try {

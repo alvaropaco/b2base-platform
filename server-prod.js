@@ -5504,20 +5504,6 @@ async function start() {
         } catch (err) {
           console.error(`[qualification] falha ao iniciar consumidor: ${err.message}`);
         }
-        try {
-          // Worker company.digital_presence IN-APP (QA 2026-10-07): extrai o
-          // WhatsApp do site da empresa e publica — o manager aplica na frente
-          // de cnpjPhones. Sem deployment novo de worker.
-          const { createDigitalPresenceWorker } = require('./workers/digital-presence');
-          const dpRuntime = createDigitalPresenceWorker({
-            prisma,
-            js: natsEnrichment.getJs(),
-            deps: { registry: require('./enrichment-provider-registry').getWorkerRegistry() },
-          });
-          dpRuntime.start().catch((err) => console.error(`[enrichment] worker digital-presence não iniciado: ${err.message}`));
-        } catch (err) {
-          console.error(`[enrichment] falha ao iniciar worker digital-presence: ${err.message}`);
-        }
       }
     } else {
       console.log('[nats] NATS desabilitado - usando enriquecimento síncrono BrasilAPI.');
