@@ -542,7 +542,7 @@ function createEnrichmentManager(deps = {}) {
       if (Object.keys(updates).length > 0) {
         await prisma.prospect.update({ where: { id: prospect.id }, data: updates });
         Object.assign(prospect, updates);
-        logger.log(`[enrichment-manager] contatos do site aplicados ao prospect ${prospect.id}: ${Object.keys(updates).join(', ')}`);
+        logger.info(`[enrichment-manager] contatos do site aplicados ao prospect ${prospect.id}: ${Object.keys(updates).join(', ')}`);
       }
     } catch (err) {
       logger.warn(`[enrichment-manager] contatos do site não aplicados ao prospect ${prospect.id}: ${err.message}`);
