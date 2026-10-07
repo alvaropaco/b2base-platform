@@ -41,7 +41,9 @@ function isBillingConfigured() {
 function _setStripeForTests(client) { _stripe = client; }
 
 // Packs de compra de envios (QA 2026-10-07: botão no /studio para comprar
-// saldo de disparo via Stripe já conectado). Preço por envio configurável.
+// saldo de disparo via Stripe já conectado — painel de saldo → +50/+100/+250
+// por canal; fulfillment por webhook credita o orçamento). Preço por envio
+// configurável via STRIPE_CREDIT_PRICE_BRL (default R$ 0,50).
 const BALANCE_PACKS = [50, 100, 250];
 
 function creditUnitPriceCents() {
