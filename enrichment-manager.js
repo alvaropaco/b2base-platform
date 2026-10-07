@@ -43,8 +43,12 @@ function buildCapabilityInput(capability, prospect) {
         : null;
     case 'identity.domain.verify':
     case 'company.logo':
-    case 'company.digital_presence':
       return domain ? { domain } : null;
+    case 'company.digital_presence':
+      // Sem domínio no cadastro, o worker DESCOBRE o site pelo nome (searxng).
+      return domain
+        ? { domain }
+        : (prospect.companyName ? { companyName: prospect.companyName } : null);
     case 'company.profile.deep':
       return prospect.companyName
         ? { companyName: prospect.companyName, domain: domain || undefined }
