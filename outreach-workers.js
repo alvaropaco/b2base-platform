@@ -1185,11 +1185,7 @@ async function startOutreachCampaign(prisma, campaignId, prospectIds, emailAccou
     data: { status: 'active' },
   });
 
-  if (alreadyEnrolled.size > 0) {
-    console.log(`[outreach] lançamento ${campaignId}: ${alreadyEnrolled.size} lead(s) já inscrito(s) ignorado(s)`);
-  }
-
-  return { campaignId, jobsQueued: jobIds.length, skippedAlreadyEnrolled: alreadyEnrolled.size, jobIds };
+  return { campaignId, jobsQueued: jobIds.length, jobIds };
 }
 
 module.exports = {
