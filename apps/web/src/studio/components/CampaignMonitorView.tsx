@@ -304,26 +304,26 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
           <section>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Evolução dos disparos</h3>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <FunnelCard label="Enviados" value={(funnel?.sent ?? summary?.sentCount ?? 0).toLocaleString('pt-BR')} />
+              <FunnelCard label="Enviados" value={funnel == null ? '—' : (funnel.sent ?? summary?.sentCount ?? 0).toLocaleString('pt-BR')} />
               <FunnelCard
                 label="Entregues"
-                value={(funnel?.delivered ?? 0).toLocaleString('pt-BR')}
+                value={funnel == null ? '—' : (funnel.delivered ?? 0).toLocaleString('pt-BR')}
                 hint={funnel?.rates.deliveredRate ? `${Math.round(funnel.rates.deliveredRate * 100)}%` : undefined}
               />
               <FunnelCard
                 label="Aberturas"
-                value={(funnel?.opens ?? 0).toLocaleString('pt-BR')}
+                value={funnel == null ? '—' : (funnel.opens ?? 0).toLocaleString('pt-BR')}
                 hint={funnel?.rates.openRate ? `${Math.round(funnel.rates.openRate * 100)}% das entregas` : undefined}
               />
               <FunnelCard
                 label="Cliques"
-                value={(funnel?.clicks ?? 0).toLocaleString('pt-BR')}
+                value={funnel == null ? '—' : (funnel.clicks ?? 0).toLocaleString('pt-BR')}
                 hint={funnel?.rates.clickRate ? `${Math.round(funnel.rates.clickRate * 100)}% das entregas` : undefined}
               />
-              <FunnelCard label="Respostas" value={(funnel?.replies ?? 0).toLocaleString('pt-BR')} />
-              <FunnelCard label="Conversões" value={(funnel?.conversions ?? 0).toLocaleString('pt-BR')} />
-              <FunnelCard label="Bounces" value={(funnel?.bounces ?? 0).toLocaleString('pt-BR')} />
-              <FunnelCard label="Descadastros" value={(funnel?.unsubs ?? 0).toLocaleString('pt-BR')} />
+              <FunnelCard label="Respostas" value={funnel == null ? '—' : (funnel.replies ?? 0).toLocaleString('pt-BR')} />
+              <FunnelCard label="Conversões" value={funnel == null ? '—' : (funnel.conversions ?? 0).toLocaleString('pt-BR')} />
+              <FunnelCard label="Bounces" value={funnel == null ? '—' : (funnel.bounces ?? 0).toLocaleString('pt-BR')} />
+              <FunnelCard label="Descadastros" value={funnel == null ? '—' : (funnel.unsubs ?? 0).toLocaleString('pt-BR')} />
             </div>
             {funnel?.estimated && (
               <p className="mt-1.5 text-[10px] text-muted-foreground">
