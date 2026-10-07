@@ -22,6 +22,46 @@ const dnsVerify = require('./dns-verify');
 
 function registerCockpitRoutes(router, context) {
   const { prisma, httpError, requirePremiumOrg } = context;
+  const appBaseUrl = (req) => process.env.APP_URL || req.headers.origin || `${req.protocol}://${req.get('host')}`;
+
+  // ── Compra de envios (Stripe Checkout — QA 2026-10-07) ───────────────────
+  // GET  /reputation/topup-packs   — packs + preço (para o botão do /studio)
+  // POST /reputation/topup-checkout {channel, units} → { url } do Checkout
+  // Fulfillment: webhook checkout.session.completed credita o orçamento.
+  router.get('/reputation/topup-packs', async (req, res) => {
+    const stripeBilling = require('../stripe-billing');
+    res.json({ success: true, data: stripeBilling.balancePacks() });
+  });
+
+  router.post('/reputation/topup-checkout', async (req, res, next) => {
+    try {
+      const { orgId, userId } = req.studio;
+      const stripeBilling = require('../stripe-billing');
+      if (!stripeBilling.isBillingConfigured()) {
+        const err = new Error('Compra de envios indisponível: Stripe não configurado nesta instalação.');
+        err.status = 503;
+        throw err;
+      }
+      const { channel, units } = req.body || {};
+      const org = await prisma.organization.findUnique({ where: { id: orgId } });
+      if (!org) throw httpError('NOT_FOUND', 404, 'Organização não encontrada');
+      const session = await stripeBilling.createBalanceCheckoutSession(
+        prisma,
+        org,
+        appBaseUrl(req),
+        { channel, units: units != null ? Number(units) : 100 }
+      );
+      await prisma.activity.create({ data: {
+        orgId,
+        userId: userId || null,
+        type: 'billing.topup_checkout',
+        message: `Checkout de ${units || 100} envios (${channel}) iniciado`,
+      } }).catch(() => {});
+      res.json({ success: true, data: { url: session.url, sessionId: session.id } });
+    } catch (err) {
+      next(err);
+    }
+  });
 
   // ── GET /cockpit/home — Briefing do Mordomo (FR-21…FR-25) ────────────────
   // Estado único de abertura: sugestões (≤3 com motivo), saldo por canal,

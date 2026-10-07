@@ -40,10 +40,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   StudioRequestError,
   ackCockpitWake,
+  createTopupCheckout,
   createCampaign,
   fetchCampaign,
   fetchCockpitHome,
   fetchReputation,
+  fetchTopupPacks,
   runCampaignAction,
   setSendPause,
 } from './api';
@@ -108,6 +110,9 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
   const [home, setHome] = useState<CockpitHome | null>(null);
   const [campaignDetail, setCampaignDetail] = useState<Awaited<ReturnType<typeof fetchCampaign>> | null>(null);
   const [balances, setBalances] = useState<ReputationBalance[]>([]);
+  const [topupPacks, setTopupPacks] = useState<{ units: number; totalCents: number }[] | null>(null);
+  const [topupError, setTopupError] = useState(false);
+  const [topupBusy, setTopupBusy] = useState<string | null>(null);
   const [saldoOpen, setSaldoOpen] = useState(false);
   const [events, setEvents] = useState<ReputationEvent[]>([]);
   const [wakesOpen, setWakesOpen] = useState(false);
@@ -204,9 +209,23 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
         const data = await fetchReputation();
         setEvents(data.events || []);
         setBalances(data.balances || []);
+        void fetchTopupPacks()
+          .then((packs) => setTopupPacks(packs.configured ? packs.packs : null))
+          .catch(() => setTopupPacks(null));
       } catch (_) {
         /* painel mantém o último estado */
       }
+    }
+  };
+
+  /** Compra de envios: Checkout Stripe (redireciona e volta pro /studio). */
+  const buyEnvios = async (channel: string, units: number) => {
+    setTopupBusy(`${channel}:${units}`);
+    try {
+      const { url } = await createTopupCheckout(channel, units);
+      window.location.assign(url);
+    } catch (_) {
+      setTopupBusy(null);
     }
   };
 
@@ -636,6 +655,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                 }
                 if (steps.length === 0) steps.push('Nada a fazer — canal saudável e autorizado a disparar.');
                 return (
+                  <>
                   <div key={b.channel} className="cockpit-glass rounded-xl p-3">
                     <p className="flex items-center gap-2">
                       <span
@@ -660,6 +680,32 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                       ))}
                     </ol>
                   </div>
+                  {topupPacks && topupPacks.length > 0 && (
+                    <div className="mt-2 border-t border-[#160211]/10 pt-2">
+                      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Comprar mais envios (Stripe)
+                      </p>
+                      <div className="flex gap-1.5">
+                        {topupPacks.map((pack) => {
+                          const key = `${b.channel}:${pack.units}`;
+                          const preco = (pack.totalCents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+                          return (
+                            <button
+                              key={key}
+                              type="button"
+                              disabled={topupBusy === key}
+                              onClick={() => void buyEnvios(b.channel, pack.units)}
+                              className="flex-1 rounded-lg border border-[#160211]/15 bg-white px-1.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-white disabled:opacity-50"
+                            >
+                              +{pack.units}
+                              <span className="block text-[9px] text-muted-foreground">{preco}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  </>
                 );
               })}
             </div>

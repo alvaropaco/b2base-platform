@@ -734,6 +734,28 @@ export async function fetchReputation(): Promise<{ balances: ReputationBalance[]
   return data.data;
 }
 
+/** Packs de compra de envios (Stripe Checkout — QA 2026-10-07). */
+export async function fetchTopupPacks(): Promise<{
+  configured: boolean;
+  unitPriceCents: number;
+  currency: string;
+  packs: { units: number; totalCents: number }[];
+}> {
+  const data = await request<{ data: { configured: boolean; unitPriceCents: number; currency: string; packs: { units: number; totalCents: number }[] } }>(
+    '/reputation/topup-packs'
+  );
+  return data.data;
+}
+
+/** Cria o Checkout Session de compra de envios e devolve a URL do Stripe. */
+export async function createTopupCheckout(channel: string, units: number): Promise<{ url: string; sessionId: string }> {
+  const data = await request<{ data: { url: string; sessionId: string } }>('/reputation/topup-checkout', {
+    method: 'POST',
+    body: JSON.stringify({ channel, units }),
+  });
+  return data.data;
+}
+
 /** Pausa global de emergência 1-clique (FR-19); retomada exige ação explícita. */
 export async function setSendPause(paused: boolean, reason?: string): Promise<{ paused: boolean }> {
   const data = await request<{ data: { paused: boolean } }>('/reputation/pause', {
