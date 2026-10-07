@@ -314,6 +314,29 @@ async function approveCampaign(prisma, { campaign, userId }) {
     throw httpErr('EMPTY_AUDIENCE', 409, 'Audiência vazia após revalidação de exclusões.');
   }
 
+  // Canais declarados SEM conteúdo base saem da campanha (QA 2026-10-07:
+  // 'só por WhatsApp' com email declarado sem peça bloqueava a aprovação
+  // INTEIRA — canal sem conteúdo é sobra, não bloqueio; quem não gerou
+  // peça para um canal simplesmente não dispara por ele). Se sobrar NENHUM
+  // canal com peça, a checagem de conteúdo abaixo bloqueia como antes.
+  const baseContents = await prisma.studioContent.findMany({
+    where: { campaignId: campaign.id, kind: 'base', stepIndex: 1 },
+  });
+  const withContent = new Set(baseContents.map((c) => c.channel));
+  const channelsBefore = campaign.channels || [];
+  const channelsAfter = channelsBefore.filter((ch) => ch === 'linkedin_text' || withContent.has(ch));
+  let droppedChannels = [];
+  if (channelsAfter.length < channelsBefore.length) {
+    droppedChannels = channelsBefore.filter((ch) => !channelsAfter.includes(ch));
+    if (channelsAfter.length > 0) {
+      await prisma.studioCampaign.update({
+        where: { id: campaign.id },
+        data: { channels: channelsAfter },
+      });
+      campaign.channels = channelsAfter;
+    }
+  }
+
   // Compliance Guard mínimo (US12 aprofunda): block impede aprovação.
   const checks = await compliance.runPreApprovalChecks(prisma, campaign);
   const approval = {
@@ -371,6 +394,7 @@ async function approveCampaign(prisma, { campaign, userId }) {
       whatsappExecutionId: compiled.whatsappExecution?.id || null,
     },
   });
+  updated.droppedChannels = droppedChannels;
   if (experiments.length > 0) {
     const experimentService = require('./experiment-service');
     const freshSnapshot = await activeSnapshot(prisma, campaign);

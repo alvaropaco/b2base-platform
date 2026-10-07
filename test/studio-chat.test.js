@@ -1488,3 +1488,61 @@ test('QA: "dispara os primeiros N" envia SÓ N leads (resto fica para o próximo
     server.close();
   }
 });
+
+// ── QA 2026-10-07: canal declarado sem conteúdo sai da campanha (não bloqueia) ──
+
+test('QA: aprovar com canal sem conteúdo (email declarado, só WA gerado) APROVA e ajusta canais', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Aprovando.',
+          actions: [{ type: 'approve_campaign' }, { type: 'launch_campaign' }],
+        }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({
+    llmImpl: impl,
+    overrides: {
+      dispatchImmediate: async (args) => ({
+        whatsapp: { enqueued: [...args.prospectIds], blocked: null },
+        email: null,
+      }),
+    },
+  });
+  try {
+    prisma.whatsAppAccount.rows.push({ id: 'wacc-5', orgId: 'org-1', sessionName: 'sess-5', status: 'CONNECTED' });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Só WA', channels: ['email', 'whatsapp'] });
+    prisma.studioCampaign.rows[0].status = 'in_review';
+    prisma.studioContent.rows.push({
+      id: 'cw-solo', orgId: 'org-1', campaignId: c.data.id, channel: 'whatsapp',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      whatsappText: 'Mensagem WA.', emailDoc: null,
+    });
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-w', orgId: 'org-1', campaignId: c.data.id,
+      criteriaVersion: {}, totalCount: 1, includedCount: 1, excludedCount: 0, status: 'active',
+    });
+    prisma.studioAudienceMember.rows.push({ id: 'mw-1', snapshotId: 'snap-w', orgId: 'org-1', prospectId: 'lead-w', included: true, excludeReason: null });
+    prisma.prospect.rows.push({ id: 'lead-w', orgId: 'org-1', companyName: 'CLIENTE WA LTDA', cnpjPhones: ['11999998888'], cnpjEmail: 'cliente@wa.com' });
+    prisma.studioLeadConsent.rows.push({ id: 'cons-w', orgId: 'org-1', prospectId: 'lead-w', channel: 'whatsapp', source: 'capture' });
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'aprova e coloca em voo só por whatsapp',
+    });
+    assert.equal(res.status, 200);
+    const approved = body.data.cards.find((card) => card.type === 'campaign_approved');
+    assert.ok(approved, 'aprovou (não bloqueou por canal sem conteúdo)');
+    assert.match(approved.detail, /email sa(í|i)ram dos canais/, 'card explica o canal descartado');
+    const camp = prisma.studioCampaign.rows[0];
+    assert.deepEqual(camp.channels, ['whatsapp'], 'canal sem conteúdo saiu da campanha');
+    assert.equal(camp.status, 'running', 'launch seguiu');
+
+    const launched = body.data.cards.find((card) => card.type === 'campaign_launched');
+    assert.ok(launched, 'launch seguiu no mesmo turno');
+  } finally {
+    server.close();
+  }
+});

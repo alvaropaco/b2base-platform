@@ -975,12 +975,19 @@ function registerChatRoutes(router, context) {
         if (!target || target.orgId !== orgId) throw httpError('NOT_FOUND', 404, 'Campanha não encontrada');
         const result = await campaignService.flow.approveCampaign(prisma, { campaign: target, userId });
         const approved = result.campaign;
+        const dropped = approved.droppedChannels || [];
         return {
           type: 'campaign_approved',
           label: `Campanha "${approved.name}" aprovada`,
-          detail: 'Audiência congelada e conformidade checada. Me diga **dispara** que eu coloco em voo AGORA (disparo único, e-mail e WhatsApp) — ou me diga quando agendar, se preferir programar.',
+          detail:
+            'Audiência congelada e conformidade checada. ' +
+            (dropped.length
+              ? `⚠️ ${dropped.join(' e ')} saíram dos canais (sem conteúdo gerado) — o disparo segue só pelos canais com mensagem. `
+              : '') +
+            'Me diga **dispara** que eu coloco em voo AGORA (disparo único) — ou me diga quando agendar, se preferir programar.',
           campaignId: approved.id,
           campaignStatus: approved.status,
+          droppedChannels: dropped,
         };
       }
 
