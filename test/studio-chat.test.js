@@ -1546,3 +1546,53 @@ test('QA: aprovar com canal sem conteúdo (email declarado, só WA gerado) APROV
     server.close();
   }
 });
+
+test('QA 2026-10-07: disparo WA reporta leads SEM TELEFONE com nomes e caminho (e-mail/atualizar)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({ reply: 'Disparando.', actions: [{ type: 'launch_campaign' }] }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    prisma.whatsAppAccount.rows.push({ id: 'wacc-9', orgId: 'org-1', sessionName: 'sess-9', status: 'CONNECTED' });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Sem fone', channels: ['whatsapp'] });
+    prisma.studioCampaign.rows[0].status = 'running';
+    prisma.studioCampaign.rows[0].whatsappExecutionId = 'wexec-np';
+    prisma.whatsAppCampaign.rows.push({ id: 'wexec-np', orgId: 'org-1', studioCampaignId: c.data.id, status: 'RUNNING' });
+    prisma.studioContent.rows.push({
+      id: 'cw-np', orgId: 'org-1', campaignId: c.data.id, channel: 'whatsapp',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      whatsappText: 'Oi {{firstName}}!', emailDoc: null,
+    });
+    prisma.whatsAppCampaignContact.rows.push(
+      { id: 'wcc-np1', campaignId: 'wexec-np', prospectId: 'lead-np1', status: 'CANCELLED', cancelReason: 'no_phone' },
+      { id: 'wcc-np2', campaignId: 'wexec-np', prospectId: 'lead-np2', status: 'CANCELLED', cancelReason: 'no_phone' }
+    );
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-np', orgId: 'org-1', campaignId: c.data.id,
+      criteriaVersion: {}, totalCount: 2, includedCount: 2, excludedCount: 0, status: 'active',
+    });
+    prisma.studioAudienceMember.rows.push(
+      { id: 'mnp1', snapshotId: 'snap-np', orgId: 'org-1', prospectId: 'lead-np1', included: true, excludeReason: null },
+      { id: 'mnp2', snapshotId: 'snap-np', orgId: 'org-1', prospectId: 'lead-np2', included: true, excludeReason: null }
+    );
+    prisma.prospect.rows.push(
+      { id: 'lead-np1', orgId: 'org-1', companyName: 'SEM FONE LTDA', cnpjEmail: null },
+      { id: 'lead-np2', orgId: 'org-1', companyName: 'SEM FONE DOIS', cnpjEmail: 'tem@email.com' }
+    );
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'dispara' });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'campaign_launched');
+    assert.ok(card, 'card de launch');
+    assert.match(card.detail, /2 lead\(s\) SEM TELEFONE no cadastro/, 'diagnóstico com contagem');
+    assert.match(card.detail, /SEM FONE LTDA/, 'nomeia os leads');
+    assert.match(card.detail, /1 deles têm E-MAIL/, 'aponta o caminho e-mail');
+  } finally {
+    server.close();
+  }
+});

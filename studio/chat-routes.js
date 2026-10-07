@@ -1055,6 +1055,26 @@ function registerChatRoutes(router, context) {
         // a fila vazia — leads sem consentimento WhatsApp e canais não
         // conectados eram invisíveis).
         const launchNotes = [];
+        // no_phone (QA 2026-10-07: 14/15 leads capturados SEM telefone — a
+        // base CNPJ não retornou celular; o WhatsApp é impossível para eles e
+        // o card precisava dizer isso com nomes).
+        if (campaign.whatsappExecutionId) {
+          const waContacts = await prisma.whatsAppCampaignContact.findMany({
+            where: { campaignId: campaign.whatsappExecutionId, status: 'CANCELLED', cancelReason: 'no_phone' },
+            take: 200,
+          });
+          if (waContacts.length > 0) {
+            const prospectIds = waContacts.map((c) => c.prospectId);
+            const pros = await prisma.prospect.findMany({ where: { id: { in: prospectIds } }, select: { companyName: true, cnpjEmail: true } });
+            const comEmail = pros.filter((p) => p.cnpjEmail).length;
+            const nomes = pros.slice(0, 5).map((p) => p.companyName).join(', ');
+            launchNotes.push(
+              `⚠️ ${waContacts.length} lead(s) SEM TELEFONE no cadastro (a base não trouxe celular): ${nomes}` +
+              `${pros.length > 5 ? '…' : ''}. WhatsApp é impossível sem número — ` +
+              (comEmail > 0 ? `${comEmail} deles têm E-MAIL: me peça para gerar a mensagem de e-mail e disparar por lá, ou atualize os telefones no cadastro.` : 'atualize os telefones no cadastro.')
+            );
+          }
+        }
         if (alreadyRunning) {
           launchNotes.push('Reforço de fila executado na campanha em voo — quem já estava alocado não duplica.');
         }
