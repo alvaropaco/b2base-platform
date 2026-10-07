@@ -43,13 +43,13 @@ test('US1 planejamento: 1 task por entidade × capability elegível, publicadas 
   const prospect = await seedProspect(prisma);
   const { job, tasks } = await manager.createJob({ orgId: 'org-1', prospectId: prospect.id, trigger: 'manual' });
 
-  // Premium: 3 habilitadas (todas basic; nenhuma premium habilitada ainda).
-  assert.strictEqual(tasks.length, 3);
-  assert.deepStrictEqual(tasks.map((t) => t.status), ['QUEUED', 'QUEUED', 'QUEUED']);
+  // Premium: 4 habilitadas (todas basic; nenhuma premium habilitada ainda).
+  assert.strictEqual(tasks.length, 4);
+  assert.deepStrictEqual(tasks.map((t) => t.status), ['QUEUED', 'QUEUED', 'QUEUED', 'QUEUED']);
   assert.strictEqual(job.status, 'RUNNING');
 
   const taskMsgs = decoded(js, 'enrichment.task.');
-  assert.strictEqual(taskMsgs.length, 3);
+  assert.strictEqual(taskMsgs.length, 4);
   // Ordem de publicação segue prioridade (0 primeiro — planejamento em lote).
   assert.deepStrictEqual(taskMsgs.map((t) => t.priority), [...taskMsgs.map((t) => t.priority)].sort((a, b) => a - b));
   // Headers de correlação obrigatórios.
@@ -154,7 +154,7 @@ test('US1 conclusão: todas COMPLETED → job COMPLETED + evento job.completed.v
   assert.strictEqual(completedEvents.length, 1);
   const payload = contracts.parsePayload(completedEvents[0].data);
   assert.strictEqual(payload.status, 'COMPLETED');
-  assert.strictEqual(payload.counts.completed, 3);
+  assert.strictEqual(payload.counts.completed, 4);
   assert.strictEqual(payload.completionPct, 100);
 });
 
@@ -164,12 +164,14 @@ test('US1 conclusão: sucessos + falhas permanentes → job PARTIAL com percentu
   await deps.manager.handleResult(mkResult(job, tasks[0], 'COMPLETED'));
   await deps.manager.handleResult(mkResult(job, tasks[1], 'FAILED'));
   await deps.manager.handleResult(mkResult(job, tasks[2], 'COMPLETED'));
+  if (tasks[3]) await deps.manager.handleResult(mkResult(job, tasks[3], 'COMPLETED'));
   const finalJob = await deps.prisma.enrichmentJob.findUnique({ where: { id: job.id } });
   assert.strictEqual(finalJob.status, 'PARTIAL');
   const evt = deps.js.published.find((m) => m.subject === contracts.JOB_COMPLETED_SUBJECT);
   const payload = contracts.parsePayload(evt.data);
   assert.strictEqual(payload.status, 'PARTIAL');
-  assert.strictEqual(payload.completionPct, 66.7); // 2/3
+  const pctEsperado = tasks.length === 4 ? 75 : 66.7; // 3/4 com digital_presence no catálogo
+  assert.strictEqual(payload.completionPct, pctEsperado);
 });
 
 test('US1 conclusão: todas falhadas → job FAILED', async () => {
@@ -205,8 +207,10 @@ test('US2 retry transiente: re-publica attempt+1 com notBefore; task RETRY→QUE
   assert.strictEqual(republished.length, 1);
   assert.strictEqual(republished[0].capability, task.capability);
   assert.ok(republished[0].notBefore, 'notBefore (backoff) deve ir no payload');
-  const republishedMsg = deps.js.published.filter((m) => m.subject.includes('enrichment.task.'))[3];
-  assert.strictEqual(republishedMsg.opts.headers['Nats-Msg-Id'], `${task.id}:2`);
+  const republishedMsg = deps.js.published.find(
+    (m) => m.opts.headers['Nats-Msg-Id'] === `${task.id}:2`
+  );
+  assert.ok(republishedMsg, 're-publicação com Nats-Msg-Id novo');
 
   const row = await deps.prisma.enrichmentTask.findUnique({ where: { id: task.id } });
   assert.strictEqual(row.attempt, 2);
@@ -474,7 +478,13 @@ test('resync: task RUNNING órfã (worker morreu) é re-publicada e volta a QUEU
 });
 
 test('resync: RUNNING órfã sem tentativas restantes vira PARKED (006) e o job DEGRADED', async () => {
-  const deps = makeDeps();
+  // Catálogo fixo (sem digital_presence): o teste é de mecânica de resync.
+  const caps = {
+    eligibleCapabilities: () => ['identity.cnpj.basic', 'identity.domain.verify', 'search.news'],
+    getCapability: (name) => require('../enrichment-capabilities').getCapability(name),
+    expandRulesFor: () => [],
+  };
+  const deps = makeDeps({ caps });
   const { job, tasks } = await seedJob(deps);
   // Todas RUNNING órfãs; duas sem tentativas restantes, uma com.
   for (const t of tasks) {
