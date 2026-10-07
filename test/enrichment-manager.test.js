@@ -649,3 +649,78 @@ test('resync: watchdog finaliza job RUNNING sem progresso, cancelando tasks ativ
   assert.strictEqual(finalized.status, 'FAILED'); // concluída=0, falhadas>0
   assert.ok(deps.js.published.some((m) => m.subject === contracts.JOB_COMPLETED_SUBJECT));
 });
+
+// ── QA 2026-10-07: WhatsApp do SITE vira o telefone prioritário do lead ──────
+
+test('QA: digital_presence com WhatsApp do site entra na FRENTE de cnpjPhones (+ e-mail corporativo)', async () => {
+  const caps = {
+    eligibleCapabilities: ({ plan }) => (plan === 'premium'
+      ? ['identity.cnpj.basic', 'company.digital_presence']
+      : ['identity.cnpj.basic']),
+    expandRulesFor: () => [],
+    getCapability: (name) => (name === 'company.digital_presence'
+      ? { name: 'company.digital_presence', enabled: true, tier: 'premium', validateInput: () => ({ ok: true }), expandRulesFor: () => [] }
+      : require('../enrichment-capabilities').getCapability(name)),
+  };
+  const deps = makeDeps({ caps });
+  const prospect = await seedProspect(deps.prisma, { cnpjPhones: ['1132995850'] });
+  const { job, tasks } = await deps.manager.createJob({ orgId: 'org-1', prospectId: prospect.id, trigger: 'manual' });
+  const task = tasks.find((t) => t.capability === 'company.digital_presence');
+
+  await deps.manager.handleResult({
+    version: '1', taskId: task.id, taskKey: task.taskKey, jobId: job.id,
+    orgId: 'org-1', prospectId: job.prospectId, entityKey: task.entityKey, entityType: task.entityType,
+    capability: 'company.digital_presence', provider: null, status: 'COMPLETED',
+    data: {
+      digital_presence: { whatsapp: '5512988739001', corporate_email: 'contato@site.com.br' },
+      contacts: [{ type: 'whatsapp', value: '5512988739001', classification: 'FOUND', confidence: 0.8 }],
+    },
+    facts: [{ attribute: 'contact.whatsapp', value: '5512988739001', confidence: 0.8, evidence: { sourceType: 'site', retrievedAt: new Date().toISOString() } }],
+    error: null, durationMs: 100, workerVersion: 'test', suggestedTasks: [], completedAt: new Date().toISOString(),
+  });
+
+  const updated = await deps.prisma.prospect.findUnique({ where: { id: prospect.id } });
+  assert.deepStrictEqual(updated.cnpjPhones, ['5512988739001', '1132995850'], 'WhatsApp do site na FRENTE (motor WA usa [0])');
+  assert.strictEqual(updated.cnpjEmail, 'contato@site.com.br', 'e-mail corporativo preenche lacuna');
+});
+
+test('QA: WhatsApp já presente não duplica; sem WhatsApp não mexe nos telefones', async () => {
+  const caps = {
+    eligibleCapabilities: ({ plan }) => (plan === 'premium'
+      ? ['identity.cnpj.basic', 'company.digital_presence']
+      : ['identity.cnpj.basic']),
+    expandRulesFor: () => [],
+    getCapability: (name) => (name === 'company.digital_presence'
+      ? { name: 'company.digital_presence', enabled: true, tier: 'premium', validateInput: () => ({ ok: true }), expandRulesFor: () => [] }
+      : require('../enrichment-capabilities').getCapability(name)),
+  };
+  const deps = makeDeps({ caps });
+  const prospect = await seedProspect(deps.prisma, { cnpjPhones: ['5512988739001', '1132995850'] });
+  const { job, tasks } = await deps.manager.createJob({ orgId: 'org-1', prospectId: prospect.id, trigger: 'manual' });
+  const task = tasks.find((t) => t.capability === 'company.digital_presence');
+
+  await deps.manager.handleResult({
+    version: '1', taskId: task.id, taskKey: task.taskKey, jobId: job.id,
+    orgId: 'org-1', prospectId: job.prospectId, entityKey: task.entityKey, entityType: task.entityType,
+    capability: 'company.digital_presence', provider: null, status: 'COMPLETED',
+    data: { digital_presence: { whatsapp: '5512988739001' }, contacts: [] },
+    facts: [], error: null, durationMs: 100, workerVersion: 'test', suggestedTasks: [], completedAt: new Date().toISOString(),
+  });
+
+  const updated = await deps.prisma.prospect.findUnique({ where: { id: prospect.id } });
+  assert.deepStrictEqual(updated.cnpjPhones, ['5512988739001', '1132995850'], 'sem duplicar');
+
+  // digital_presence SEM whatsapp → telefones intocados.
+  const prospect2 = await seedProspect(deps.prisma, { id: 'p-2', cnpjPhones: ['1132995850'] });
+  const { job: job2, tasks: t2 } = await deps.manager.createJob({ orgId: 'org-1', prospectId: prospect2.id, trigger: 'manual' });
+  const task2 = t2.find((t) => t.capability === 'company.digital_presence');
+  await deps.manager.handleResult({
+    version: '1', taskId: task2.id, taskKey: task2.taskKey, jobId: job2.id,
+    orgId: 'org-1', prospectId: prospect2.id, entityKey: task2.entityKey, entityType: task2.entityType,
+    capability: 'company.digital_presence', provider: null, status: 'COMPLETED',
+    data: { digital_presence: { linkedin: 'linkedin.com/company/x' }, contacts: [] },
+    facts: [], error: null, durationMs: 100, workerVersion: 'test', suggestedTasks: [], completedAt: new Date().toISOString(),
+  });
+  const p2 = await deps.prisma.prospect.findUnique({ where: { id: prospect2.id } });
+  assert.deepStrictEqual(p2.cnpjPhones, ['1132995850'], 'sem WhatsApp → nada muda');
+});

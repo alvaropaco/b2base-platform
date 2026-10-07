@@ -43,6 +43,7 @@ function buildCapabilityInput(capability, prospect) {
         : null;
     case 'identity.domain.verify':
     case 'company.logo':
+    case 'company.digital_presence':
       return domain ? { domain } : null;
     case 'company.profile.deep':
       return prospect.companyName
@@ -511,6 +512,37 @@ function createEnrichmentManager(deps = {}) {
     // Merge idempotente no perfil: mesma task já aplicada → não reaplica.
     const prospect = await prisma.prospect.findUnique({ where: { id: task.prospectId } });
     if (!prospect || prospect.orgId !== task.orgId) return;
+    // Contatos do SITE (QA 2026-10-07: o dono reclamou que o enriquecimento
+    // puxava só o fixo da Receita e ignorava o WhatsApp do site da empresa).
+    // O WhatsApp extraído (wa.me/api.whatsapp.com) é o MELHOR número para
+    // disparo → entra na FRENTE de cnpjPhones (o motor WA usa [0]); o
+    // e-mail corporativo do site preenche a lacuna quando o CNPJ não traz.
+    try {
+      const dp = (result.data && result.data.digital_presence) || null;
+      const waFromDp = dp && dp.whatsapp ? String(dp.whatsapp) : null;
+      const waFromContacts = ((result.data && result.data.contacts) || [])
+        .filter((c) => c && c.type === 'whatsapp' && c.value)
+        .map((c) => String(c.value))[0] || null;
+      const whatsappValue = waFromDp || waFromContacts;
+      const updates = {};
+      if (whatsappValue) {
+        const digits = whatsappValue.replace(/\D/g, '');
+        const current = Array.isArray(prospect.cnpjPhones) ? prospect.cnpjPhones.filter(Boolean) : [];
+        const already = current.some((p) => String(p).replace(/\D/g, '') === digits);
+        if (digits.length >= 10 && digits.length <= 13 && !already) {
+          updates.cnpjPhones = [whatsappValue, ...current];
+        }
+      }
+      const corpEmail = dp && dp.corporate_email ? String(dp.corporate_email) : null;
+      if (corpEmail && !prospect.cnpjEmail) updates.cnpjEmail = corpEmail;
+      if (Object.keys(updates).length > 0) {
+        await prisma.prospect.update({ where: { id: prospect.id }, data: updates });
+        Object.assign(prospect, updates);
+        logger.log(`[enrichment-manager] contatos do site aplicados ao prospect ${prospect.id}: ${Object.keys(updates).join(', ')}`);
+      }
+    } catch (err) {
+      logger.warn(`[enrichment-manager] contatos do site não aplicados ao prospect ${prospect.id}: ${err.message}`);
+    }
     const summary = prospect.enrichmentSummary || {};
     const v2 = summary.v2 || {};
     const previous = v2[result.capability];
