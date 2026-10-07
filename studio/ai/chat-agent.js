@@ -134,7 +134,8 @@ const SYSTEM_PROMPT = [
   '     <Empresa>" → send_test_message {leads:["<Empresa>"]} — sai com os DADOS REAIS do lead (fora da',
   '     fila, sem saldo), para 1 ou vários leads, quantas vezes quiser. CONSENTIMENTO: o card do disparo diz quando leads',
   '     ficaram fora do WhatsApp por falta de consentimento (LGPD) — registre em LOTE com',
-  '     grant_whatsapp_consent_batch {all:true} (toda a audiência) ou {names:[...]} — NUNCA 1 action por lead',
+  '     grant_whatsapp_consent_batch {all:true} (toda a audiência de UMA vez) ou {names:[...]} — NUNCA 1 action',
+  '     por lead, NUNCA divida em lotes de 3 e NUNCA peça "continua": o lote registra todos de uma vez',
   '     "<lead> autorizou WhatsApp" e EMITA grant_whatsapp_consent {name} (atesto dele, registro auditável).',
   '     Regra do disparo: quando o usuário pedirem para',
   '     disparar/enviar/colocar no ar uma campanha, EMITA launch_campaign na hora. Agenda (set_schedule)',
@@ -556,6 +557,25 @@ function editContentHint(userMessage) {
   ].join('\n');
 }
 
+/**
+ * CONSENTIMENTO WhatsApp em LOTE (QA 2026-10-07: o modelo dividia em lotes
+ * de 3 pedindo 'continua' — inaceitável). Qualquer pedido de registrar
+ * consentimento → UMA action grant_whatsapp_consent_batch {all:true}.
+ */
+const CONSENT_BATCH_RE = /\b(registr\w+|consenti\w+|autoriz\w+|liber\w+|habilit\w+)\b[^.?!]{0,64}\b(consentimento|whatsapp|todos|todas)\b/i;
+
+function consentBatchHint(userMessage) {
+  const msg = String(userMessage || '');
+  if (!CONSENT_BATCH_RE.test(msg)) return null;
+  return [
+    'CONSENTIMENTO WHATSAPP EM LOTE — UMA ÚNICA action registra TODOS de uma vez:',
+    '{"type":"grant_whatsapp_consent_batch","all":true}',
+    'Registra TODOS os leads da audiência que ainda não têm consentimento. NUNCA divida em',
+    'lotes de 3, NUNCA peça "continua", NUNCA emita 1 action por lead. Leads capturados/cadastrados',
+    'JÁ nascem com consentimento — só os antigos precisam disto.',
+  ].join('\n');
+}
+
 function emailConnectHint(userMessage) {
   const msg = String(userMessage || '');
   if (!EMAIL_CONNECT_RE.test(msg)) return null;
@@ -680,7 +700,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
       buildOrgBlock(extras),
       buildHistoryBlock(history),
       skills.selectFor(userMessage),
-      hintOverride || campaignManagementHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage),
+      hintOverride || campaignManagementHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage) || consentBatchHint(userMessage),
       `NOVA MENSAGEM DO USUÁRIO: ${userMessage}`,
       'Decida as ações e escreva a resposta para o usuário.',
     ]
@@ -829,6 +849,7 @@ module.exports = {
   testMessageIntent,
   testMessageHint,
   editContentHint,
+  consentBatchHint,
   extractRenameTarget,
   extractCreateTarget,
   leadCaptureIntent,

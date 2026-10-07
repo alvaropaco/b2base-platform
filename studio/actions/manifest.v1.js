@@ -219,13 +219,8 @@ function validate(action, params = {}) {
       return true;
     }
     case 'grant_whatsapp_consent_batch': {
-      const hasNames = Array.isArray(params.names) && params.names.length > 0;
-      if (!params.all && !hasNames) {
-        const err = new Error('grant_whatsapp_consent_batch exige `all: true` ou `names: [...]`.');
-        err.code = 'INVALID_ACTION_PARAMS';
-        err.status = 400;
-        throw err;
-      }
+      // Sem all/names = TODOS (QA 2026-10-07: "registra" sem especificar
+      // registra a audiência inteira de uma vez — nada de lotes de 3).
       return true;
     }
     case 'update_lead': {

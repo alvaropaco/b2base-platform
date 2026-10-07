@@ -84,11 +84,13 @@ function actionParams(action) {
         prospectId: action.prospectId ? String(action.prospectId) : null,
         name: action.name ? String(action.name) : null,
       };
-    case 'grant_whatsapp_consent_batch':
-      return {
-        all: action.all === true,
-        names: Array.isArray(action.names) ? action.names.map(String).slice(0, 200) : null,
-      };
+    case 'grant_whatsapp_consent_batch': {
+      // all:true implícito quando o modelo não especifica nomes — "registra"
+      // registra TODOS de uma vez (diretriz do dono: nada de 'continua').
+      const params = { all: action.all === true || !((Array.isArray(action.names) && action.names.length > 0)) };
+      if (Array.isArray(action.names) && action.names.length > 0) params.names = action.names.map(String).slice(0, 200);
+      return params;
+    }
     case 'duplicate_campaign':
       return {
         campaignId: action.campaignId ? String(action.campaignId) : null,
@@ -1107,7 +1109,8 @@ function registerChatRoutes(router, context) {
         await context.requirePremiumOrg(orgId);
         const certificate = require('./certificate');
         let targets = [];
-        if (action.all) {
+        const wantsAll = action.all === true || (!Array.isArray(action.names) || action.names.length === 0);
+        if (wantsAll) {
           const snapshot = (
             await prisma.studioAudienceSnapshot.findMany({ where: { campaignId: campaign.id, status: 'active' } })
           )[0];

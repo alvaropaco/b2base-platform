@@ -1347,3 +1347,39 @@ test('QA: grant_whatsapp_consent_batch {all:true} registra TODOS os da audiênci
     server.close();
   }
 });
+
+test('QA 2026-10-07: "registra" sem especificar = TODOS de uma vez (default all, sem continua)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Registrando todos.',
+          actions: [{ type: 'grant_whatsapp_consent_batch' }], // sem all/nomes: default = TODOS
+        }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Default all', channels: ['whatsapp'] });
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-def', orgId: 'org-1', campaignId: c.data.id,
+      criteriaVersion: {}, totalCount: 2, includedCount: 2, excludedCount: 0, status: 'active',
+    });
+    prisma.studioAudienceMember.rows.push(
+      { id: 'md1', snapshotId: 'snap-def', orgId: 'org-1', prospectId: 'd1', included: true, excludeReason: null },
+      { id: 'md2', snapshotId: 'snap-def', orgId: 'org-1', prospectId: 'd2', included: true, excludeReason: null }
+    );
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'registra o consentimento do whatsapp',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'consent_granted');
+    assert.ok(card, 'card de lote');
+    assert.match(card.detail, /2 lead\(s\) habilitado/, 'todos de uma vez');
+    assert.equal(prisma.studioLeadConsent.rows.length, 2);
+  } finally {
+    server.close();
+  }
+});
