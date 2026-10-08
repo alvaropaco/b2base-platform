@@ -75,6 +75,8 @@ function actionParams(action) {
       return { email: action.email || null };
     case 'enrich_whatsapp':
       return {}; // idempotency none — rodar de novo é intencional (base cresce)
+    case 'cancel_campaign':
+      return {}; // idempotency none; campaignId entra no handler via fallback da campanha aberta
     case 'create_lead':
       return {
         companyName: action.companyName || null,
@@ -1153,6 +1155,57 @@ function registerChatRoutes(router, context) {
         };
       }
 
+      case 'cancel_campaign': {
+        // CANCELAR ≠ APAGAR (reclamação do dono, 2026-10-08: "cancelar
+        // campanha" caía no delete_campaign, que recusa em voo). MESMA
+        // semântica do POST /campaigns/:id/control {action:'cancel'}:
+        // para os disparos, estorna o não enviado (AD-13) e cancela a fila
+        // dos dois canais; a campanha e os leads continuam na base.
+        const target = action.campaignId
+          ? await prisma.studioCampaign.findUnique({ where: { id: String(action.campaignId) } })
+          : campaign;
+        if (!target || target.orgId !== orgId) throw httpError('NOT_FOUND', 404, 'Campanha não encontrada');
+        campaignService.assertTransition(target.status, 'cancelled');
+        await prisma.studioCampaign.update({
+          where: { id: target.id },
+          data: { status: 'cancelled', statusReason: 'cancelada pelo usuário via chat' },
+        });
+        // Lote não enviado → estorno em bloco no ledger (estorno nunca quebra
+        // o cancelamento — mesmo comportamento da rota de controle).
+        let refunded = 0;
+        try {
+          const out = await campaignService.flow.refundUnsentOnCancel(prisma, target);
+          refunded = ((out.email && out.email.credited) || 0) + ((out.whatsapp && out.whatsapp.credited) || 0);
+        } catch (_e) { /* best-effort */ }
+        if (target.emailExecutionId) {
+          await prisma.outreachContact.updateMany({
+            where: { campaignId: target.emailExecutionId, status: { in: ['SELECTED', 'QUEUED', 'GENERATING', 'SCHEDULED'] } },
+            data: { status: 'CANCELLED', cancelReason: 'cancelled' },
+          });
+        }
+        if (target.whatsappExecutionId) {
+          const waModel = require('./channel-bridge').waContactModel
+            ? require('./channel-bridge').waContactModel(prisma)
+            : prisma.whatsAppCampaignContact;
+          await waModel.updateMany({
+            where: { campaignId: target.whatsappExecutionId, status: 'QUEUED' },
+            data: { status: 'CANCELLED', cancelReason: 'cancelled' },
+          });
+        }
+        if (target.id === campaign.id) { campaign.status = 'cancelled'; }
+        return {
+          type: 'campaign_cancelled',
+          label: `Campanha "${target.name}" cancelada`,
+          detail:
+            'Disparos parados e fila pendente cancelada' +
+            (refunded > 0 ? ` com ${refunded} unidade(s) de estorno no saldo único` : '') +
+            '. A campanha e os leads continuam na base — quando quiser rodar de novo, me peça para colocá-la em voo que eu recompilo e reenfileiro o que falta.',
+          campaignId: target.id,
+          campaignStatus: 'cancelled',
+          refunded,
+        };
+      }
+
       case 'grant_whatsapp_consent': {
         // Caminho para consentir (FR-35) pelo chat: o DONO atesta que o lead
         // autorizou; o registro leva source/evidence para auditoria. Sem isso
@@ -1631,7 +1684,7 @@ function registerChatRoutes(router, context) {
             '**Jornada da campanha aberta** — objetivo, audiência por linguagem natural, ajuste fino de leads, captura de leads novos, conteúdo (gerar, editar e MOSTRAR aqui no chat) e agendamento.\n' +
             '**Aprovação e disparo** — aprovar a campanha pelo mesmo fluxo do Pré-voo, ENVIAR UMA MENSAGEM DE TESTE para o seu WhatsApp ou e-mail antes de valer, COLOCAR EM VOO na hora (disparo único, e-mail e WhatsApp — sem perguntas de agenda) e mostrar o que falta para poder disparar (saldo, certificado).\n' +
             '**Canais** — conectar a conta de e-mail de disparo (Resend com a sua API key ou SMTP com senha de app), DESCONECTAR a conta de envio (disconnect_email — sempre confirmo antes), mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
-            '**Leads** — consultar e editar dados de empresa/contato, CADASTRAR lead novo com os dados que você passar (create_lead), ENRIQUECER a base procurando o WhatsApp das empresas na internet (enrich_whatsapp) e cadastrar nos leads, mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
+            '**Campanhas em voo** — CANCELAR a campanha pelo chat (cancel_campaign — para os disparos, estorna o não enviado e cancela a fila; sempre confirmo antes). **Leads** — consultar e editar dados de empresa/contato, CADASTRAR lead novo com os dados que você passar (create_lead), ENRIQUECER a base procurando o WhatsApp das empresas na internet (enrich_whatsapp) e cadastrar nos leads, mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
             'Não faço ainda: publicar os registros DNS no provedor do domínio (eu mostro, você publica) e ler a caixa de entrada inteira fora das respostas classificadas.',
         };
 
@@ -2223,6 +2276,12 @@ async function confirmRequired(type, { campaign, prisma, params = {} }) {
       });
       return entry ? 'supressao' : null;
     }
+    case 'cancel_campaign': {
+      // Só dispara o gate para estados canceláveis; em rascunho o handler
+      // devolve o erro honesto da transição.
+      if (!['running', 'scheduled', 'paused', 'approved'].includes(campaign.status)) return null;
+      return 'cancelamento';
+    }
     case 'disconnect_email': {
       const where = {
         tenantId: campaign.orgId,
@@ -2260,6 +2319,7 @@ const CONFIRM_COPY = {
   agenda: 'vou RECONFIGURAR o agendamento atual',
   audiencia: 'vou SUBSTITUIR a audiência decidida — a fila sincroniza e o que já saiu não volta',
   supressao: 'vou REABILITAR esse contato — ele volta a poder receber disparos de e-mail',
+  cancelamento: 'vou CANCELAR a campanha — os disparos param, a fila pendente é cancelada com estorno; a campanha e os leads continuam na base',
   desconexao: 'vou DESCONECTAR a conta de envio — ela para de poder disparar até você conectar outra',
 };
 
@@ -2686,6 +2746,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     connect_email: 'Conectando o e-mail de disparo…',
     enrich_whatsapp: 'Procurando WhatsApps das empresas na internet…',
     create_lead: 'Cadastrando o lead na sua base…',
+    cancel_campaign: 'Cancelando a campanha…',
     show_capabilities: 'Organizando o que eu sei fazer…',
   };
 

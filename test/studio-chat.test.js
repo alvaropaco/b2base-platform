@@ -1840,3 +1840,59 @@ test('QA: "cadastra esse lead" com dados na mão cria o prospect com telefone/co
     server.close();
   }
 });
+
+// ── 2026-10-08: cancelar campanha pelo chat (≠ apagar) ───────────────────────
+
+test('QA: "cancela a campanha" → gate de confirmação e, confirmado, para os disparos com estorno', async () => {
+  process.env.STUDIO_QR_WAIT_MS = '60';
+  let turno = 0;
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      turno += 1;
+      const type = turno === 1 ? 'cancel_campaign' : { ...({}) };
+      return {
+        content: JSON.stringify({
+          reply: turno === 1 ? 'Vou cancelar.' : 'Cancelado!',
+          actions: [turno === 1 ? { type: 'cancel_campaign' } : { type: 'cancel_campaign', confirmed: true }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    prisma.whatsappAccount.rows.push({ id: 'wa-1', orgId: 'org-1', status: 'CONNECTED' });
+    prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'unified', balance: 40, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Voo p/ cancelar', channels: ['whatsapp'] });
+    prisma.studioCampaign.rows[0].status = 'running';
+    prisma.studioCampaign.rows[0].whatsappExecutionId = 'wexec-c';
+    prisma.whatsappCampaign.rows.push({ id: 'wexec-c', orgId: 'org-1', status: 'RUNNING', studioAttachments: [] });
+    // Lote alocado (débito) com 2 contatos ainda na fila.
+    prisma.studioReputationEvent.rows.push({ id: 'ev-d', orgId: 'org-1', channel: 'whatsapp', type: 'debit', amount: 2, balanceAfter: 38, refType: 'batch', refId: 'batch-c' });
+    prisma.whatsappCampaignContact.rows.push(
+      { id: 'wcc-1', campaignId: 'wexec-c', prospectId: 'lead-1', status: 'QUEUED', nextSendAt: null },
+      { id: 'wcc-2', campaignId: 'wexec-c', prospectId: 'lead-2', status: 'QUEUED', nextSendAt: null }
+    );
+
+    // 1º turno SEM confirmar → gate, nada muda.
+    const gate = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'cancela a campanha' });
+    const gateCard = gate.body.data.cards.find((card) => card.type === 'confirm_change');
+    assert.ok(gateCard, 'cancelamento pede confirmação');
+    assert.equal(gateCard.kind, 'cancelamento');
+    assert.equal(prisma.studioCampaign.rows[0].status, 'running', 'nada mudou no gate');
+
+    // 2º turno CONFIRMADO → cancelada, fila cancelada, estorno no ledger.
+    const done = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'confirmo' });
+    const card = done.body.data.cards.find((card) => card.type === 'campaign_cancelled');
+    assert.ok(card, 'card de cancelada');
+    assert.equal(prisma.studioCampaign.rows[0].status, 'cancelled');
+    assert.equal(prisma.studioCampaign.rows[0].statusReason, 'cancelada pelo usuário via chat');
+    assert.equal(prisma.whatsappCampaignContact.rows.filter((r) => r.status === 'CANCELLED').length, 2, 'fila cancelada');
+    const refund = prisma.studioReputationEvent.rows.find((e) => e.type === 'credit');
+    assert.ok(refund, 'estorno do não enviado no saldo único');
+    assert.equal(refund.amount, 2);
+  } finally {
+    delete process.env.STUDIO_QR_WAIT_MS;
+    server.close();
+  }
+});

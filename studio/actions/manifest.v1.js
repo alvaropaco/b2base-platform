@@ -111,6 +111,11 @@ const ACTIONS_V1 = {
   // Idempotency 'params': o MESMO payload 2× devolve o mesmo card (e o
   // handler dedupa por CNPJ/nome — lead não nasce duplicado).
   create_lead: { version: 1, idempotency: 'params', description: 'Cadastra um lead novo na base da organização com os dados informados pelo usuário (nome, CNPJ, telefone, e-mail, cidade…)' },
+  // Cancelar ≠ apagar (reclamação do dono, 2026-10-08: "cancelar campanha"
+  // caía no delete_campaign, que recusa em voo — círculo vicioso). Cancelar
+  // PARA os disparos, estorna o que não saiu e cancela a fila; a campanha e
+  // os leads continuam na base. Sempre confirmado.
+  cancel_campaign: { version: 1, idempotency: 'none', description: 'Cancela a campanha em voo/agendada — para os disparos, estorna o não enviado e cancela a fila (a campanha e os leads continuam na base)' },
 };
 
 /**
@@ -306,6 +311,7 @@ function validate(action, params = {}) {
     case 'list_campaigns':
     case 'show_suppression':
     case 'disconnect_email': // email OPCIONAL — sem ele, o handler resolve a conta (ou pede qual)
+    case 'cancel_campaign': // campaignId opcional (default = campanha aberta)
       return true;
     case 'add_suppression':
     case 'remove_suppression': {
