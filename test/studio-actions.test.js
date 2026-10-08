@@ -97,23 +97,28 @@ test('actionKey: escopada em org+campanha; actionId do cliente vence; hash deter
   assert.equal(manifest.actionKey({ orgId: 'org-1', campaignId: 'c1', action: 'set_objective', params: {} }), null, 'idempotência none não gera chave');
 });
 
-test('manifest v1: contrato fechado com as 29 actions do orquestrador', () => {
+test('manifest v1: contrato fechado com as 33 actions do orquestrador', () => {
   // Evolução ADITIVA (AD-6): show_balance/start_whatsapp_pairing (2026-09-27);
   // attach_files/edit_content (2026-09-29); capture_leads (Epic 2, 2026-09-30);
   // show_content (QA 2026-10-02) e a onda "IA com a plataforma inteira"
   // (QA 2026-10-02, bugs 1/2/6 do dono): list/create/rename/duplicate/delete/
   // approve_campaign, update_lead, show_replies, show_dns_records,
   // show_capabilities; launch_campaign (QA 2026-10-06, disparo sem fricção);
-  // send_test_message (QA 2026-10-06, teste antes do disparo); grant_whatsapp_consent (QA 2026-10-06, caminho FR-35); grant_whatsapp_consent_batch (QA 2026-10-07, lote); select_content_variant (QA 2026-10-07, escolha de variante)
-  // — sem alterar forma, idempotência ou chaves das
+  // send_test_message (QA 2026-10-06, teste antes do disparo); grant_whatsapp_consent (QA 2026-10-06, caminho FR-35); grant_whatsapp_consent_batch (QA 2026-10-07, lote); select_content_variant (QA 2026-10-07, escolha de variante);
+  // show/add/remove_suppression + disconnect_email (2026-10-08, paridade com o
+  // painel Outreach) — sem alterar forma, idempotência ou chaves das
   // anteriores; consumidores existentes não quebram.
   assert.deepEqual(Object.keys(manifest.ACTIONS_V1).sort(), [
-    'approve_campaign', 'attach_files', 'attach_url', 'capture_leads', 'confirm_material',
-    'connect_email', 'create_campaign', 'delete_campaign', 'duplicate_campaign', 'edit_content',
-    'generate_content', 'grant_whatsapp_consent', 'grant_whatsapp_consent_batch', 'launch_campaign', 'list_campaigns', 'rename_campaign', 'select_content_variant', 'select_leads', 'send_test_message', 'set_audience',
+    'add_suppression', 'approve_campaign', 'attach_files', 'attach_url', 'capture_leads', 'confirm_material',
+    'connect_email', 'create_campaign', 'delete_campaign', 'disconnect_email', 'duplicate_campaign', 'edit_content',
+    'generate_content', 'grant_whatsapp_consent', 'grant_whatsapp_consent_batch', 'launch_campaign', 'list_campaigns', 'remove_suppression', 'rename_campaign', 'select_content_variant', 'select_leads', 'send_test_message', 'set_audience',
     'set_objective', 'set_schedule', 'show_balance', 'show_capabilities', 'show_content',
-    'show_dns_records', 'show_replies', 'start_whatsapp_pairing', 'update_lead',
+    'show_dns_records', 'show_replies', 'show_suppression', 'start_whatsapp_pairing', 'update_lead',
   ]);
+  assert.equal(manifest.ACTIONS_V1.add_suppression.idempotency, 'params', 'opt-out é idempotente por params');
+  for (const t of ['show_suppression', 'remove_suppression', 'disconnect_email']) {
+    assert.equal(manifest.ACTIONS_V1[t].idempotency, 'none', `${t}: repetir é um pedido NOVO`);
+  }
   for (const spec of Object.values(manifest.ACTIONS_V1)) {
     assert.equal(spec.version, 1);
     assert.ok(['none', 'params', 'client'].includes(spec.idempotency));
@@ -263,6 +268,124 @@ test('action desconhecida → 400 UNKNOWN_ACTION (contrato v1 fecha o vocabulár
     const bad = await api('POST', `/campaigns/${c.data.id}/actions`, { type: 'delete_everything', actionId: 't-1' });
     assert.equal(bad.res.status, 400);
     assert.equal(bad.body.error, 'UNKNOWN_ACTION');
+  } finally {
+    server.close();
+  }
+});
+
+// ── Paridade com o painel Outreach (2026-10-08): supressão + disconnect ─────
+
+test('suppression: show lista, add cria e add idêntico é replay (params)', async () => {
+  const { server, prisma, api } = await startServer();
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Supressão', channels: ['email'] });
+    const campaignId = c.data.id;
+    prisma.suppressionList.rows.push({
+      id: 'sup-1', tenantId: 'org-1', email: 'antigo@empresa.com', reason: 'unsubscribed', addedAt: new Date('2026-10-01'),
+    });
+
+    const show = await api('POST', `/campaigns/${campaignId}/actions`, { type: 'show_suppression', params: {} });
+    assert.equal(show.res.status, 200);
+    assert.equal(show.body.data.card.type, 'suppression_list');
+    assert.equal(show.body.data.card.total, 1);
+    assert.ok(show.body.data.card.detail.includes('antigo@empresa.com'));
+
+    const add = await api('POST', `/campaigns/${campaignId}/actions`, { type: 'add_suppression', params: { email: 'nao-quer@acme.com' } });
+    assert.equal(add.res.status, 200);
+    assert.equal(add.body.data.card.type, 'suppression_added');
+    assert.equal(add.body.data.card.replayed, undefined, '1ª execução não é replay');
+    assert.equal(prisma.suppressionList.rows.length, 2, 'entrada criada');
+
+    const again = await api('POST', `/campaigns/${campaignId}/actions`, { type: 'add_suppression', params: { email: 'nao-quer@acme.com' } });
+    assert.equal(again.res.status, 200);
+    assert.equal(again.body.data.card.replayed, true, 'mesmo email = replay (idempotency params)');
+    assert.equal(prisma.suppressionList.rows.length, 2, 'nenhuma linha duplicada');
+  } finally {
+    server.close();
+  }
+});
+
+test('suppression: remove SEM confirmação vira confirm_change; confirmado reabilita; inexistente é honesto', async () => {
+  const { server, prisma, api } = await startServer();
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Reabilita', channels: ['email'] });
+    const campaignId = c.data.id;
+    prisma.suppressionList.rows.push({
+      id: 'sup-9', tenantId: 'org-1', email: 'voltar@acme.com', reason: 'manual', addedAt: new Date(),
+    });
+
+    const gate = await api('POST', `/campaigns/${campaignId}/actions`, { type: 'remove_suppression', params: { email: 'voltar@acme.com' } });
+    assert.equal(gate.res.status, 200);
+    assert.equal(gate.body.data.card.type, 'confirm_change', 'reabilitar contato SEMPRE pede confirmação');
+    assert.equal(gate.body.data.card.kind, 'supressao');
+    assert.equal(prisma.suppressionList.rows.length, 1, 'nada executado no gate');
+
+    const done = await api('POST', `/campaigns/${campaignId}/actions`, { type: 'remove_suppression', params: { email: 'voltar@acme.com', confirmed: true } });
+    assert.equal(done.res.status, 200);
+    assert.equal(done.body.data.card.type, 'suppression_removed');
+    assert.equal(done.body.data.card.label.includes('reabilitado'), true);
+    assert.equal(prisma.suppressionList.rows.length, 0, 'entrada removida');
+
+    const missing = await api('POST', `/campaigns/${campaignId}/actions`, { type: 'remove_suppression', params: { email: 'nunca-existiu@acme.com' } });
+    assert.equal(missing.res.status, 200, 'entrada inexistente não é falha');
+    assert.equal(missing.body.data.card.type, 'suppression_removed');
+    assert.ok(missing.body.data.card.label.includes('não está na supressão'));
+
+    const badParams = await api('POST', `/campaigns/${campaignId}/actions`, { type: 'add_suppression', params: {} });
+    assert.equal(badParams.res.status, 400);
+    assert.equal(badParams.body.error, 'INVALID_ACTION_PARAMS');
+  } finally {
+    server.close();
+  }
+});
+
+test('disconnect_email: sem conta é informativo; 1 conta gateia; 2 contas sem email desambigua; confirmado revoga', async () => {
+  const { server, prisma, api } = await startServer();
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Desconecta', channels: ['email'] });
+    const campaignId = c.data.id;
+
+    const none = await api('POST', `/campaigns/${campaignId}/actions`, { type: 'disconnect_email', params: {} });
+    assert.equal(none.res.status, 200);
+    assert.equal(none.body.data.card.type, 'email_disconnected');
+    assert.ok(none.body.data.card.label.includes('Nenhuma conta'), 'sem conta ativa → informativo, sem gate');
+
+    prisma.emailAccount.rows.push(
+      { id: 'ea-1', tenantId: 'org-1', email: 'vendas@acme.com', provider: 'gmail', status: 'connected', encryptedRefreshToken: 'tok', encryptedSecret: 'sec' },
+      { id: 'ea-2', tenantId: 'org-1', email: 'suporte@acme.com', provider: 'smtp', status: 'connected', encryptedSecret: 'sec2' }
+    );
+
+    const ambiguous = await api('POST', `/campaigns/${campaignId}/actions`, { type: 'disconnect_email', params: {} });
+    assert.equal(ambiguous.body.data.card.type, 'email_disconnected');
+    assert.ok(ambiguous.body.data.card.label.includes('Qual conta'), '2 contas sem email → pergunta qual');
+    assert.equal(prisma.emailAccount.rows.filter((r) => r.status === 'connected').length, 2, 'nada desconectado por engano');
+
+    const gate = await api('POST', `/campaigns/${campaignId}/actions`, { type: 'disconnect_email', params: { email: 'vendas@acme.com' } });
+    assert.equal(gate.body.data.card.type, 'confirm_change');
+    assert.equal(gate.body.data.card.kind, 'desconexao');
+    assert.equal(prisma.emailAccount.rows.find((r) => r.id === 'ea-1').status, 'connected', 'gate não executou');
+
+    const done = await api('POST', `/campaigns/${campaignId}/actions`, { type: 'disconnect_email', params: { email: 'vendas@acme.com', confirmed: true } });
+    assert.equal(done.res.status, 200);
+    assert.equal(done.body.data.card.type, 'email_disconnected');
+    const revoked = prisma.emailAccount.rows.find((r) => r.id === 'ea-1');
+    assert.equal(revoked.status, 'revoked', 'mesma semântica do DELETE /api/gmail/accounts/:id');
+    assert.equal(revoked.encryptedRefreshToken, null, 'token OAuth nulo');
+    assert.equal(revoked.encryptedSecret, null, 'segredo nulo');
+    assert.equal(prisma.emailAccount.rows.find((r) => r.id === 'ea-2').status, 'connected', 'a outra conta segue de pé');
+  } finally {
+    server.close();
+  }
+});
+
+test('show_capabilities cita supressão e desconexão (a resposta canônica de "o que você faz?")', async () => {
+  const { server, api } = await startServer();
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Caps', channels: ['email'] });
+    const out = await api('POST', `/campaigns/${c.data.id}/actions`, { type: 'show_capabilities', params: {} });
+    const detail = out.body.data.card.detail;
+    assert.ok(detail.includes('supressão'), 'supressão listada');
+    assert.ok(detail.includes('disconnect_email'), 'desconexão listada');
   } finally {
     server.close();
   }

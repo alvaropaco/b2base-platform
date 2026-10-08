@@ -90,6 +90,15 @@ const ACTIONS_V1 = {
   // serviço do POST /api/email/connect (credenciais validadas antes de
   // salvar). Substituir uma conta existente passa pelo gate de confirmação.
   connect_email: { version: 1, idempotency: 'params', description: 'Conecta a conta de e-mail de disparo (SMTP com App Password ou Resend) — valida as credenciais antes de salvar' },
+  // Paridade com o painel Outreach (2026-10-08) — ADITIVAS (AD-6): gerenciar
+  // pelo chat o que só existia no painel (blocos "Lista de supressão" e
+  // "Contas do Gmail"). show é somente leitura; add é proteção/opt-out
+  // (LGPD-friendly — fricção zero, SEM gate de confirmação); remove e
+  // disconnect são mutadoras destrutivas e passam pelo gate (chat-routes).
+  show_suppression: { version: 1, idempotency: 'none', description: 'Mostra a lista de supressão da organização (contatos que não recebem mais disparo)' },
+  add_suppression: { version: 1, idempotency: 'params', description: 'Adiciona um e-mail à lista de supressão (opt-out — deixa de receber disparo)' },
+  remove_suppression: { version: 1, idempotency: 'none', description: 'Reabilita um contato removendo-o da lista de supressão — sempre pede confirmação' },
+  disconnect_email: { version: 1, idempotency: 'none', description: 'Desconecta a conta de e-mail de disparo (status revoked) — sempre pede confirmação' },
 };
 
 /**
@@ -283,7 +292,19 @@ function validate(action, params = {}) {
     case 'show_dns_records':
     case 'show_capabilities':
     case 'list_campaigns':
+    case 'show_suppression':
+    case 'disconnect_email': // email OPCIONAL — sem ele, o handler resolve a conta (ou pede qual)
       return true;
+    case 'add_suppression':
+    case 'remove_suppression': {
+      if (!params.email || !String(params.email).trim()) {
+        const err = new Error(`${action} exige \`email\` (o endereço na lista de supressão).`);
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
     case 'set_schedule':
       return true; // validação de janelas vive no serviço (INVALID_WINDOW)
     case 'select_leads': {

@@ -62,6 +62,14 @@ function actionParams(action) {
     case 'show_dns_records':
     case 'show_capabilities':
       return {};
+    // Paridade com o painel Outreach (2026-10-08): whitelist p/ hash AD-6.
+    case 'show_suppression':
+    case 'disconnect_email':
+      return action.email ? { email: action.email } : {};
+    case 'add_suppression':
+      return { email: action.email || null, reason: action.reason || null };
+    case 'remove_suppression':
+      return { email: action.email || null };
     case 'create_campaign':
       return { name: action.name || null, channels: Array.isArray(action.channels) ? action.channels.map(String) : null };
     case 'rename_campaign':
@@ -1581,8 +1589,8 @@ function registerChatRoutes(router, context) {
             '**Campanhas** — criar, listar as da sua organização, renomear, duplicar e apagar (sempre confirmo antes de apagar).\n' +
             '**Jornada da campanha aberta** — objetivo, audiência por linguagem natural, ajuste fino de leads, captura de leads novos, conteúdo (gerar, editar e MOSTRAR aqui no chat) e agendamento.\n' +
             '**Aprovação e disparo** — aprovar a campanha pelo mesmo fluxo do Pré-voo, ENVIAR UMA MENSAGEM DE TESTE para o seu WhatsApp ou e-mail antes de valer, COLOCAR EM VOO na hora (disparo único, e-mail e WhatsApp — sem perguntas de agenda) e mostrar o que falta para poder disparar (saldo, certificado).\n' +
-            '**Canais** — conectar a conta de e-mail de disparo (Resend com a sua API key ou SMTP com senha de app), mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
-            '**Leads** — consultar e editar dados de empresa/contato, e mostrar as respostas dos leads (interessados, reuniões, opt-outs).\n\n' +
+            '**Canais** — conectar a conta de e-mail de disparo (Resend com a sua API key ou SMTP com senha de app), DESCONECTAR a conta de envio (disconnect_email — sempre confirmo antes), mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
+            '**Leads** — consultar e editar dados de empresa/contato, mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
             'Não faço ainda: publicar os registros DNS no provedor do domínio (eu mostro, você publica) e ler a caixa de entrada inteira fora das respostas classificadas.',
         };
 
@@ -1786,6 +1794,118 @@ function registerChatRoutes(router, context) {
         };
       }
 
+      // ── Paridade com o painel Outreach (2026-10-08): supressão e conta ──
+      // de e-mail pelo chat. Mesmos modelos/caminhos das rotas
+      // /api/outreach/suppression e DELETE /api/gmail/accounts/:id.
+      case 'show_suppression': {
+        const take = 20;
+        const [entries, total] = await Promise.all([
+          prisma.suppressionList.findMany({ where: { tenantId: orgId }, orderBy: { addedAt: 'desc' }, take }),
+          prisma.suppressionList.count({ where: { tenantId: orgId } }),
+        ]);
+        const shown = entries.length
+          ? entries
+              .map(
+                (e) =>
+                  `• **${e.email}** — ${e.reason || 'sem motivo'} · ${new Date(e.addedAt).toLocaleDateString('pt-BR')}`
+              )
+              .join('\n') + (total > take ? `\n\n…e mais ${total - take} contato(s). Me diga qual e-mail procurar.` : '')
+          : 'Nenhum contato na supressão — toda a sua base pode receber mensagem.';
+        return {
+          type: 'suppression_list',
+          label: `Lista de supressão (${total})`,
+          detail: shown,
+          total,
+          entries: entries.map((e) => ({ id: e.id, email: e.email, reason: e.reason, addedAt: e.addedAt })),
+        };
+      }
+
+      case 'add_suppression': {
+        // Mesmo caminho do POST /api/outreach/suppression (upsert por
+        // org+email). SEM gate de confirmação: é opt-out/proteção — bloquear
+        // contato deve ter fricção zero (LGPD-friendly).
+        const email = String(action.email).trim();
+        const reason = action.reason ? String(action.reason).slice(0, 200) : 'manual';
+        // findUnique+create/update (não upsert): a unique composta
+        // tenantId_email funciona igual no Prisma real e no fake de testes.
+        const existing = await prisma.suppressionList.findUnique({
+          where: { tenantId_email: { tenantId: orgId, email } },
+        });
+        if (existing) {
+          await prisma.suppressionList.update({ where: { id: existing.id }, data: { reason } });
+        } else {
+          await prisma.suppressionList
+            .create({ data: { tenantId: orgId, email, reason } })
+            .catch((err) => {
+              if (err?.code !== 'P2002') throw err; // corrida: outro create venceu
+              return null;
+            });
+        }
+        return {
+          type: 'suppression_added',
+          label: existing ? `**${email}** já estava na supressão — motivo atualizado para "${reason}"` : `**${email}** entrou na lista de supressão`,
+          detail: 'Esse contato não recebe mais disparo de e-mail da sua organização. Para reabilitar, me peça — eu confirmo antes de tirar.',
+          email,
+          reason,
+        };
+      }
+
+      case 'remove_suppression': {
+        // Mesmo caminho do DELETE /api/outreach/suppression/:id, resolvido
+        // por e-mail (o modelo não tem o id). Entrada inexistente é resposta
+        // honesta, não falha. Gate de confirmação no confirmRequired.
+        const email = String(action.email).trim();
+        const result = await prisma.suppressionList.deleteMany({ where: { tenantId: orgId, email } });
+        if (result.count === 0) {
+          return {
+            type: 'suppression_removed',
+            label: `**${email}** não está na supressão`,
+            detail: 'Nada a fazer — esse contato já pode receber mensagem normalmente.',
+            email,
+          };
+        }
+        return {
+          type: 'suppression_removed',
+          label: `**${email}** reabilitado`,
+          detail: 'Saiu da lista de supressão — volta a poder receber disparos de e-mail da sua organização.',
+          email,
+        };
+      }
+
+      case 'disconnect_email': {
+        // Mesma semântica do DELETE /api/gmail/accounts/:id (status revoked +
+        // segredos nulos), escopada na ORGANIZAÇÃO (o chat vê a org inteira).
+        // Sem email e houver mais de uma conta ativa → card de desambiguação
+        // (nunca desconecta tudo por engano).
+        const where = { tenantId: orgId, status: 'connected', ...(action.email ? { email: String(action.email).trim() } : {}) };
+        const accounts = await prisma.emailAccount.findMany({ where, select: { id: true, email: true, provider: true } });
+        if (accounts.length === 0) {
+          return {
+            type: 'email_disconnected',
+            label: 'Nenhuma conta de e-mail conectada',
+            detail: `Não há conta de envio ativa${action.email ? ` para **${String(action.email).trim()}**` : ''} — nada a desconectar. Quando quiser, me peça para conectar uma (Resend ou SMTP).`,
+          };
+        }
+        if (accounts.length > 1 && !action.email) {
+          return {
+            type: 'email_disconnected',
+            label: 'Qual conta devo desconectar?',
+            detail: `Você tem ${accounts.length} contas ativas: ${accounts.map((a) => `**${a.email}** (${a.provider})`).join(', ')}. Me diga qual.`,
+            accounts: accounts.map((a) => ({ id: a.id, email: a.email, provider: a.provider })),
+          };
+        }
+        await prisma.emailAccount.updateMany({
+          where: { id: { in: accounts.map((a) => a.id) } },
+          data: { status: 'revoked', encryptedRefreshToken: null, encryptedSecret: null },
+        });
+        return {
+          type: 'email_disconnected',
+          label: `Conta ${accounts.length > 1 ? 's' : ''} de e-mail desconectada${accounts.length > 1 ? 's' : ''}`,
+          detail: `${accounts.map((a) => `**${a.email}**`).join(', ')} saiu${accounts.length > 1 ? 'ram' : ''} do ar — não dá mais para disparar por e-mail até conectar outra conta. Campanhas de WhatsApp não são afetadas.`,
+          emails: accounts.map((a) => a.email),
+        };
+      }
+
       case 'none':
       default:
         return null;
@@ -1826,6 +1946,27 @@ async function confirmRequired(type, { campaign, prisma, params = {} }) {
       });
       return existing ? 'canal' : null;
     }
+    // Paridade Outreach (2026-10-08): reabilitar contato e descontar conta de
+    // envio são destrutivos → gate SEMPRE que houver o que perder. Na
+    // desambiguação de disconnect (2+ contas, sem email) o gate NÃO roda —
+    // primeiro o handler pergunta qual conta.
+    case 'remove_suppression': {
+      if (!params.email) return null;
+      const entry = await prisma.suppressionList.findFirst({
+        where: { tenantId: campaign.orgId, email: String(params.email) },
+        select: { id: true },
+      });
+      return entry ? 'supressao' : null;
+    }
+    case 'disconnect_email': {
+      const where = {
+        tenantId: campaign.orgId,
+        status: 'connected',
+        ...(params.email ? { email: String(params.email) } : {}),
+      };
+      const accounts = await prisma.emailAccount.findMany({ where, select: { id: true } });
+      return accounts.length === 1 || (accounts.length > 1 && params.email) ? 'desconexao' : null;
+    }
     case 'generate_content': {
       const existing = await prisma.studioContent.count({
         where: { campaignId: campaign.id, kind: 'base', stepIndex: 1 },
@@ -1853,6 +1994,8 @@ const CONFIRM_COPY = {
   canal: 'vou SUBSTITUIR as credenciais de envio desse e-mail',
   agenda: 'vou RECONFIGURAR o agendamento atual',
   audiencia: 'vou SUBSTITUIR a audiência decidida — a fila sincroniza e o que já saiu não volta',
+  supressao: 'vou REABILITAR esse contato — ele volta a poder receber disparos de e-mail',
+  desconexao: 'vou DESCONECTAR a conta de envio — ela para de poder disparar até você conectar outra',
 };
 
 function buildConfirmCard(type, params, kind) {
