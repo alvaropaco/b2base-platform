@@ -28,6 +28,9 @@ const { normalizeText } = require('../search-text');
 
 const URL_RE = /(https?:\/\/[^\s,;)"]+)/g;
 
+// Espera pelo QR do pareamento no chat (tests aceleram via STUDIO_QR_WAIT_MS).
+const QR_WAIT_MS = Number(process.env.STUDIO_QR_WAIT_MS || 25000);
+
 /** Params declarados da action (para hash de idempotência — AD-6). */
 function actionParams(action) {
   switch (action.type) {
@@ -1700,8 +1703,21 @@ function registerChatRoutes(router, context) {
           await provider.startSession(sessionName);
         }
         await prisma.whatsAppAccount.update({ where: { sessionName }, data: { status: 'STARTING' } }).catch(() => {});
-        const { connected, qr } = await waitForChatQr(provider, sessionName, 25_000);
-        if (connected) {
+        // Ciclo HONESTO (QA 2026-10-08: sessão em ERROR → "subindo…" eterno e
+        // QR nunca vinha): 1ª espera; se a sessão FALHOU (ou sumiu do WAHA),
+        // restart + 2ª espera; se AINDA não subiu, card de FALHA explícito —
+        // nunca fingir que o QR "está vindo".
+        let wait = await waitForChatQr(provider, sessionName, QR_WAIT_MS);
+        if (!wait.connected && !wait.qr) {
+          let midStatus = null;
+          try { midStatus = (await provider.getSessionStatus(sessionName))?.status || null; } catch (_e) { /* ausente */ }
+          if (midStatus === 'FAILED' || !midStatus) {
+            try { await provider.restartSession(sessionName); } catch (_e) { /* o wait abaixo decide */ }
+            await prisma.whatsAppAccount.update({ where: { sessionName }, data: { status: 'STARTING' } }).catch(() => {});
+            wait = await waitForChatQr(provider, sessionName, Math.round(QR_WAIT_MS * 0.6));
+          }
+        }
+        if (wait.connected) {
           await prisma.whatsAppAccount.update({ where: { sessionName }, data: { status: 'CONNECTED' } }).catch(() => {});
           return {
             type: 'whatsapp_qr',
@@ -1711,20 +1727,36 @@ function registerChatRoutes(router, context) {
             qrCode: null,
           };
         }
-        if (qr && qr.qrCode) {
+        if (wait.qr && wait.qr.qrCode) {
           await prisma.whatsAppAccount.update({ where: { sessionName }, data: { status: 'QR_REQUIRED' } }).catch(() => {});
           return {
             type: 'whatsapp_qr',
             label: 'Pareamento do WhatsApp — escaneie o QR',
             detail: '1. Abra o WhatsApp no celular · 2. Toque em Aparelhos conectados → Conectar aparelho · 3. Aponte a câmera para o QR abaixo. Ele expira em ~1 minuto — se expirar, me peça "mostrar o QR de novo".',
             status: 'qr_required',
-            qrCode: qr.qrCode,
+            qrCode: wait.qr.qrCode,
+          };
+        }
+        // Não subiu nem com o restart: FALHA explícita (a sessão está ERROR ou
+        // nem existe mais no WAHA) — "subindo…" eterno enganava o usuário.
+        let lastKnown = null;
+        try { lastKnown = (await provider.getSessionStatus(sessionName))?.status || null; } catch (_e) { /* sessão ausente no WAHA */ }
+        if (lastKnown === 'FAILED' || !lastKnown) {
+          await prisma.whatsAppAccount.update({ where: { sessionName }, data: { status: 'ERROR' } }).catch(() => {});
+          return {
+            type: 'whatsapp_qr',
+            label: 'A sessão do WhatsApp falhou ao iniciar',
+            detail:
+              'O servidor do WhatsApp (WAHA) NÃO conseguiu subir a sessão desta organização — ela está com erro (ou nem existe mais lá). ' +
+              'Me peça "mostrar o QR do WhatsApp" para eu tentar de novo; se falhar de novo, o administrador precisa olhar o servidor do WhatsApp.',
+            status: 'failed',
+            qrCode: null,
           };
         }
         return {
           type: 'whatsapp_qr',
-          label: 'Sessão do WhatsApp subindo…',
-          detail: 'A sessão está iniciando no servidor. Me peça "mostrar o QR do WhatsApp" novamente em alguns segundos.',
+          label: 'Sessão do WhatsApp ainda subindo…',
+          detail: 'A sessão está viva no servidor, mas o QR ainda não apareceu. Me peça "mostrar o QR do WhatsApp" novamente em alguns segundos.',
           status: 'starting',
           qrCode: null,
         };

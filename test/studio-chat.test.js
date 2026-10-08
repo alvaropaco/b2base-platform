@@ -1707,3 +1707,79 @@ test('QA: "enriquece minha base" procura o WhatsApp na internet e cadastra nos l
     server.close();
   }
 });
+
+// ── 2026-10-08: pareamento honesto — sessão ERROR não pode virar "subindo…" ──
+
+function stubPairing(behavior) {
+  const waha = require('../waha-provider');
+  waha.isConfigured = () => true;
+  waha.deterministicSessionName = (orgId) => `b2base_${String(orgId).slice(0, 8)}`;
+  waha.WAHAWhatsAppProvider.createSession = async () => {};
+  waha.WAHAWhatsAppProvider.startSession = async () => {};
+  waha.WAHAWhatsAppProvider.restartSession = async () => {};
+  waha.WAHAWhatsAppProvider.getSessionStatus = async () => {
+    console.log('[stub] getSessionStatus →', behavior.status);
+    return { status: behavior.status ?? null };
+  };
+  global.__stubGetStatus = waha.WAHAWhatsAppProvider.getSessionStatus;
+  console.log('[stub] aplicado? writable:', Object.getOwnPropertyDescriptor(waha.WAHAWhatsAppProvider, 'getSessionStatus')?.writable ?? 'accessor');
+  waha.WAHAWhatsAppProvider.getQRCode = async () => {
+    console.log('[stub] getQRCode →', behavior.qr ? 'qr' : 'null');
+    return behavior.qr || null;
+  };
+  return waha;
+}
+
+test('QA: sessão que NÃO sobe → card de FALHA explícita (nunca "subindo…" eterno)', async () => {
+  process.env.STUDIO_QR_WAIT_MS = '60';
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return { content: JSON.stringify({ reply: 'Gerando o QR!', actions: [{ type: 'start_whatsapp_pairing' }] }) };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    // Caso real do dono (07/10): sessão em ERROR que nem existe mais no WAHA
+    // → leituras voltam null e o card tem que dizer FALHA, não "subindo…".
+    stubPairing({ status: null });
+    const { body: c } = await api('POST', '/campaigns', { name: 'QR falho', channels: ['whatsapp'] });
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'gera o qr' });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'whatsapp_qr');
+    assert.ok(card, 'card de pareamento presente');
+    assert.equal(card.status, 'failed');
+    assert.match(card.label, /falhou ao iniciar/i);
+    const account = prisma.whatsAppAccount.rows[0];
+    assert.equal(account.status, 'ERROR', 'conta marca o erro (não fica STARTING eterno)');
+  } finally {
+    delete process.env.STUDIO_QR_WAIT_MS;
+    server.close();
+  }
+});
+
+test('QA: QR disponível → card traz o código para escanear', async () => {
+  process.env.STUDIO_QR_WAIT_MS = '60';
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return { content: JSON.stringify({ reply: 'Gerando o QR!', actions: [{ type: 'start_whatsapp_pairing' }] }) };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    stubPairing({ status: 'SCAN_QR_CODE', qr: { qrCode: 'data:image/png;base64,QRDATA' } });
+    const { body: c } = await api('POST', '/campaigns', { name: 'QR ok', channels: ['whatsapp'] });
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'gera o qr' });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'whatsapp_qr');
+    assert.ok(card, 'card de pareamento presente');
+    assert.equal(card.status, 'qr_required');
+    assert.equal(card.qrCode, 'data:image/png;base64,QRDATA', 'QR no card');
+    assert.equal(prisma.whatsAppAccount.rows[0].status, 'QR_REQUIRED');
+  } finally {
+    delete process.env.STUDIO_QR_WAIT_MS;
+    server.close();
+  }
+});
+
