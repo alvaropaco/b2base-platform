@@ -1716,7 +1716,20 @@ function registerChatRoutes(router, context) {
           let midStatus = null;
           try { midStatus = (await provider.getSessionStatus(sessionName))?.status || null; } catch (_e) { /* ausente */ }
           if (midStatus === 'FAILED' || !midStatus) {
-            try { await provider.restartSession(sessionName); } catch (_e) { /* o wait abaixo decide */ }
+            // 2ª tentativa: restart simples.
+            try { await provider.restartSession(sessionName); } catch (_e) { /* segue para a cura forte */ }
+            await prisma.whatsAppAccount.update({ where: { sessionName }, data: { status: 'STARTING' } }).catch(() => {});
+            wait = await waitForChatQr(provider, sessionName, Math.round(QR_WAIT_MS * 0.6));
+          }
+          if (!wait.connected && !wait.qr) {
+            // 3ª tentativa (cura forte, 2026-10-08): a sessão FAILED carrega
+            // estado corrompido que restart não limpa (caso real da org do
+            // dono: START → FAILED instantâneo, sempre). APAGAR a sessão no
+            // WAHA zera o estado — nada conectado se perde (só existe lixo),
+            // e a sessão nova chega ao QR (comprovado em produção).
+            try { await provider.deleteSession(sessionName); } catch (_e) { /* pode nem existir */ }
+            try { await provider.createSession(sessionName); } catch (_e) { /* idempotente */ }
+            try { await provider.startSession(sessionName); } catch (_e) { /* o wait abaixo decide */ }
             await prisma.whatsAppAccount.update({ where: { sessionName }, data: { status: 'STARTING' } }).catch(() => {});
             wait = await waitForChatQr(provider, sessionName, Math.round(QR_WAIT_MS * 0.6));
           }
