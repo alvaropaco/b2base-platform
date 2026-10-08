@@ -212,6 +212,16 @@ function createDigitalPresenceWorker({ prisma, js, jsm = null, deps = {} } = {})
   const rawStore = prisma ? require('../raw-store').createRawStore({ prisma }) : null;
   const twilioLookup = deps.twilioLookup || require('../twilio-lookup');
   const { makeResultPublisher } = require('./sdk/result-publisher');
+  // Gate Twilio dentro do executor: registry para rate limit/circuit breaker
+  // do provider 'twilio.lookup' + cliente lookup injetável. Merge por chave
+  // (mesmo padrão do workers/company-deep.js): caller vence por chave, mas um
+  // execDeps parcial não apaga os defaults — registry ausente no execDeps do
+  // caller NÃO deixa o gate fail-open por falta de dependência.
+  const execDeps = {
+    registry: deps.registry || null,
+    twilioLookup,
+    ...(deps.execDeps || {}),
+  };
   const runtime = createWorkerRuntime({
     name: 'digital-presence',
     // Subject real da capability: enrichment.task.company.digital_presence.v1
@@ -228,10 +238,8 @@ function createDigitalPresenceWorker({ prisma, js, jsm = null, deps = {} } = {})
       publisher: js ? makeResultPublisher({ js }) : null,
       rawStore,
       logger,
-      // Gate Twilio dentro do executor: registry para rate limit/circuit
-      // breaker do provider 'twilio.lookup' + cliente lookup injetável.
-      execDeps: { registry: deps.registry || null, twilioLookup },
       ...deps,
+      execDeps,
     },
   });
   // ANTES do return — este arquivo já quebrou uma vez com o registro depois

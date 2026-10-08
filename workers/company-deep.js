@@ -138,6 +138,15 @@ function makeExecutors(deps = {}) {
 /** Monta o runtime completo (boot e testes de integração). */
 function createCompanyDeepWorker({ prisma, js, jsm = null, deps = {} } = {}) {
   const logger = createLogger({ component: 'worker', family: 'company' });
+  // Gate Twilio (spec gate-twilio-lookup-whatsapp-site): este worker TAMBÉM
+  // executa o company.digital_presence (subject enrichment.task.company.>) —
+  // o executor lê ctx.deps (registry/twilioLookup do gate); sem execDeps o
+  // gate fail-open silencioso e o wa.me era promovido sem passar pelo Lookup.
+  const execDeps = {
+    registry: deps.registry || null,
+    twilioLookup: deps.twilioLookup || require('../twilio-lookup'),
+    ...(deps.execDeps || {}),
+  };
   const runtime = createWorkerRuntime({
     name: 'company',
     capabilities,
@@ -154,9 +163,10 @@ function createCompanyDeepWorker({ prisma, js, jsm = null, deps = {} } = {}) {
         if (event === 'provider_state') require('../metrics').setEnrichmentProviderState(data.provider, data.state);
       },
       ...deps,
+      execDeps,
     },
   });
-  runtime.registerExecutors(makeExecutors({ prisma, ...(deps.execDeps || {}) }));
+  runtime.registerExecutors(makeExecutors({ prisma, ...execDeps }));
   return runtime;
 }
 

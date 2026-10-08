@@ -9,6 +9,7 @@ const {
   createDigitalPresenceWorker,
   gateWhatsApp,
 } = require('../workers/digital-presence');
+const { createCompanyDeepWorker } = require('../workers/company-deep');
 
 const LOGGER = { info() {}, warn() {}, error() {}, child() { return this; } };
 const DP_TASK = {
@@ -144,7 +145,7 @@ test('gate: mobile → promove com evidência twilio e outcome ok no registry', 
   assert.ok(lti && lti.value === 'mobile' && lti.evidence.sourceType === 'twilio');
 });
 
-test('gate: landline → whasapp_rejected, manager não promove e lead fica com a Receita', async () => {
+test('gate: landline → whatsapp_rejected, manager não promove e lead fica com a Receita', async () => {
   const registry = fakeRegistry();
   const out = await executors['company.digital_presence'](
     DP_TASK,
@@ -156,6 +157,21 @@ test('gate: landline → whasapp_rejected, manager não promove e lead fica com 
   assert.ok(out.data.digital_presence.rejected_reason.startsWith('LINE_TYPE:landline'));
   assert.deepStrictEqual(out.data.contacts, []);
   assert.ok(out.facts.some((f) => f.attribute === 'contact.whatsapp.rejected'));
+});
+
+test('gate: número inválido (valid:false) → rejected_reason INVALID_NUMBER e contacts vazio', async () => {
+  const registry = fakeRegistry();
+  const out = await executors['company.digital_presence'](
+    DP_TASK,
+    executorDeps({ twilio: twilioStub({ lookup: async () => ({ ok: true, valid: false, validationErrors: ['TOO_SHORT'], lineType: null }) }), registry })
+  );
+  assert.strictEqual(out.status, 'COMPLETED');
+  assert.strictEqual(out.data.digital_presence.whatsapp, null);
+  assert.strictEqual(out.data.digital_presence.whatsapp_rejected, '+5511987654321');
+  assert.ok(out.data.digital_presence.rejected_reason.startsWith('INVALID_NUMBER:TOO_SHORT'));
+  assert.deepStrictEqual(out.data.contacts, []);
+  assert.ok(out.facts.some((f) => f.attribute === 'contact.whatsapp.rejected' && f.evidence.sourceType === 'twilio'));
+  assert.ok(!out.facts.some((f) => f.attribute === 'contact.whatsapp_line_type'));
 });
 
 test('gate: Twilio fora (HTTP 500) → fail-open promove e registra outcome ruim', async () => {
@@ -236,5 +252,87 @@ test('wiring: processMessage executa o company.digital_presence registrado', asy
     assert.strictEqual(captured[0].data.digital_presence.whatsapp, '+5511987654321');
   } finally {
     mock.restore();
+  }
+});
+
+test('wiring: company-deep injeta execDeps — gate roda também no worker da família company', async () => {
+  const captured = [];
+  const gateRegistry = fakeRegistry();
+  const mock = mockFetch(HTML_WA);
+  try {
+    const runtime = createCompanyDeepWorker({
+      prisma: makePrismaMock(),
+      js: null,
+      deps: {
+        logger: LOGGER,
+        registry: createNoopRegistry(),
+        publisher: async (result) => { captured.push(result); },
+        execDeps: { registry: gateRegistry, twilioLookup: twilioStub({ lookup: async () => ({ ok: true, valid: true, lineType: 'landline' }) }) },
+      },
+    });
+    const msg = {
+      data: contracts.serializePayload({ ...DP_TASK, version: contracts.VERSION }),
+      ack: async () => {},
+      nak: async () => { throw new Error('não deveria nak'); },
+      term: async () => { throw new Error('não deveria term'); },
+    };
+    const out = await runtime.processMessage(msg);
+    assert.strictEqual(out.status, 'COMPLETED');
+    assert.strictEqual(captured[0].data.digital_presence.whatsapp, null);
+    assert.strictEqual(captured[0].data.digital_presence.whatsapp_rejected, '+5511987654321');
+    // O gate passou pelo provider 'twilio.lookup' (acquire + release), não fail-open.
+    assert.deepStrictEqual(gateRegistry.seen.acquire, ['twilio.lookup']);
+    assert.strictEqual(gateRegistry.seen.released, 1);
+  } finally {
+    mock.restore();
+  }
+});
+
+// Branch de PRODUÇÃO: sem execDeps, sem stub — o worker usa o registry de
+// deps.registry e o default require('../twilio-lookup') com credenciais de env.
+test('wiring produção: company-deep sem execDeps puxa twilio-lookup default + env (gate ativo)', async (t) => {
+  process.env.TWILIO_ACCOUNT_SID = 'ACXXX';
+  process.env.TWILIO_AUTH_TOKEN = 'tok';
+  t.after(() => {
+    delete process.env.TWILIO_ACCOUNT_SID;
+    delete process.env.TWILIO_AUTH_TOKEN;
+  });
+  // Um mock por URL: o crawl do site serve HTML com wa.me; o Lookup do Twilio
+  // responde landline (o global.fetch atende os dois neste formato).
+  const orig = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).includes('lookups.twilio.com')) {
+      return { ok: true, status: 200, json: async () => ({ valid: true, line_type_intelligence: { type: 'landline' } }) };
+    }
+    return { ok: true, status: 200, text: async () => HTML_WA };
+  };
+  const captured = [];
+  const sharedRegistry = fakeRegistry(); // produção: runtime e gate compartilham
+  try {
+    const runtime = createCompanyDeepWorker({
+      prisma: makePrismaMock(),
+      js: null,
+      deps: {
+        logger: LOGGER,
+        registry: sharedRegistry,
+        publisher: async (result) => { captured.push(result); },
+      },
+    });
+    const msg = {
+      data: contracts.serializePayload({ ...DP_TASK, version: contracts.VERSION }),
+      ack: async () => {},
+      nak: async () => { throw new Error('não deveria nak'); },
+      term: async () => { throw new Error('não deveria term'); },
+    };
+    const out = await runtime.processMessage(msg);
+    assert.strictEqual(out.status, 'COMPLETED');
+    assert.strictEqual(captured[0].data.digital_presence.whatsapp, null);
+    assert.strictEqual(captured[0].data.digital_presence.whatsapp_rejected, '+5511987654321');
+    // Mesmo registry atende runtime (site.crawl) e gate (twilio.lookup).
+    assert.deepStrictEqual(sharedRegistry.seen.acquire, ['site.crawl', 'twilio.lookup']);
+    assert.strictEqual(sharedRegistry.seen.released, 2);
+    assert.ok(sharedRegistry.seen.outcomes.some((o) => o.provider === 'twilio.lookup' && o.ok === true));
+  } finally {
+    global.fetch = orig;
   }
 });
