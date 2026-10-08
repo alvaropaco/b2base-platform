@@ -204,6 +204,11 @@ export function App() {
       title: 'Outreach automatizado',
       description: 'Crie e lance campanhas de e-mail por Gmail com controle de cadência, rate limits e supressão.',
     },
+    studio: {
+      // Nunca renderiza como tab (o clique na sidebar redireciona para /studio).
+      title: 'Studio',
+      description: 'Cockpit de campanhas com IA: briefing por chat, criação, disparo e monitoramento.',
+    },
     whatsapp: {
       title: 'Prospecção via WhatsApp',
       description: 'Conecte seu WhatsApp, crie campanhas de prospecção e atenda conversas em um só lugar.',

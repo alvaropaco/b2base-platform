@@ -393,7 +393,10 @@ export interface EnrichedCnpjContact {
   dataRestricted?: boolean;
 }
 
-export type ActiveTab = 'dashboard' | 'prospects' | 'pipeline' | 'risk' | 'workflows' | 'enrichment' | 'outreach' | 'whatsapp' | 'history' | 'settings';
+// 'studio' existe no union para o item da sidebar/mobile-nav apontar para o
+// Cockpit (/studio) — NÃO é tab do shell (nenhuma view renderiza com ele;
+// o clique redireciona via window.location.assign, ver Sidebar/Layout).
+export type ActiveTab = 'dashboard' | 'prospects' | 'pipeline' | 'risk' | 'workflows' | 'enrichment' | 'outreach' | 'studio' | 'whatsapp' | 'history' | 'settings';
 
 // --- Histórico de disparos (email + WhatsApp) ---------------------------------
 

@@ -54,6 +54,10 @@ const tabTitles: Record<ActiveTab, { title: string; subtitle: string }> = {
     title: 'Outreach',
     subtitle: 'Campanhas de e-mail, contas do Gmail e acompanhamento de aberturas e respostas.',
   },
+  studio: {
+    title: 'Studio',
+    subtitle: 'Cockpit de campanhas com IA em /studio — nunca renderiza como tab do shell.',
+  },
   whatsapp: {
     title: 'WhatsApp',
     subtitle: 'Conexão, campanhas de prospecção e conversas em atendimento.',

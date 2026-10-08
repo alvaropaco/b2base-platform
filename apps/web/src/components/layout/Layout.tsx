@@ -51,7 +51,8 @@ export const Layout: React.FC<LayoutProps> = ({
     { id: 'pipeline', label: 'Pipeline de vendas', badge: 'Ao vivo' },
     { id: 'risk', label: 'Risco e potencial' },
     { id: 'enrichment', label: 'Inteligência comercial' },
-    { id: 'outreach', label: 'Outreach' },
+    // Studio (Cockpit): página própria — o clique redireciona para /studio.
+    { id: 'studio' as ActiveTab, label: 'Studio' },
     { id: 'whatsapp', label: 'WhatsApp' },
     { id: 'history', label: 'Histórico' },
   ];
@@ -88,7 +89,14 @@ export const Layout: React.FC<LayoutProps> = ({
                   key={item.id}
                   type="button"
                   aria-current={isActive ? 'page' : undefined}
-                  onClick={() => setActiveTab(item.id)}
+                  onClick={() => {
+                    // Studio = página própria (mesma regra do Sidebar).
+                    if (item.id === 'studio') {
+                      window.location.assign('/studio');
+                      return;
+                    }
+                    setActiveTab(item.id);
+                  }}
                   className={cn(
                     'flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-xs font-black transition',
                     isActive

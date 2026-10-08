@@ -10,7 +10,6 @@ import {
   MessageCircle,
   Moon,
   Network,
-  Send,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -57,7 +56,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'pipeline' as ActiveTab, label: 'Pipeline de vendas', icon: Kanban, badge: 'Ao vivo' },
     { id: 'risk' as ActiveTab, label: 'Risco e potencial', icon: ShieldCheck, badge: null },
     { id: 'enrichment' as ActiveTab, label: 'Inteligência comercial', icon: Network, badge: null },
-    { id: 'outreach' as ActiveTab, label: 'Outreach', icon: Send, badge: null },
+    // Studio (Cockpit): NÃO é tab — é página própria em /studio. O clique
+    // redireciona (ver onClick no map); id fora do union de ActiveTab de
+    // propósito, então o item nunca fica "ativo" no shell de tabs.
+    { id: 'studio' as ActiveTab, label: 'Studio', icon: Sparkles, badge: null },
     { id: 'whatsapp' as ActiveTab, label: 'WhatsApp', icon: MessageCircle, badge: null },
     { id: 'history' as ActiveTab, label: 'Histórico de disparos', icon: History, badge: null },
   ];
@@ -111,7 +113,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 return (
                   <button
                     key={item.id}
-                    onClick={() => setActiveTab(item.id)}
+                    onClick={() => {
+                      // Studio = página própria: redireciona de verdade para
+                      // /studio (App.tsx renderiza o Cockpit fora do shell).
+                      if (item.id === 'studio') {
+                        window.location.assign('/studio');
+                        return;
+                      }
+                      setActiveTab(item.id);
+                    }}
                     className={cn(
                       'group flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-sm font-bold transition-all',
                       isActive
