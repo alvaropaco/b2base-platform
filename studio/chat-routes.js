@@ -1701,6 +1701,10 @@ function registerChatRoutes(router, context) {
           try { await provider.restartSession(sessionName); } catch (_e) { /* o wait abaixo decide */ }
         } else if (!currentStatus || ['STOPPED', 'DISCONNECTED'].includes(currentStatus)) {
           await provider.startSession(sessionName);
+        } else if (currentStatus !== 'SCAN_QR_CODE') {
+          // Estado intermediário (QR expirado, STARTING preso…): um start
+          // regenera o ciclo de QRs — cada pedido do usuário ganha QR FRESCO.
+          try { await provider.startSession(sessionName); } catch (_e) { /* o wait abaixo decide */ }
         }
         await prisma.whatsAppAccount.update({ where: { sessionName }, data: { status: 'STARTING' } }).catch(() => {});
         // Ciclo HONESTO (QA 2026-10-08: sessão em ERROR → "subindo…" eterno e
