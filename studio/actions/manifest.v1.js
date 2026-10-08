@@ -99,6 +99,13 @@ const ACTIONS_V1 = {
   add_suppression: { version: 1, idempotency: 'params', description: 'Adiciona um e-mail à lista de supressão (opt-out — deixa de receber disparo)' },
   remove_suppression: { version: 1, idempotency: 'none', description: 'Reabilita um contato removendo-o da lista de supressão — sempre pede confirmação' },
   disconnect_email: { version: 1, idempotency: 'none', description: 'Desconecta a conta de e-mail de disparo (status revoked) — sempre pede confirmação' },
+  // Enriquecimento pelo chat (pedido do dono, 2026-10-08): procura o WhatsApp
+  // das empresas NA INTERNET (descoberta de domínio + crawl do site + validação
+  // Twilio — o MESMO motor do worker company.digital_presence) e cadastra no
+  // lead (frente do cnpjPhones), destravando o disparo por WhatsApp.
+  // idempotency 'none': rodar de novo é INTENCIONAL (base cresceu, site ganhou
+  // WhatsApp) — a própria busca só preenche quem está sem telefone.
+  enrich_whatsapp: { version: 1, idempotency: 'none', description: 'Procura o WhatsApp das empresas na internet (site, domínio) e cadastra nos leads sem telefone — destrava o disparo por WhatsApp' },
 };
 
 /**

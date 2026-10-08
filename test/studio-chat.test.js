@@ -1653,3 +1653,57 @@ test('QA 2026-10-07: disparo WA reporta leads SEM TELEFONE com nomes e caminho (
     server.close();
   }
 });
+
+// ── 2026-10-08: enriquecimento pelo chat — acha WhatsApp na internet e cadastra
+
+test('QA: "enriquece minha base" procura o WhatsApp na internet e cadastra nos leads sem telefone', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({ reply: 'Vou procurar!', actions: [{ type: 'enrich_whatsapp' }] }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  const mock = (() => {
+    const orig = global.fetch;
+    const html = '<html><body><a href="https://wa.me/11987654321">Fale no WhatsApp</a></body></html>';
+    global.fetch = async (url, opts) => {
+      // Pass-through para o servidor local do teste; mock só para o crawl.
+      if (String(url).includes('127.0.0.1')) return orig(url, opts);
+      return { ok: true, status: 200, text: async () => html };
+    };
+    return { restore() { global.fetch = orig; } };
+  })();
+  try {
+    // Leads da audiência SEM telefone; o domínio evita depender do SearXNG.
+    prisma.prospect.rows.push(
+      { id: 'lead-e1', orgId: 'org-1', companyName: 'ACME Industria', domain: 'acme.com.br' },
+      { id: 'lead-e2', orgId: 'org-1', companyName: 'Já Tem Telefone LTDA', cnpjPhones: ['+5511999990000'] }
+    );
+    const { body: c } = await api('POST', '/campaigns', { name: 'Enriquece', channels: ['whatsapp'] });
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-e', orgId: 'org-1', campaignId: c.data.id,
+      criteriaVersion: {}, totalCount: 2, includedCount: 2, excludedCount: 0, status: 'active',
+    });
+    prisma.studioAudienceMember.rows.push(
+      { id: 'me1', snapshotId: 'snap-e', orgId: 'org-1', prospectId: 'lead-e1', included: true, excludeReason: null },
+      { id: 'me2', snapshotId: 'snap-e', orgId: 'org-1', prospectId: 'lead-e2', included: true, excludeReason: null }
+    );
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'enriquece minha base com whatsapp' });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'enrichment_done');
+    assert.ok(card, 'card de enriquecimento presente');
+    assert.match(card.label, /1 WhatsApp\(s\) cadastrado/, 'só o lead SEM telefone é enriquecido');
+    assert.ok(card.detail.includes('ACME Industria'), 'nome do lead no card');
+    const lead = prisma.prospect.rows.find((r) => r.id === 'lead-e1');
+    assert.equal(lead.cnpjPhones[0], '+5511987654321', 'WhatsApp cadastrado NA FRENTE do cadastro');
+    const intact = prisma.prospect.rows.find((r) => r.id === 'lead-e2');
+    assert.deepEqual(intact.cnpjPhones, ['+5511999990000'], 'quem já tem telefone não é tocado');
+  } finally {
+    mock.restore();
+    server.close();
+  }
+});

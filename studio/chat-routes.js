@@ -70,6 +70,8 @@ function actionParams(action) {
       return { email: action.email || null, reason: action.reason || null };
     case 'remove_suppression':
       return { email: action.email || null };
+    case 'enrich_whatsapp':
+      return {}; // idempotency none — rodar de novo é intencional (base cresce)
     case 'create_campaign':
       return { name: action.name || null, channels: Array.isArray(action.channels) ? action.channels.map(String) : null };
     case 'rename_campaign':
@@ -1615,7 +1617,7 @@ function registerChatRoutes(router, context) {
             '**Jornada da campanha aberta** — objetivo, audiência por linguagem natural, ajuste fino de leads, captura de leads novos, conteúdo (gerar, editar e MOSTRAR aqui no chat) e agendamento.\n' +
             '**Aprovação e disparo** — aprovar a campanha pelo mesmo fluxo do Pré-voo, ENVIAR UMA MENSAGEM DE TESTE para o seu WhatsApp ou e-mail antes de valer, COLOCAR EM VOO na hora (disparo único, e-mail e WhatsApp — sem perguntas de agenda) e mostrar o que falta para poder disparar (saldo, certificado).\n' +
             '**Canais** — conectar a conta de e-mail de disparo (Resend com a sua API key ou SMTP com senha de app), DESCONECTAR a conta de envio (disconnect_email — sempre confirmo antes), mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
-            '**Leads** — consultar e editar dados de empresa/contato, mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
+            '**Leads** — consultar e editar dados de empresa/contato, ENRIQUECER a base procurando o WhatsApp das empresas na internet (enrich_whatsapp) e cadastrar nos leads, mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
             'Não faço ainda: publicar os registros DNS no provedor do domínio (eu mostro, você publica) e ler a caixa de entrada inteira fora das respostas classificadas.',
         };
 
@@ -1928,6 +1930,102 @@ function registerChatRoutes(router, context) {
           label: `Conta ${accounts.length > 1 ? 's' : ''} de e-mail desconectada${accounts.length > 1 ? 's' : ''}`,
           detail: `${accounts.map((a) => `**${a.email}**`).join(', ')} saiu${accounts.length > 1 ? 'ram' : ''} do ar — não dá mais para disparar por e-mail até conectar outra conta. Campanhas de WhatsApp não são afetadas.`,
           emails: accounts.map((a) => a.email),
+        };
+      }
+
+      case 'enrich_whatsapp': {
+        // Enriquecimento PELO CHAT (pedido do dono, 2026-10-08): procura o
+        // WhatsApp das empresas NA INTERNET — o MESMO motor do worker
+        // company.digital_presence (descoberta de domínio via SearXNG +
+        // crawl do site + validação Twilio quando o registry existe) — e
+        // cadastra o número na FRENTE do cnpjPhones (o disparo usa [0]),
+        // destravando os leads no_phone.
+        const digitalPresence = require('../workers/digital-presence');
+        const limit = Math.min(20, Math.max(1, Number(action.limit) || 10));
+        const semTelefone = (p) => !Array.isArray(p.cnpjPhones) || p.cnpjPhones.filter(Boolean).length === 0;
+
+        // Escopo: nomes citados → audiência da campanha aberta → base da org.
+        let candidates = [];
+        if (Array.isArray(action.names) && action.names.length > 0) {
+          for (const term of action.names.slice(0, limit)) {
+            const t = String(term).trim();
+            if (t.length < 3) continue;
+            const lead = await prisma.prospect.findFirst({
+              where: { orgId, OR: [{ companyName: { contains: t } }, { tradeName: { contains: t } }] },
+            });
+            if (lead && !candidates.some((c) => c.id === lead.id)) candidates.push(lead);
+          }
+        } else {
+          let ids = null;
+          const snap = (await prisma.studioAudienceSnapshot.findMany({ where: { campaignId: campaign.id, status: 'active' } }))[0];
+          if (snap) {
+            const members = await prisma.studioAudienceMember.findMany({ where: { snapshotId: snap.id, included: true } });
+            ids = members.map((m) => m.prospectId);
+          }
+          candidates = ids && ids.length
+            ? await prisma.prospect.findMany({ where: { orgId, id: { in: ids } }, orderBy: { createdAt: 'desc' } })
+            : await prisma.prospect.findMany({ where: { orgId }, orderBy: { createdAt: 'desc' }, take: 200 });
+        }
+        const semNumero = candidates.filter(semTelefone);
+        const restantes = Math.max(0, semNumero.length - limit);
+        const lote = semNumero.slice(0, limit);
+
+        const logger = { info() {}, warn() {}, error() {}, child() { return this; } };
+        const found = [];
+        const notFound = [];
+        for (const lead of lote) {
+          try {
+            const outcome = await digitalPresence.executors['company.digital_presence'](
+              {
+                input: { companyName: String(lead.companyName || lead.tradeName || ''), domain: lead.domain || null },
+                capability: 'company.digital_presence', timeoutMs: 30000,
+              },
+              { signal: AbortSignal.timeout(32000), logger }
+            );
+            const wa = outcome && outcome.data && outcome.data.digital_presence ? outcome.data.digital_presence.whatsapp : null;
+            if (!wa) {
+              notFound.push(String(lead.companyName || lead.tradeName || lead.id));
+              continue;
+            }
+            const current = Array.isArray(lead.cnpjPhones) ? lead.cnpjPhones.filter(Boolean) : [];
+            const digits = wa.replace(/\D/g, '');
+            const already = current.some((p) => String(p).replace(/\D/g, '') === digits);
+            if (!already) {
+              await prisma.prospect.update({
+                where: { id: lead.id },
+                data: { cnpjPhones: [wa, ...current] },
+              });
+            }
+            found.push({ prospectId: lead.id, companyName: String(lead.companyName || lead.tradeName || lead.id), whatsapp: wa });
+          } catch (err) {
+            notFound.push(String(lead.companyName || lead.tradeName || lead.id));
+          }
+        }
+
+        const lines = [];
+        if (found.length) {
+          lines.push(found.map((f) => `• **${f.companyName}** — ${f.whatsapp} ✓ cadastrado na frente do cadastro`).join('\n'));
+        }
+        if (notFound.length) {
+          lines.push(`⚠️ ${notFound.length} lead(s) SEM WhatsApp encontrado no site: ${notFound.slice(0, 5).join(', ')}${notFound.length > 5 ? '…' : ''}`);
+        }
+        if (restantes > 0) {
+          lines.push(`Ainda há ${restantes} lead(s) sem telefone — me peça "continua o enriquecimento" para o próximo lote de ${limit}.`);
+        }
+        if (found.length) {
+          lines.push('Agora pode disparar por WhatsApp — os números novos entram na fila na matrícula (e leads cancelados por no_phone voltam quando o telefone é atualizado).');
+        } else {
+          lines.push('Nada a comemorar ainda: sem número no site, o WhatsApp continua impossível para esses leads — me peça para atualizar os telefones manualmente ou capture leads novos.');
+        }
+        return {
+          type: 'enrichment_done',
+          label: found.length
+            ? `Enriquecimento concluído — ${found.length} WhatsApp(s) cadastrado(s)`
+            : 'Enriquecimento concluído — nenhum WhatsApp encontrado',
+          detail: lines.join('\n'),
+          found: found.map((f) => f.companyName),
+          notFound,
+          restantes,
         };
       }
 
@@ -2444,6 +2542,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     show_replies: 'Vendo as respostas dos leads…',
     show_dns_records: 'Conferindo o DNS do seu domínio…',
     connect_email: 'Conectando o e-mail de disparo…',
+    enrich_whatsapp: 'Procurando WhatsApps das empresas na internet…',
     show_capabilities: 'Organizando o que eu sei fazer…',
   };
 
