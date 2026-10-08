@@ -111,7 +111,7 @@ test('manifest v1: contrato fechado com as 35 actions do orquestrador', () => {
   // painel Outreach) — sem alterar forma, idempotência ou chaves das
   // anteriores; consumidores existentes não quebram.
   assert.deepEqual(Object.keys(manifest.ACTIONS_V1).sort(), [
-    'add_suppression', 'approve_campaign', 'attach_files', 'attach_url', 'capture_leads', 'confirm_material',
+    'add_suppression', 'approve_campaign', 'attach_files', 'attach_url', 'cancel_campaign', 'capture_leads', 'confirm_material',
     'connect_email', 'create_campaign', 'create_lead', 'delete_campaign', 'disconnect_email', 'duplicate_campaign', 'edit_content',
     'enrich_whatsapp', 'generate_content', 'grant_whatsapp_consent', 'grant_whatsapp_consent_batch', 'launch_campaign', 'list_campaigns', 'remove_suppression', 'rename_campaign', 'select_content_variant', 'select_leads', 'send_test_message', 'set_audience',
     'set_objective', 'set_schedule', 'show_balance', 'show_capabilities', 'show_content',
