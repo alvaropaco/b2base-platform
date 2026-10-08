@@ -695,3 +695,38 @@ test('enqueueBatch WA: órfãs alocadas sem mensagem voltam à fila do WhatsApp'
     're-alocada pelo lote'
   );
 });
+
+// ── 2026-10-08: cura de no_phone no reforço — lead ganhou telefone, volta ────
+
+test('enqueueBatch WA: CANCELLED por no_phone ressuscita quando o lead GANHA telefone (com consentimento)', async () => {
+  const prisma = seed(createFakePrisma());
+  prisma.whatsappAccount.rows.push({ id: 'wacc-1', orgId: 'org-1', status: 'CONNECTED' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'unified', balance: 50, floor: 0, ceiling: 50, rampStage: 0, emailSentToday: 0, whatsappSentToday: 0, usageDay: null, domainAuthStatus: 'verified' });
+  prisma.studioCampaign.rows.push(campaignFixture({ channels: ['whatsapp'], emailExecutionId: null, whatsappExecutionId: 'exec-1' }));
+  // Dois contatos cancelados por no_phone no lançamento original (sem telefone na época).
+  prisma.whatsAppCampaignContact.rows.push(
+    { id: 'wcc-fone', campaignId: 'exec-1', prospectId: 'lead-1', status: 'CANCELLED', cancelReason: 'no_phone' },
+    { id: 'wcc-semtel', campaignId: 'exec-1', prospectId: 'lead-2', status: 'CANCELLED', cancelReason: 'no_phone' }
+  );
+  // lead-1 GANHOU telefone (e tem consentimento); lead-2 continua sem número.
+  prisma.prospect.rows.push(
+    { id: 'lead-1', orgId: 'org-1', cnpjPhones: ['5512982007955'] },
+    { id: 'lead-2', orgId: 'org-1', cnpjPhones: [] }
+  );
+  prisma.studioLeadConsent.rows.push({ id: 'cons-1', orgId: 'org-1', prospectId: 'lead-1', channel: 'whatsapp', source: 'chat' });
+
+  const enqueued = [];
+  const result = await bridge.enqueueBatch(prisma, {
+    campaign: prisma.studioCampaign.rows[0],
+    channel: 'whatsapp',
+    prospectIds: ['lead-1', 'lead-2'],
+    enqueue: async (channel, ids) => enqueued.push({ channel, ids }),
+  });
+  assert.deepEqual(result.enqueued, ['lead-1'], 'só quem TEM telefone + consentimento volta à fila');
+  const revived = prisma.whatsAppCampaignContact.rows.find((r) => r.id === 'wcc-fone');
+  assert.equal(revived.status, 'QUEUED', 'ressuscitado');
+  assert.equal(revived.cancelReason, null, 'motivo limpo');
+  const still = prisma.whatsAppCampaignContact.rows.find((r) => r.id === 'wcc-semtel');
+  assert.equal(still.status, 'CANCELLED', 'sem telefone continua fora');
+  assert.equal(still.cancelReason, 'no_phone');
+});

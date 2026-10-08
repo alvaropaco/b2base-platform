@@ -507,6 +507,54 @@ async function enqueueBatch(prisma, { campaign, channel, prospectIds, now = new 
         console.warn(`[studio:bridge] ${orphansWa.length} contato(s) WA órfão(s) devolvido(s) à fila (alocados sem mensagem)`);
       }
     }
+    // Cura de no_phone (2026-10-08, caso do dono: lead GANHOU telefone no
+    // cadastro depois do lançamento, mas o contato CANCELLED por no_phone
+    // nunca voltava — a ressurreição antiga só cobria removido_da_selecao).
+    // Volta à fila quando o lead TEM número utilizável AGORA E segue com
+    // consentimento WhatsApp (LGPD); do_not_contact permanece morto.
+    const cancelledNoPhone = await waContactModel(prisma)
+      .findMany({
+        where: {
+          campaignId: whatsappExecutionId,
+          status: 'CANCELLED',
+          cancelReason: 'no_phone',
+          prospectId: { in: requestedIds },
+        },
+        select: { id: true, prospectId: true },
+      })
+      .catch(() => []);
+    if (cancelledNoPhone.length > 0) {
+      const { normalizePhone } = require('../whatsapp-utils');
+      const prospects = await prisma.prospect
+        .findMany({
+          where: { id: { in: cancelledNoPhone.map((c) => c.prospectId) }, orgId: campaign.orgId },
+          select: { id: true, cnpjPhones: true },
+        })
+        .catch(() => []);
+      const comTelefone = new Set(
+        prospects.filter((p) => normalizePhone((p.cnpjPhones || [])[0])).map((p) => p.id)
+      );
+      let consented = new Set();
+      try {
+        consented = await require('./certificate').whatsappConsentedSet(
+          prisma,
+          campaign.orgId,
+          cancelledNoPhone.map((c) => c.prospectId)
+        );
+      } catch (_e) { /* sem o módulo em alguns harnesses: não ressuscita */ }
+      const revive = cancelledNoPhone
+        .filter((c) => comTelefone.has(c.prospectId) && consented.has(c.prospectId))
+        .map((c) => c.id);
+      if (revive.length > 0) {
+        await waContactModel(prisma)
+          .updateMany({
+            where: { id: { in: revive } },
+            data: { status: 'QUEUED', cancelReason: null, nextSendAt: null },
+          })
+          .catch(() => {});
+        console.warn(`[studio:bridge] ${revive.length} contato(s) CANCELADO(s) por no_phone ressuscitado(s) — o lead agora tem telefone e consentimento`);
+      }
+    }
     enrolled = await waContactModel(prisma).findMany({
       where: { campaignId: whatsappExecutionId, prospectId: { in: requestedIds }, status: 'QUEUED', nextSendAt: null },
     });
