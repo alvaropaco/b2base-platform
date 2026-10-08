@@ -46,6 +46,15 @@ const QUEUE_STATUS_LABEL: Record<string, string> = {
   FAILED: 'Falhou',
 };
 
+/** Por que o lead saiu da fila — "Cancelado" seco deixa o dono sem resposta. */
+const CANCEL_REASON_LABEL: Record<string, string> = {
+  no_phone: 'sem telefone no cadastro — atualize o número para o WhatsApp sair',
+  do_not_contact: 'marcado como não-contactar',
+  removido_da_selecao: 'removido da seleção da audiência',
+  cancelled: 'cancelado manualmente',
+  sem_consentimento: 'sem consentimento WhatsApp (LGPD)',
+};
+
 /** Rótulos da timeline de histórico (tipos de OutreachEvent + WhatsApp). */
 const EVENT_LABEL: Record<string, string> = {
   email_scheduled: 'E-mail agendado',
@@ -369,6 +378,10 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
                         >
                           {QUEUE_STATUS_LABEL[r.status] || r.status}
                         </span>
+                        {/* O PORQUÊ do cancelamento — "Cancelado" seco não explica nada (QA 2026-10-08). */}
+                        {r.status === 'CANCELLED' && r.cancelReason && (
+                          <span className="text-[10px] text-rose-700">{CANCEL_REASON_LABEL[r.cancelReason] || r.cancelReason}</span>
+                        )}
                         <span className="w-32 text-right text-[10px] text-muted-foreground">
                           {r.sentAt
                             ? `enviado ${new Date(r.sentAt).toLocaleString('pt-BR')}`

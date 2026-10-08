@@ -1113,14 +1113,26 @@ function registerChatRoutes(router, context) {
               : `⚠️ ${sk.channel} ficou de fora: canal não conectado.`
           );
         }
+        // HONESTIDADE DO DISPARO (QA 2026-10-08, reclamação do dono: a IA
+        // disse "disparo real em andamento" com 0 leads na fila — os 2 eram
+        // sem telefone e 1 sem consentimento). Quando NADA entra na fila, o
+        // rótulo grita a verdade para o modelo não romantizar o reply.
+        const nadaSaiu = queuedTotal === 0;
         return {
           type: 'campaign_launched',
-          label: `Campanha "${launched.name}" em voo`,
-          detail: queuedTotal > 0 ? detail : `${detail} ${launchNotes.join(' ')}`.trim(),
+          label: nadaSaiu
+            ? `Campanha "${launched.name}" em voo — mas NADA saiu ainda (0 leads na fila)`
+            : `Campanha "${launched.name}" em voo`,
+          detail: nadaSaiu
+            ? `Nenhum lead entrou na fila agora — os motivos estão abaixo, um por um. ${detail} ${launchNotes.join(' ')}`.trim()
+            : queuedTotal > 0
+              ? detail
+              : `${detail} ${launchNotes.join(' ')}`.trim(),
           notes: launchNotes,
           campaignId: launched.id,
           campaignStatus: launched.status,
           queuedTotal,
+          nadaSaiu,
           blocked: d.blocked || null,
         };
       }

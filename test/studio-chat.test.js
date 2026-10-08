@@ -927,6 +927,63 @@ test('QA: "dispara agora" coloca em voo SEM perguntas de agenda (disparo único)
   }
 });
 
+// ── QA 2026-10-08: honestidade do disparo — 0 leads na fila = "NADA saiu" ────
+
+test('QA: disparo com 0 leads enviáveis → card diz "NADA saiu ainda" (nunca "em andamento")', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({ reply: 'Disparo real em andamento!', actions: [{ type: 'launch_campaign' }] }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({
+    llmImpl: impl,
+    overrides: {
+      dispatchImmediate: async () => ({ email: null, whatsapp: { enqueued: [], blocked: null } }),
+    },
+  });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Sem enviáveis', channels: ['whatsapp'] });
+    prisma.whatsappAccount.rows.push({ id: 'wa-1', orgId: 'org-1', status: 'CONNECTED' });
+    prisma.studioCampaign.rows[0].status = 'approved';
+    prisma.studioCampaign.rows[0].whatsappExecutionId = 'wexec-1';
+    prisma.whatsappCampaign.rows.push({ id: 'wexec-1', orgId: 'org-1', status: 'DRAFT', studioAttachments: [] });
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-1', orgId: 'org-1', campaignId: c.data.id,
+      criteriaVersion: {}, totalCount: 2, includedCount: 2, excludedCount: 0, status: 'active',
+    });
+    prisma.studioAudienceMember.rows.push(
+      { id: 'm1', snapshotId: 'snap-1', orgId: 'org-1', prospectId: 'lead-1', included: true, excludeReason: null },
+      { id: 'm2', snapshotId: 'snap-1', orgId: 'org-1', prospectId: 'lead-2', included: true, excludeReason: null }
+    );
+    // O cenário real do dono (07/10): leads matriculados e CANCELADOS por
+    // no_phone — a fila existe, mas nada enviável.
+    prisma.whatsappCampaignContact.rows.push(
+      { id: 'wc-1', campaignId: 'wexec-1', prospectId: 'lead-1', status: 'CANCELLED', cancelReason: 'no_phone' },
+      { id: 'wc-2', campaignId: 'wexec-1', prospectId: 'lead-2', status: 'CANCELLED', cancelReason: 'no_phone' }
+    );
+    prisma.prospect.rows.push(
+      { id: 'lead-1', orgId: 'org-1', companyName: 'METALÚRGICA RODOLFO GLAUS LTDA', cnpjEmail: null },
+      { id: 'lead-2', orgId: 'org-1', companyName: 'GRUPO MF EQUIPAMENTOS', cnpjEmail: null }
+    );
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'dispara agora' });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'campaign_launched');
+    assert.ok(card, 'card de campanha em voo');
+    assert.match(card.label, /NADA saiu ainda \(0 leads na fila\)/, 'rótulo não romantiza fila vazia');
+    assert.equal(card.queuedTotal, 0);
+    assert.equal(card.nadaSaiu, true);
+    assert.match(card.detail, /Nenhum lead entrou na fila agora/, 'detalhe abre com a verdade');
+    assert.match(card.detail, /SEM TELEFONE/, 'diz o motivo com nomes');
+    assert.equal(prisma.studioCampaign.rows[0].status, 'running', 'campanha segue em voo (o reforço é delta)');
+  } finally {
+    server.close();
+  }
+});
+
 // ── QA 2026-10-06: mensagem de TESTE antes do disparo (não vai para leads) ───
 
 test('QA: "envie uma mensagem padrão para o número X" envia TESTE pelo WhatsApp (fila intocada)', async () => {
