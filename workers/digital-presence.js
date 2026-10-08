@@ -7,9 +7,12 @@
 //   1. domínio no input → crawla direto;
 //   2. sem domínio → descobre via searxng pelo nome da empresa (1ª busca) e
 //      crawla o melhor resultado (.com.br / nome no domínio preferidos).
-// Procura wa.me / api.whatsapp.com / whatsapp:// no HTML (home + /contato) e
-// publica o número com prioridade — o enrichment-manager aplica na FRENTE de
-// cnpjPhones (o motor de disparo WhatsApp usa cnpjPhones[0]).
+// Procura wa.me / api.whatsapp.com / whatsapp:// no HTML (home + /contato) e,
+// ANTES de publicar com prioridade (o enrichment-manager aplica na FRENTE de
+// cnpjPhones — o motor de disparo WhatsApp usa cnpjPhones[0]), valida o
+// número no Twilio Lookup (gate twilio-lookup.js): fixo/toll-free/inválido
+// NÃO vira prioritário (whatsapp_rejected) e o lead fica com o fixo da
+// Receita. Twilio ausente/indisponível → fail-open (promove como antes).
 //
 // APENAS lógica de negócio aqui — infra é do SDK (workers/sdk).
 // Rodar: `node workers/digital-presence.js`.
@@ -42,6 +45,40 @@ async function fetchPage(url, { signal, fetchImpl = fetch }) {
   return res.text();
 }
 
+/**
+ * Gate Twilio Lookup: o wa.me extraído do site só vira prioritário se a linha
+ * plausivelmente carrega WhatsApp. Falha de gate (Twilio sem credenciais,
+ * circuito aberto, rede) = ALLOW — o gate protege contra dado ruim
+ * CONFIRMADO, não contra falta de dado. Provider 'twilio.lookup' no registry
+ * (rate limit/circuit breaker compartilhados, o pacote é cobrado por lookup).
+ */
+async function gateWhatsApp(phoneE164, { deps = {}, fetchImpl = fetch, signal, logger } = {}) {
+  const twilio = deps.twilioLookup || null;
+  const registry = deps.registry || null;
+  if (!twilio || !twilio.isConfigured()) {
+    return { decision: 'ALLOW', checked: false, reason: 'TWILIO_NOT_CONFIGURED' };
+  }
+  if (!registry) {
+    return { decision: 'ALLOW', checked: false, reason: 'NO_REGISTRY' };
+  }
+  const acq = await registry.acquire('twilio.lookup');
+  if (!acq.ok) {
+    logger && logger.warn && logger.warn(`gateWhatsApp: twilio.lookup indisponível (${acq.reason}) — fail-open`);
+    return { decision: 'ALLOW', checked: false, reason: `TWILIO_${acq.reason}` };
+  }
+  try {
+    const res = await twilio.lookupPhoneNumber(phoneE164, { fetchImpl, signal });
+    await registry.recordOutcome('twilio.lookup', { ok: res.ok, latencyMs: res.latencyMs || 0 });
+    const verdict = twilio.evaluateWhatsAppNumber(res);
+    return { ...verdict, checked: true, lineType: res.ok ? res.lineType : null };
+  } catch (err) {
+    logger && logger.warn && logger.warn(`gateWhatsApp: erro inesperado no lookup (${err.message}) — fail-open`);
+    return { decision: 'ALLOW', checked: false, reason: 'TWILIO_ERROR' };
+  } finally {
+    await acq.ticket.release();
+  }
+}
+
 /** Descobre o domínio da empresa pelo nome via searxng (só resulta .br/.com). */
 async function discoverDomain(companyName, { signal, searx = searxSearch } = {}) {
   let results = [];
@@ -70,7 +107,7 @@ async function discoverDomain(companyName, { signal, searx = searxSearch } = {})
 }
 
 const executors = {
-  async 'company.digital_presence'(task, { signal, logger, fetchImpl = fetch } = {}) {
+  async 'company.digital_presence'(task, { signal, logger, fetchImpl = fetch, deps = {} } = {}) {
     let domain = String(task.input.domain || '').toLowerCase().trim();
     const companyName = String(task.input.companyName || '').trim();
     if (!domain && !companyName) {
@@ -124,28 +161,58 @@ const executors = {
       };
     }
 
-    logger.info(`digital_presence ${found.domain}: WhatsApp +${found.whatsapp} (${sourceUrl || base})`);
+    // ── Gate Twilio: número confirmadamente ruim não vira prioritário ──────
+    const waPhone = `+${found.whatsapp}`;
+    const gate = await gateWhatsApp(waPhone, { deps, fetchImpl, signal, logger });
+    if (gate.decision === 'BLOCK') {
+      // Negativo válido: o manager não promove (dp.whatsapp null) e o lead
+      // mantém o fixo da Receita em cnpjPhones[0].
+      logger.info(`digital_presence ${found.domain}: WhatsApp ${waPhone} rejeitado (${gate.reason}) — mantendo fila da Receita`);
+      return {
+        status: 'COMPLETED',
+        provider: 'site.crawl',
+        data: {
+          domain: found.domain,
+          digital_presence: { whatsapp: null, whatsapp_rejected: waPhone, rejected_reason: gate.reason },
+          contacts: [],
+        },
+        facts: [
+          ...(found.domain && sourceUrl
+            ? [{ attribute: 'company.domain', value: found.domain, confidence: 0.6, evidence: { sourceType: 'site.crawl', url: sourceUrl, retrievedAt: new Date().toISOString() } }]
+            : []),
+          { attribute: 'contact.whatsapp.rejected', value: waPhone, confidence: 0.9,
+            evidence: { sourceType: 'twilio', provider: 'twilio.lookup', retrievedAt: new Date().toISOString() } },
+        ],
+      };
+    }
+
+    logger.info(`digital_presence ${found.domain}: WhatsApp ${waPhone} (${sourceUrl || base})${gate.checked ? ` [twilio: ${gate.reason}]` : ''}`);
     return {
       status: 'COMPLETED',
       provider: 'site.crawl',
       data: {
         domain: found.domain,
-        digital_presence: { whatsapp: `+${found.whatsapp}` },
-        contacts: [{ type: 'whatsapp', value: `+${found.whatsapp}`, classification: 'FOUND', confidence: 0.8 }],
+        digital_presence: { whatsapp: waPhone },
+        contacts: [{ type: 'whatsapp', value: waPhone, classification: 'FOUND', confidence: 0.8 }],
       },
       facts: [
-        { attribute: 'contact.whatsapp', value: `+${found.whatsapp}`, confidence: 0.8,
+        { attribute: 'contact.whatsapp', value: waPhone, confidence: 0.8,
           evidence: { sourceType: 'site.crawl', url: sourceUrl || base, retrievedAt: new Date().toISOString() } },
+        ...(gate.checked && gate.lineType
+          ? [{ attribute: 'contact.whatsapp_line_type', value: gate.lineType, confidence: 1,
+              evidence: { sourceType: 'twilio', provider: 'twilio.lookup', retrievedAt: new Date().toISOString() } }]
+          : []),
       ],
     };
   },
 };
 
 function createDigitalPresenceWorker({ prisma, js, jsm = null, deps = {} } = {}) {
-  const logger = require('../logger').createLogger({ component: 'worker', family: 'digital-presence' });
+  const logger = deps.logger || require('../logger').createLogger({ component: 'worker', family: 'digital-presence' });
   const rawStore = prisma ? require('../raw-store').createRawStore({ prisma }) : null;
+  const twilioLookup = deps.twilioLookup || require('../twilio-lookup');
   const { makeResultPublisher } = require('./sdk/result-publisher');
-  return createWorkerRuntime({
+  const runtime = createWorkerRuntime({
     name: 'digital-presence',
     // Subject real da capability: enrichment.task.company.digital_presence.v1
     // (o nome do worker NÃO é o prefixo do subject — sem este filtro explícito
@@ -161,9 +228,14 @@ function createDigitalPresenceWorker({ prisma, js, jsm = null, deps = {} } = {})
       publisher: js ? makeResultPublisher({ js }) : null,
       rawStore,
       logger,
+      // Gate Twilio dentro do executor: registry para rate limit/circuit
+      // breaker do provider 'twilio.lookup' + cliente lookup injetável.
+      execDeps: { registry: deps.registry || null, twilioLookup },
       ...deps,
     },
   });
+  // ANTES do return — este arquivo já quebrou uma vez com o registro depois
+  // do return (c89e8d4e): worker subia, consumia nada (código morto).
   runtime.registerExecutors(executors);
   return runtime;
 }
@@ -193,4 +265,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { executors, createDigitalPresenceWorker, extractWhatsAppFromHtml, discoverDomain };
+module.exports = { executors, createDigitalPresenceWorker, extractWhatsAppFromHtml, discoverDomain, gateWhatsApp };
