@@ -117,7 +117,7 @@ async function runDailyVerification(prisma, { resolver = RESOLVER } = {}) {
     // Estado anterior: só domínio VERIFICADO que falha desperta (FR-31).
     let previous = null;
     try {
-      const acc = await prisma.studioReputationAccount.findFirst({ where: { orgId, channel: 'email' } });
+      const acc = await prisma.studioReputationAccount.findFirst({ where: { orgId, channel: 'unified' } });
       previous = acc ? acc.domainAuthStatus : null;
     } catch (_) { /* segue com previous null */ }
     try {

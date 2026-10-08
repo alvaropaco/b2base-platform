@@ -53,7 +53,7 @@ test('connect Resend com domínio verificado registra autenticação no EmailAcc
     assert.equal(account.domainAuthDetail.source, 'resend-connect');
 
     const rep = prisma.studioReputationAccount.rows.find(
-      (r) => r.orgId === 'org-1' && r.channel === 'email'
+      (r) => r.orgId === 'org-1' && r.channel === 'unified'
     );
     assert.ok(rep, 'conta de reputação do Studio criada');
     assert.equal(rep.domainAuthStatus, 'verified', 'piso efetivo liberado sem esperar o job diário de DNS');
@@ -159,7 +159,7 @@ test('reconectar Resend atualiza o estado de autenticação da conta existente',
     assert.equal(row.status, 'connected');
     assert.equal(row.domainAuthStatus, 'verified', 'reconexão conserta o estado antigo');
     const rep = prisma.studioReputationAccount.rows.find(
-      (r) => r.orgId === 'org-1' && r.channel === 'email'
+      (r) => r.orgId === 'org-1' && r.channel === 'unified'
     );
     assert.equal(rep.domainAuthStatus, 'verified');
   } finally {

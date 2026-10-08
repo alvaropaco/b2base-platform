@@ -218,9 +218,9 @@ test('D5: segundo canal conectado depois do voo compila no tick (falta execuçã
   prisma.organization.rows.push({ id: 'org-1', plan: 'premium', studioSendPaused: false });
   prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
   prisma.whatsappAccount.rows.push({ id: 'wa-1', orgId: 'org-1', status: 'CONNECTED' });
+  // Saldo ÚNICO: uma linha por org (o domínio verificado vale para o pool).
   prisma.studioReputationAccount.rows.push(
-    { id: 'acc-email', orgId: 'org-1', channel: 'email', balance: 50, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' },
-    { id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 50, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'unverified' }
+    { id: 'acc-email', orgId: 'org-1', channel: 'unified', balance: 50, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' }
   );
   // Campanha em voo com execução SÓ de WhatsApp: e-mail foi conectado DEPOIS.
   prisma.studioCampaign.rows.push({
@@ -252,7 +252,7 @@ test('tick sem snapshot ativo NÃO transita — skipped no_snapshot (nunca runni
   const prisma = createFakePrisma();
   prisma.organization.rows.push({ id: 'org-1', plan: 'premium', studioSendPaused: false });
   prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'email', balance: 50, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'unified', balance: 50, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
   prisma.studioCampaign.rows.push({
     id: 'camp-9', orgId: 'org-1', name: 'Sem snapshot', status: 'scheduled',
     channels: ['email'], approval: {},
@@ -275,7 +275,7 @@ test('V1/D5: agendado sem execuções destrava no tick — compila e libera; sta
   prisma.organization.rows.push({ id: 'org-1', plan: 'premium', studioSendPaused: false });
   // Campanha aprovada/agendada SEM canal (execuções nulas) — o canal chega DEPOIS.
   prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'email', balance: 50, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'unified', balance: 50, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
   prisma.studioCampaign.rows.push({
     id: 'camp-1', orgId: 'org-1', name: 'Pendente', status: 'scheduled',
     statusReason: 'NO_CHANNEL_CONNECTED',
@@ -304,7 +304,7 @@ test('V1/D5: agendado sem execuções destrava no tick — compila e libera; sta
 
 test('V4: card de saldo em tom mordomo — nunca "piso" nem "bloqueado" (UX-DR4)', async () => {
   const prisma = seed(createFakePrisma());
-  prisma.studioReputationAccount.rows.push({ id: 'acc-email-zero', orgId: 'org-1', channel: 'email', balance: 0, floor: 10, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-email-zero', orgId: 'org-1', channel: 'unified', balance: 0, floor: 10, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
   const { server, api } = await startServer(prisma);
   try {
     const { res, body } = await api('POST', '/campaigns/camp-1/actions', { type: 'show_balance' });

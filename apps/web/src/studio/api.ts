@@ -728,9 +728,16 @@ export async function ackCockpitWake(id: string): Promise<void> {
   await request(`/cockpit/wakes/${encodeURIComponent(id)}/ack`, { method: 'POST', body: JSON.stringify({}) });
 }
 
-/** Painel de Saldo: valor corrente por canal + eventos explicados (FR-20). */
-export async function fetchReputation(): Promise<{ balances: ReputationBalance[]; events: ReputationEvent[]; paused: boolean }> {
-  const data = await request<{ data: { balances: ReputationBalance[]; events: ReputationEvent[]; paused: boolean } }>('/reputation');
+/** Painel de Saldo: CARTEIRA ÚNICA (pool e-mail+WhatsApp) + eventos (FR-20). */
+export async function fetchReputation(): Promise<{
+  wallet: ReputationBalance | null;
+  balances: ReputationBalance[];
+  events: ReputationEvent[];
+  paused: boolean;
+}> {
+  const data = await request<{
+    data: { wallet: ReputationBalance | null; balances: ReputationBalance[]; events: ReputationEvent[]; paused: boolean };
+  }>('/reputation');
   return data.data;
 }
 
@@ -747,11 +754,11 @@ export async function fetchTopupPacks(): Promise<{
   return data.data;
 }
 
-/** Cria o Checkout Session de compra de envios e devolve a URL do Stripe. */
-export async function createTopupCheckout(channel: string, units: number): Promise<{ url: string; sessionId: string }> {
+/** Cria o Checkout Session de compra de envios (saldo ÚNICO) e devolve a URL. */
+export async function createTopupCheckout(units: number): Promise<{ url: string; sessionId: string }> {
   const data = await request<{ data: { url: string; sessionId: string } }>('/reputation/topup-checkout', {
     method: 'POST',
-    body: JSON.stringify({ channel, units }),
+    body: JSON.stringify({ units }),
   });
   return data.data;
 }

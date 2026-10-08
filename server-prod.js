@@ -5658,11 +5658,14 @@ async function start() {
           .then(() => console.log('[studio:reputation] ✓ reposição diária registrada (07:03)'))
           .catch((err) => console.error('[studio:reputation] falha ao registrar repeat job:', err.message));
         reputationQueue.process(async () => {
+          // Saldo ÚNICO (2026-10-08): uma linha 'unified' por org — reposição
+          // e rampa por org (os caps diários por canal derivam do estágio e
+          // os contadores zeram lazily na virada do usageDay).
           const accounts = await prisma.studioReputationAccount.findMany();
           for (const account of accounts) {
             try {
-              await reputation.applyDailyReplenishment(prisma, account.orgId, account.channel);
-              await reputation.promoteRamp(prisma, account.orgId, account.channel);
+              await reputation.applyDailyReplenishment(prisma, account.orgId);
+              await reputation.promoteRamp(prisma, account.orgId);
             } catch (err) {
               console.error('[studio:reputation] reposição falhou para', account.orgId, account.channel, err.message);
             }

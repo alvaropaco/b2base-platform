@@ -33,6 +33,7 @@ import {
   Rocket,
   ShieldCheck,
   Sparkles,
+  Wallet,
   Wand2,
   X,
 } from 'lucide-react';
@@ -56,6 +57,7 @@ import { CampaignsListView } from './views/CampaignsListView';
 import { PreFlightView } from './views/PreFlightView';
 import { AgentPanel } from './components/AgentPanel';
 import { BrandSettings } from './components/BrandSettings';
+import { LowBalancePopup } from './components/LowBalancePopup';
 
 const RAIL_STEPS = [
   { key: 'objective', label: 'Objetivo' },
@@ -109,7 +111,7 @@ export interface StudioAppProps {
 export function StudioApp({ userName, onExit }: StudioAppProps) {
   const [home, setHome] = useState<CockpitHome | null>(null);
   const [campaignDetail, setCampaignDetail] = useState<Awaited<ReturnType<typeof fetchCampaign>> | null>(null);
-  const [balances, setBalances] = useState<ReputationBalance[]>([]);
+  const [wallet, setWallet] = useState<ReputationBalance | null>(null);
   const [topupPacks, setTopupPacks] = useState<{ units: number; totalCents: number }[] | null>(null);
   const [topupError, setTopupError] = useState(false);
   const [topupBusy, setTopupBusy] = useState<string | null>(null);
@@ -132,6 +134,15 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
   const [sweeping, setSweeping] = useState(false);
   const navRef = useRef<HTMLDivElement>(null);
   const prevStatusRef = useRef<string | null>(null);
+  // Pop-up "saldo acabando": dispensa POR DIA (sessionStorage) — reaparece na
+  // próxima visita enquanto o saldo seguir baixo; recupera ao recarregar saldo.
+  const [lowBalanceDismissed, setLowBalanceDismissed] = useState(() => {
+    try {
+      return sessionStorage.getItem(`studio:lowbalance:${new Date().toISOString().slice(0, 10)}`) === '1';
+    } catch {
+      return false;
+    }
+  });
 
   const loadHome = useCallback(async () => {
     try {
@@ -147,7 +158,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
           : data
       );
       setPaused(data.paused);
-      setBalances(data.balances || []);
+      setWallet(data.balances?.[0] ?? null);
     } catch (err) {
       setError(err instanceof StudioRequestError ? err.message : 'Falha ao abrir o Cockpit');
     }
@@ -188,6 +199,11 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
       .catch(() => setCampaignDetail(null));
   }, [home?.activeCampaignId]);
 
+  // Saldo recuperou (ou novo dia): o aviso volta a poder aparecer.
+  useEffect(() => {
+    if (!wallet?.lowBalance && lowBalanceDismissed) setLowBalanceDismissed(false);
+  }, [wallet?.lowBalance, lowBalanceDismissed]);
+
   // Momento-assinatura (FR-6): autorização → a luz percorre o Rail e assenta.
   useEffect(() => {
     const status = campaignDetail?.status ?? null;
@@ -208,7 +224,7 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
       try {
         const data = await fetchReputation();
         setEvents(data.events || []);
-        setBalances(data.balances || []);
+        setWallet(data.wallet ?? data.balances?.[0] ?? null);
         void fetchTopupPacks()
           .then((packs) => setTopupPacks(packs.configured ? packs.packs : null))
           .catch(() => setTopupPacks(null));
@@ -219,10 +235,10 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
   };
 
   /** Compra de envios: Checkout Stripe (redireciona e volta pro /studio). */
-  const buyEnvios = async (channel: string, units: number) => {
-    setTopupBusy(`${channel}:${units}`);
+  const buyEnvios = async (units: number) => {
+    setTopupBusy(String(units));
     try {
-      const { url } = await createTopupCheckout(channel, units);
+      const { url } = await createTopupCheckout(units);
       window.location.assign(url);
     } catch (_) {
       setTopupBusy(null);
@@ -407,62 +423,56 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
           </ul>
         </div>
 
-        {/* Canais do Orçamento de Reputação — luz semântica por saúde (FR-14). */}
-        {balances.length > 0 && (
+        {/* SALDO ÚNICO (2026-10-08): e-mail + WhatsApp dividem o mesmo pool. */}
+        {wallet && (
           <div>
             <p className="px-2 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
-              Canais
+              Saldo de envios
             </p>
             <ul className="space-y-0.5">
-              {balances.map((b) => {
-                const Icon = CHANNEL_ICON[b.channel] ?? MessageSquare;
-                const healthy = channelHealthy(b);
-                return (
-                  <li key={b.channel}>
-                    <button
-                      type="button"
-                      onClick={() => void openSaldo()}
-                      aria-expanded={saldoOpen}
-                      aria-controls="cockpit-saldo"
-                      title={
-                        healthy
-                          ? `${b.available} unidades livres · domínio ${b.domainAuthStatus === 'verified' ? 'verificado' : 'não verificado'}`
-                          : `Abaixo do piso (${b.available}/${b.floor}) — envio bloqueado`
-                      }
-                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
-                    >
-                      <Icon className="h-4 w-4" />
-                      <span className="capitalize">{b.channel === 'email' ? 'E-mail' : 'WhatsApp'}</span>
-                      <span className="ml-auto flex items-center gap-1.5 text-[13px] text-foreground/80">
-                        {b.available}
-                        <span
-                          aria-hidden="true"
-                          className={`inline-block h-2 w-2 rounded-full ${
-                            healthy ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]' : 'bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.5)]'
-                          }`}
-                        />
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
+              <li>
+                <button
+                  type="button"
+                  onClick={() => void openSaldo()}
+                  aria-expanded={saldoOpen}
+                  aria-controls="cockpit-saldo"
+                  title={
+                    channelHealthy(wallet)
+                      ? `${wallet.available} envios livres no pool · e-mail ${wallet.usedToday.email}/${wallet.caps.email} · WhatsApp ${wallet.usedToday.whatsapp}/${wallet.caps.whatsapp} hoje`
+                      : `Abaixo do piso (${wallet.available}/${wallet.floor}) — envio bloqueado`
+                  }
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+                >
+                  <Wallet className="h-4 w-4" />
+                  <span>Saldo único</span>
+                  <span className="ml-auto flex items-center gap-1.5 text-[13px] text-foreground/80">
+                    {wallet.available}
+                    <span
+                      aria-hidden="true"
+                      className={`inline-block h-2 w-2 rounded-full ${
+                        channelHealthy(wallet) ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]' : 'bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.5)]'
+                      }`}
+                    />
+                  </span>
+                </button>
+              </li>
             </ul>
           </div>
         )}
       </nav>
 
-      {/* Rodapé: resumo do Orçamento de Reputação (ref: upgrade card). */}
-      {balances.length > 0 && (
+      {/* Rodapé: resumo do saldo único (ref: upgrade card). */}
+      {wallet && (
         <div className="cockpit-glass m-3 rounded-xl p-3">
-          <p className="text-xs font-semibold text-foreground">Orçamento de Reputação</p>
+          <p className="text-xs font-semibold text-foreground">Saldo de envios</p>
           <p
             className={`mt-1 text-[11px] leading-relaxed ${
-              balances.every(channelHealthy) ? 'text-muted-foreground' : 'text-rose-700'
+              channelHealthy(wallet) ? 'text-muted-foreground' : 'text-rose-700'
             }`}
           >
-            {balances.every(channelHealthy)
-              ? 'Todos os canais saudáveis — glow verde significa autorizado.'
-              : 'Canal abaixo do piso: disparos bloqueados até recarregar.'}
+            {channelHealthy(wallet)
+              ? `Pool único e-mail + WhatsApp${wallet.lowBalance ? ' — saldo acabando, compre mais no painel' : ' — saudável e autorizado a disparar.'}`
+              : 'Saldo abaixo do piso: disparos bloqueados até recarregar.'}
           </p>
           <button
             type="button"
@@ -632,69 +642,91 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
         )}
 
         {/* Painéis secundários (saldo / despertares) — superfícies sob demanda.
-            Saldo em linguagem clara: status por canal + PASSO A PASSO para
-            liberar disparos (o box críptico "unidades" morreu). */}
+            SALDO ÚNICO (2026-10-08): um pool para e-mail + WhatsApp, com o
+            teto diário de cada canal como camada de ritmo. */}
         {saldoOpen && (
           <aside id="cockpit-saldo" className="cockpit-rise border-b border-[#160211]/10 bg-white/50 px-4 py-3 text-xs">
-            <h2 className="mb-2 font-semibold">Limites de envio — como liberar seus disparos</h2>
+            <h2 className="mb-2 font-semibold">Saldo de envios — e-mail e WhatsApp no mesmo pool</h2>
             <div className="space-y-3">
-              {balances.map((b) => {
-                const label = b.channel === 'email' ? 'E-mail' : 'WhatsApp';
-                const blocked = !channelHealthy(b);
-                const pendingDomain = b.channel === 'email' && b.domainAuthStatus !== 'verified';
-                const state = blocked ? 'BLOQUEADO' : pendingDomain ? 'PENDENTE' : 'PRONTO';
-                const steps: string[] = [];
-                if (pendingDomain) {
-                  steps.push('Autenticar seu domínio: publicar SPF, DKIM e DMARC no DNS — sem isso, e-mail não sai (peça no chat: "listar os registros DNS").');
-                }
-                if (blocked) {
-                  steps.push(`Recarregar o saldo: há ${b.available} disponíveis e o piso é ${b.floor} — abaixo do piso os disparos param para proteger sua reputação.`);
-                }
-                if (b.channel === 'whatsapp') {
-                  steps.push('Manter o WhatsApp conectado — se cair, peça no chat: "mostrar o QR do WhatsApp".');
-                }
-                if (steps.length === 0) steps.push('Nada a fazer — canal saudável e autorizado a disparar.');
-                return (
-                  <>
-                  <div key={b.channel} className="cockpit-glass rounded-xl p-3">
+              {wallet ? (
+                <>
+                  <div className="cockpit-glass rounded-xl p-3">
                     <p className="flex items-center gap-2">
                       <span
                         aria-hidden="true"
-                        className={`inline-block h-2 w-2 rounded-full ${blocked ? 'bg-rose-500' : pendingDomain ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                        className={`inline-block h-2 w-2 rounded-full ${
+                          channelHealthy(wallet) && !wallet.lowBalance ? 'bg-emerald-500' : wallet.lowBalance ? 'bg-amber-500' : 'bg-rose-500'
+                        }`}
                       />
-                      <strong className="text-foreground">{label}</strong>
+                      <strong className="text-foreground">Saldo único</strong>
                       <span
                         className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
-                          blocked ? 'bg-rose-100 text-rose-800' : pendingDomain ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+                          !channelHealthy(wallet)
+                            ? 'bg-rose-100 text-rose-800'
+                            : wallet.lowBalance
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-emerald-100 text-emerald-800'
                         }`}
                       >
-                        {state}
+                        {!channelHealthy(wallet) ? 'BLOQUEADO' : wallet.lowBalance ? 'QUASE NO FIM' : 'PRONTO'}
                       </span>
                       <span className="ml-auto text-muted-foreground">
-                        {b.available} envios disponíveis de {b.ceiling}
+                        {wallet.balance} envios no pool · piso {wallet.floor} · teto {wallet.ceiling}
                       </span>
                     </p>
                     <ol className="mt-1.5 list-decimal space-y-1 pl-9 text-muted-foreground [&_li::marker]:text-[#160211]/40">
-                      {steps.map((s, i) => (
-                        <li key={i} className="leading-relaxed">{s}</li>
-                      ))}
+                      {(!channelHealthy(wallet) || wallet.lowBalance) && (
+                        <li>
+                          Comprar mais envios: os pacotes abaixo creditam o pool ÚNICO — serve para e-mail E WhatsApp
+                          (a reposição diária também libera mais).
+                        </li>
+                      )}
+                      {wallet.domainAuthStatus !== 'verified' && wallet.domainAuthStatus !== 'prewarmed' && (
+                        <li>
+                          Autenticar seu domínio: publicar SPF, DKIM e DMARC no DNS — sem isso o E-MAIL não sai, mesmo
+                          com saldo (peça no chat: "listar os registros DNS").
+                        </li>
+                      )}
+                      <li>Manter o WhatsApp conectado — se cair, peça no chat: "mostrar o QR do WhatsApp".</li>
+                      {channelHealthy(wallet) && !wallet.lowBalance && (
+                        <li>Nada a fazer — pool saudável e autorizado a disparar.</li>
+                      )}
                     </ol>
                   </div>
+                  {/* Ritmo do dia POR CANAL — o saldo é um; o teto diário protege a reputação de cada canal. */}
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <div className="cockpit-glass rounded-xl p-2.5">
+                      <p className="font-semibold text-foreground">E-mail · hoje</p>
+                      <p className="text-muted-foreground">
+                        {wallet.usedToday.email}/{wallet.caps.email} envios ·{' '}
+                        {['verified', 'prewarmed'].includes(wallet.domainAuthStatus) ? (
+                          <span className="text-emerald-700">domínio ✓</span>
+                        ) : (
+                          <span className="text-amber-700">domínio pendente</span>
+                        )}
+                      </p>
+                    </div>
+                    <div className="cockpit-glass rounded-xl p-2.5">
+                      <p className="font-semibold text-foreground">WhatsApp · hoje</p>
+                      <p className="text-muted-foreground">
+                        {wallet.usedToday.whatsapp}/{wallet.caps.whatsapp} envios · consuma do mesmo pool
+                      </p>
+                    </div>
+                  </div>
                   {topupPacks && topupPacks.length > 0 && (
-                    <div className="mt-2 border-t border-[#160211]/10 pt-2">
+                    <div>
                       <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        Comprar mais envios (Stripe)
+                        Comprar mais envios (Stripe) — credita o pool único
                       </p>
                       <div className="flex gap-1.5">
                         {topupPacks.map((pack) => {
-                          const key = `${b.channel}:${pack.units}`;
                           const preco = (pack.totalCents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
                           return (
                             <button
-                              key={key}
+                              key={pack.units}
                               type="button"
-                              disabled={topupBusy === key}
-                              onClick={() => void buyEnvios(b.channel, pack.units)}
+                              disabled={topupBusy === String(pack.units)}
+                              onClick={() => void buyEnvios(pack.units)}
                               className="flex-1 rounded-lg border border-[#160211]/15 bg-white px-1.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-white disabled:opacity-50"
                             >
                               +{pack.units}
@@ -705,9 +737,10 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                       </div>
                     </div>
                   )}
-                  </>
-                );
-              })}
+                </>
+              ) : (
+                <p className="text-muted-foreground">Nenhuma carteira de envios ainda — conecte um canal para começar.</p>
+              )}
             </div>
             <h3 className="mb-1 mt-3 font-semibold">Movimentos recentes</h3>
             <ul className="space-y-1">
@@ -1030,6 +1063,26 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
           )}
         </main>
       </div>
+
+      {/* Aviso de saldo acabando — com compra direta (Stripe) dentro. */}
+      {wallet?.lowBalance && !lowBalanceDismissed && (
+        <LowBalancePopup
+          balance={wallet.balance}
+          available={wallet.available}
+          threshold={wallet.threshold}
+          packs={topupPacks}
+          busyUnits={topupBusy}
+          onBuy={(units) => void buyEnvios(units)}
+          onClose={() => {
+            try {
+              sessionStorage.setItem(`studio:lowbalance:${new Date().toISOString().slice(0, 10)}`, '1');
+            } catch {
+              /* sessionStorage indisponível: dispensa só nesta sessão */
+            }
+            setLowBalanceDismissed(true);
+          }}
+        />
+      )}
     </div>
   );
 }

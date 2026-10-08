@@ -63,18 +63,15 @@ function balancePacks() {
 
 /**
  * Checkout Session de COMPRA DE ENVIOS (pagamento único, mode 'payment').
- * Fulfillment por webhook: credit no orçamento de reputação quando o
- * checkout.session.completed chegar com payment_status 'paid' — a meta
- * `kind: 'balance-topup'` é o que separa esta sessão da de assinatura.
+ * SALDO ÚNICO (2026-10-08): a compra credita o pool compartilhado entre
+ * e-mail e WhatsApp — `channel` não é mais parte do pedido. Fulfillment por
+ * webhook: credit no orçamento quando o checkout.session.completed chegar
+ * com payment_status 'paid' — a meta `kind: 'balance-topup'` é o que separa
+ * esta sessão da de assinatura.
  */
-async function createBalanceCheckoutSession(prisma, org, baseUrl, { channel, units }) {
+async function createBalanceCheckoutSession(prisma, org, baseUrl, { units }) {
   const stripe = getStripe();
   const n = Math.max(1, Math.min(500, Math.round(Number(units)) || 0));
-  if (!['email', 'whatsapp'].includes(channel)) {
-    const err = new Error('Canal inválido para compra de envios.');
-    err.status = 400;
-    throw err;
-  }
   const customer = await getOrCreateStripeCustomer(prisma, org);
   return stripe.checkout.sessions.create({
     mode: 'payment',
@@ -85,11 +82,11 @@ async function createBalanceCheckoutSession(prisma, org, baseUrl, { channel, uni
       price_data: {
         currency: 'brl',
         unit_amount: creditUnitPriceCents(),
-        product_data: { name: `${n} envios de disparo — canal ${channel === 'email' ? 'e-mail' : 'WhatsApp'}` },
+        product_data: { name: `${n} envios de disparo (saldo único e-mail + WhatsApp)` },
       },
     }],
-    metadata: { orgId: org.id, channel, units: n, kind: 'balance-topup' },
-    payment_intent_data: { metadata: { orgId: org.id, channel, units: n, kind: 'balance-topup' } },
+    metadata: { orgId: org.id, channel: 'unified', units: n, kind: 'balance-topup' },
+    payment_intent_data: { metadata: { orgId: org.id, channel: 'unified', units: n, kind: 'balance-topup' } },
     success_url: `${baseUrl}/studio?topup=success&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${baseUrl}/studio?topup=cancel`,
     integration_identifier: `b2base-topup-${crypto.randomBytes(4).toString('hex')}`,
@@ -97,28 +94,29 @@ async function createBalanceCheckoutSession(prisma, org, baseUrl, { channel, uni
 }
 
 /**
- * Fulfillment da compra de saldo: credita o orçamento do canal. Idempotente
- * por refId `topup:<session_id>` — retries do webhook não duplicam crédito.
+ * Fulfillment da compra de saldo: credita o POOL ÚNICO. Idempotente por
+ * refId `topup:<session_id>` — retries do webhook não duplicam crédito.
+ * Sessões LEGADAS (pré-unificação) têm metadata.channel 'email'/'whatsapp' —
+ * o crédito vai para o pool do mesmo jeito.
  */
 async function fulfillBalanceTopup(prisma, session) {
   const reputation = require('./studio/reputation');
   const metadata = session.metadata || {};
   const orgId = metadata.orgId || session.client_reference_id;
-  const channel = metadata.channel;
   const units = Math.max(0, Math.floor(Number(metadata.units) || 0));
-  if (!orgId || !['email', 'whatsapp'].includes(channel) || units === 0) {
+  if (!orgId || units === 0) {
     return { handled: false, reason: 'metadata incompleta para top-up' };
   }
   const result = await reputation.credit(prisma, {
     orgId,
-    channel,
+    channel: 'unified',
     amount: units,
     refType: 'topup',
     refId: `topup:${session.id}`,
     reason: `Compra de ${units} envios (Stripe Checkout ${session.id})`,
-    metadata: { via: 'stripe', sessionId: session.id },
+    metadata: { via: 'stripe', sessionId: session.id, legacyChannel: metadata.channel || null },
   });
-  console.log(`[billing] top-up ${session.id}: +${result.credited} ${channel} (org ${orgId}, saldo ${result.balance})`);
+  console.log(`[billing] top-up ${session.id}: +${result.credited} envios no saldo único (org ${orgId}, saldo ${result.balance})`);
   return { handled: true, credited: result.credited, balance: result.balance, replayed: result.replayed };
 }
 

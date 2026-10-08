@@ -303,7 +303,7 @@ test('tick: e-mail declarado mas só WhatsApp conectado → transita e dispara W
   const prisma = createFakePrisma();
   prisma.organization.rows.push({ id: 'org-1', plan: 'premium', studioSendPaused: false });
   prisma.whatsappAccount.rows.push({ id: 'wa-1', orgId: 'org-1', status: 'CONNECTED' });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 30, floor: 0, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'unified', balance: 30, floor: 0, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
   prisma.studioCampaign.rows.push({
     id: 'camp-1', orgId: 'org-1', name: 'Campanha', status: 'scheduled',
     channels: ['email', 'whatsapp'],

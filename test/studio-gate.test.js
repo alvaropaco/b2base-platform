@@ -26,9 +26,11 @@ const IN_WINDOW = new Date('2026-09-23T13:00:00Z'); // qua 10h SP
 function seed(prisma, overrides = {}) {
   prisma.organization.rows.push({ id: 'org-1', plan: 'premium', studioSendPaused: false, ...overrides.org });
   prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
+  // Saldo ÚNICO (2026-10-08): uma linha 'unified' por org.
   prisma.studioReputationAccount.rows.push({
-    id: 'acc-1', orgId: 'org-1', channel: 'email',
+    id: 'acc-1', orgId: 'org-1', channel: 'unified',
     balance: 100, floor: 10, ceiling: 100, rampStage: 0,
+    emailSentToday: 0, whatsappSentToday: 0, usageDay: null,
     domainAuthStatus: 'verified', domainAuthDetail: {},
     ...overrides.account,
   });
@@ -92,6 +94,31 @@ test('consume: saldo zerado bloqueia sem conceder nada e nunca fica negativo', a
   assert.equal(result.granted, 0);
   assert.equal(result.blocked.code, 'SALDO_INSUFICIENTE');
   assert.equal(prisma.studioReputationAccount.rows[0].balance, 5);
+});
+
+test('gate: e-mail com domínio não verificado → DOMINIO_NAO_VERIFICADO (elegibilidade explícita no saldo único)', async () => {
+  const prisma = seed(createFakePrisma(), { account: { domainAuthStatus: 'unverified' } });
+  const verdict = await reputationGate.evaluate(prisma, { orgId: 'org-1', channel: 'email', units: 5 });
+  assert.equal(verdict.allow, false);
+  assert.equal(verdict.code, 'DOMINIO_NAO_VERIFICADO');
+  assert.ok(verdict.reason.includes('registros DNS'), 'instrução acionável');
+  // …mas o saldo único NÃO é refém do domínio: o WhatsApp da mesma org dispara.
+  prisma.whatsappAccount.rows.push({ id: 'wacc-1', orgId: 'org-1', status: 'CONNECTED' });
+  const wa = await reputationGate.evaluate(prisma, { orgId: 'org-1', channel: 'whatsapp', units: 5 });
+  assert.equal(wa.allow, true, 'DNS é elegibilidade do E-MAIL, não do pool');
+});
+
+test('gate: cap diário do canal cheio → LIMITE_DIARIO_CANAL com saldo sobrando', async () => {
+  const prisma = seed(createFakePrisma(), { account: { balance: 100, whatsappSentToday: 30, usageDay: '2026-09-23' } });
+  prisma.whatsappAccount.rows.push({ id: 'wacc-1', orgId: 'org-1', status: 'CONNECTED' });
+  const verdict = await reputationGate.evaluate(prisma, { orgId: 'org-1', channel: 'whatsapp', units: 5, now: IN_WINDOW });
+  assert.equal(verdict.allow, false);
+  assert.equal(verdict.code, 'LIMITE_DIARIO_CANAL');
+  assert.ok(verdict.reason.includes('30/30'), 'mostra uso/teto do dia');
+  const consume = await reputationGate.consume(prisma, { orgId: 'org-1', channel: 'whatsapp', units: 5, refId: 'b-cap', now: IN_WINDOW });
+  assert.equal(consume.granted, 0);
+  assert.equal(consume.blocked.code, 'LIMITE_DIARIO_CANAL');
+  assert.equal(prisma.studioReputationAccount.rows[0].balance, 100, 'nada debitado (cap ≠ saldo)');
 });
 
 test('pausa global 1-clique: estado persistido, retomada exige ação explícita (FR-19)', async () => {
@@ -255,7 +282,7 @@ test('outreach processSend: pausa global re-agenda em vez de enviar (FR-19)', as
 test('outreach processSend: falha definitiva estorna 1 unidade idempotente (AD-13)', async () => {
   const prisma = createFakePrisma();
   prisma.organization.rows.push({ id: 'org-1', studioSendPaused: false });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'email', balance: 99, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'unified', balance: 99, floor: 0, ceiling: 100, rampStage: 0, emailSentToday: 0, whatsappSentToday: 0, usageDay: null, domainAuthStatus: 'verified' });
   prisma.studioReputationEvent.rows.push({ id: 'ev-1', orgId: 'org-1', channel: 'email', type: 'debit', amount: 1, balanceAfter: 99, refType: 'batch', refId: 'batch-1' });
   prisma.outreachCampaign.rows.push({ id: 'camp-1', tenantId: 'org-1', status: 'active' });
   prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
@@ -334,7 +361,7 @@ test('SC-011: processSend remove placeholder residual antes de enviar (incidente
 test('tick WA: libera via waContactModel, marca nextSendAt e debita o canal', async () => {
   const prisma = seed(createFakePrisma());
   prisma.whatsappAccount.rows.push({ id: 'wacc-1', orgId: 'org-1', status: 'CONNECTED' });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 50, floor: 10, ceiling: 50, rampStage: 0, domainAuthStatus: 'unverified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'unified', balance: 50, floor: 10, ceiling: 50, rampStage: 0, emailSentToday: 0, whatsappSentToday: 0, usageDay: null, domainAuthStatus: 'unverified' });
   prisma.studioCampaign.rows.push(campaignFixture({ channels: ['whatsapp'], emailExecutionId: null, whatsappExecutionId: 'wexec-1' }));
   prisma.whatsappCampaignContact.rows.push({ id: 'wc-1', campaignId: 'wexec-1', prospectId: 'lead-wa-1', status: 'QUEUED', nextSendAt: null });
   const enqueued = [];
@@ -372,7 +399,7 @@ test('FR-37: compile de e-mail injeta List-Unsubscribe/Post + rodapé de descada
 test('outreach: contato em estado terminal → estorno idempotente (AD-13)', async () => {
   const prisma = createFakePrisma();
   prisma.organization.rows.push({ id: 'org-1', studioSendPaused: false });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'email', balance: 99, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'unified', balance: 99, floor: 0, ceiling: 100, rampStage: 0, emailSentToday: 0, whatsappSentToday: 0, usageDay: null, domainAuthStatus: 'verified' });
   prisma.outreachCampaign.rows.push({ id: 'camp-1', tenantId: 'org-1', status: 'active' });
   prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
   prisma.outreachContact.rows.push({ id: 'ct-1', campaignId: 'camp-1', prospectId: 'lead-1', status: 'SCHEDULED', emailAccount_id: 'ea-1' });
@@ -391,7 +418,7 @@ test('outreach: contato em estado terminal → estorno idempotente (AD-13)', asy
 test('outreach: provider falha na ÚLTIMA tentativa → estorna; antes disso NÃO estorna', async () => {
   const prisma = createFakePrisma();
   prisma.organization.rows.push({ id: 'org-1', studioSendPaused: false });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'email', balance: 99, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'unified', balance: 99, floor: 0, ceiling: 100, rampStage: 0, emailSentToday: 0, whatsappSentToday: 0, usageDay: null, domainAuthStatus: 'verified' });
   prisma.studioReputationEvent.rows.push({ id: 'ev-d1', orgId: 'org-1', channel: 'email', type: 'debit', amount: 1, balanceAfter: 99, refType: 'batch', refId: 'batch-1' });
   prisma.outreachCampaign.rows.push({ id: 'camp-1', tenantId: 'org-1', status: 'active' });
   prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
@@ -437,7 +464,7 @@ test('outreach: provider falha na ÚLTIMA tentativa → estorna; antes disso NÃ
 test('whatsapp: contato terminal estorna; provider falho na última penaliza e desperta', async () => {
   const prisma = createFakePrisma();
   prisma.organization.rows.push({ id: 'org-1', studioSendPaused: false });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 20, floor: 0, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'unified', balance: 20, floor: 0, ceiling: 30, rampStage: 0, emailSentToday: 0, whatsappSentToday: 0, usageDay: null, domainAuthStatus: 'unverified' });
   prisma.studioReputationEvent.rows.push({ id: 'ev-wa', orgId: 'org-1', channel: 'whatsapp', type: 'debit', amount: 1, balanceAfter: 20, refType: 'batch', refId: 'batch-wa' });
 
   // Modelos de WA que o fake-prisma não cobre (mensagem/conversa do motor).
@@ -565,7 +592,7 @@ test('AC: saldo 30 e lote 100 → exatamente 30 enfileiradas (STUDIO_REP_FLOOR=0
     const prisma = createFakePrisma();
     prisma.organization.rows.push({ id: 'org-1', plan: 'premium', studioSendPaused: false });
     prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
-    prisma.studioReputationAccount.rows.push({ id: 'acc-30', orgId: 'org-1', channel: 'email', balance: 30, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
+    prisma.studioReputationAccount.rows.push({ id: 'acc-30', orgId: 'org-1', channel: 'unified', balance: 30, floor: 0, ceiling: 100, rampStage: 0, emailSentToday: 0, whatsappSentToday: 0, usageDay: null, domainAuthStatus: 'verified' });
     prisma.studioCampaign.rows.push(campaignFixture());
     const contacts = [];
     for (let i = 1; i <= 100; i++) {
@@ -649,7 +676,7 @@ test('enqueueBatch: CANCELLED por removido_da_selecao SEM mensagem ressuscita; q
 test('enqueueBatch WA: órfãs alocadas sem mensagem voltam à fila do WhatsApp', async () => {
   const prisma = seed(createFakePrisma());
   prisma.whatsappAccount.rows.push({ id: 'wacc-1', orgId: 'org-1', status: 'CONNECTED' });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 50, floor: 10, ceiling: 50, rampStage: 0, domainAuthStatus: 'unverified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'unified', balance: 50, floor: 10, ceiling: 50, rampStage: 0, emailSentToday: 0, whatsappSentToday: 0, usageDay: null, domainAuthStatus: 'unverified' });
   prisma.studioCampaign.rows.push(campaignFixture({ channels: ['whatsapp'], emailExecutionId: null, whatsappExecutionId: 'exec-1' }));
   prisma.whatsAppCampaignContact.rows.push(
     // Órfã: alocada ontem (nextSendAt vencido), job JAMAIS enfileirado.

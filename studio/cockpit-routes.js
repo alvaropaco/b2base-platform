@@ -26,8 +26,9 @@ function registerCockpitRoutes(router, context) {
 
   // ── Compra de envios (Stripe Checkout — QA 2026-10-07) ───────────────────
   // GET  /reputation/topup-packs   — packs + preço (para o botão do /studio)
-  // POST /reputation/topup-checkout {channel, units} → { url } do Checkout
-  // Fulfillment: webhook checkout.session.completed credita o orçamento.
+  // POST /reputation/topup-checkout {units} → { url } do Checkout (saldo é
+  // ÚNICO desde 2026-10-08 — `channel` no body é ignorado por compat).
+  // Fulfillment: webhook checkout.session.completed credita o pool.
   router.get('/reputation/topup-packs', async (req, res) => {
     const stripeBilling = require('../stripe-billing');
     res.json({ success: true, data: stripeBilling.balancePacks() });
@@ -42,20 +43,20 @@ function registerCockpitRoutes(router, context) {
         err.status = 503;
         throw err;
       }
-      const { channel, units } = req.body || {};
+      const { units } = req.body || {};
       const org = await prisma.organization.findUnique({ where: { id: orgId } });
       if (!org) throw httpError('NOT_FOUND', 404, 'Organização não encontrada');
       const session = await stripeBilling.createBalanceCheckoutSession(
         prisma,
         org,
         appBaseUrl(req),
-        { channel, units: units != null ? Number(units) : 100 }
+        { units: units != null ? Number(units) : 100 }
       );
       await prisma.activity.create({ data: {
         orgId,
         userId: userId || null,
         type: 'billing.topup_checkout',
-        message: `Checkout de ${units || 100} envios (${channel}) iniciado`,
+        message: `Checkout de ${units || 100} envios (saldo único) iniciado`,
       } }).catch(() => {});
       res.json({ success: true, data: { url: session.url, sessionId: session.id } });
     } catch (err) {
@@ -141,17 +142,19 @@ function registerCockpitRoutes(router, context) {
     }
   });
 
-  // ── Painel de Saldo (FR-20): valor corrente por canal + eventos. ─────────
+  // ── Painel de Saldo (FR-20): POOL ÚNICO (2026-10-08) + eventos. ──────────
   router.get('/reputation', async (req, res, next) => {
     try {
       const { orgId } = req.studio;
       await requirePremiumOrg(orgId);
-      const [balances, events, paused] = await Promise.all([
-        reputation.listBalances(prisma, orgId),
+      const [wallet, events, paused] = await Promise.all([
+        reputation.getWallet(prisma, orgId),
         reputation.listEvents(prisma, orgId, { limit: 30 }),
         reputationGate.isOrgPaused(prisma, orgId),
       ]);
-      res.json({ success: true, data: { balances, events, paused } });
+      // `balances` segue na resposta (array com a wallet) para compat com
+      // consumidores que iteram — o painel novo usa `wallet`.
+      res.json({ success: true, data: { wallet, balances: wallet ? [wallet] : [], events, paused } });
     } catch (err) {
       next(err);
     }

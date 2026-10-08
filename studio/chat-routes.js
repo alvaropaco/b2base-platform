@@ -304,19 +304,32 @@ async function currentExtras(prisma, campaign) {
   }
 
   // Canais para o agente explicar limites/bloqueios com passo a passo:
-  // saldo por canal + status da sessão WhatsApp + domínio do e-mail.
+  // SALDO ÚNICO (pool e-mail+WhatsApp) + uso do dia/teto diário por canal
+  // + status da sessão WhatsApp + domínio do e-mail.
   try {
     const reputation = require('./reputation');
-    const channels = {};
-    for (const b of await reputation.listBalances(prisma, campaign.orgId)) {
-      if (b) channels[b.channel] = { disponivel: b.available, piso: b.floor, teto: b.ceiling, dominio: b.domainAuthStatus };
+    const wallet = await reputation.getWallet(prisma, campaign.orgId);
+    if (wallet) {
+      extras.canais = {
+        saldoUnico: {
+          saldo: wallet.balance,
+          disponivel: wallet.available,
+          piso: wallet.floor,
+          teto: wallet.ceiling,
+          saldoBaixo: wallet.lowBalance,
+        },
+        email: { usoHoje: wallet.usedToday.email, tetoDiario: wallet.caps.email, dominio: wallet.domainAuthStatus },
+        whatsapp: { usoHoje: wallet.usedToday.whatsapp, tetoDiario: wallet.caps.whatsapp },
+      };
+    } else {
+      extras.canais = { saldoUnico: null };
     }
     let whatsapp = 'nao_conectado';
     try {
       const account = await prisma.whatsAppAccount.findFirst({ where: { orgId: campaign.orgId } });
       if (account) whatsapp = account.status;
     } catch (_e) { /* modelo ausente em alguns harnesses */ }
-    extras.canais = { reputacao: channels, whatsapp };
+    extras.canais.whatsappSessao = whatsapp;
   } catch (_e) {
     console.error('[studio/chat] extras: saldo de canais indisponível:', _e);
   }
@@ -2348,35 +2361,26 @@ async function buildZeroMatchRecovery(prisma, { orgId, criteria, baseCount }) {
  */
 async function buildBalanceCard(prisma, orgId) {
   const reputation = require('./reputation');
-  const balances = (await reputation.listBalances(prisma, orgId)).filter(Boolean);
+  const wallet = await reputation.getWallet(prisma, orgId);
   const replenishAt = reputation.nextReplenishLabel();
-  const lines = [];
-  for (const b of balances) {
-    const channelLabel = b.channel === 'email' ? 'E-mail' : 'WhatsApp';
-    const pct = b.ceiling ? Math.round((b.available / b.ceiling) * 100) : null;
-    const noSends = b.available <= 0;
-    const pendingDomain = b.channel === 'email' && b.domainAuthStatus !== 'verified';
-    const status = noSends ? 'AGUARDANDO REPOSIÇÃO' : pendingDomain ? 'PENDENTE — domínio não autenticado' : 'PRONTO';
-    const steps = [];
-    if (pendingDomain) {
-      steps.push('Autenticar o domínio: publicar SPF, DKIM e DMARC no DNS (me peça "listar os registros DNS" que eu mostro cada um)');
-    }
-    if (noSends) {
-      // Horário omitido quando o fuso não formata (nextReplenishLabel '' —
-      // nunca "00:00" inventado).
-      steps.push(`Repor o saldo: a reposição diária libera mais envios${replenishAt ? ` às ${replenishAt}` : ''} — enquanto isso, você já pode criar e aprovar campanhas`);
-    }
-    if (b.channel === 'whatsapp') {
-      steps.push('Manter o WhatsApp pareado — se a sessão cair, me peça "mostrar o QR do WhatsApp"');
-    }
-    if (steps.length === 0) steps.push('Nada a fazer — canal saudável e autorizado a disparar');
-    lines.push(
-      `**${channelLabel} — ${status}**: ${b.available} envios disponíveis de ${b.ceiling}${pct != null ? ` (${pct}%)` : ''}. ` +
-        steps.map((s, i) => `${i + 1}. ${s}`).join(' ')
-    );
+  if (!wallet) {
+    return { type: 'balance', label: 'Saldo de envios', detail: 'Nenhuma carteira de envios ainda — conecte o e-mail ou o WhatsApp que eu crio a sua com o saldo inicial.' };
   }
-  if (lines.length === 0) lines.push('Nenhuma conta de canal configurada ainda — me peça ajuda para conectar o e-mail ou o WhatsApp.');
-  return { type: 'balance', label: 'Orçamento de Reputação — como liberar seus disparos', detail: lines.join('\n') };
+  // Saldo ÚNICO (2026-10-08): e-mail e WhatsApp dividem o mesmo pool; cada
+  // canal tem um teto diário de ritmo e requisitos próprios (DNS/pareamento).
+  const lines = [];
+  lines.push(
+    `**Saldo único**: ${wallet.balance} envio(s) no pool compartilhado e-mail + WhatsApp (teto da carteira: ${wallet.ceiling})${wallet.lowBalance ? ' — **⚠ saldo acabando, compre mais no painel de saldo**' : ''}`
+  );
+  const dnsOk = ['verified', 'prewarmed'].includes(wallet.domainAuthStatus);
+  lines.push(`**E-mail** — ${wallet.usedToday.email}/${wallet.caps.email} hoje${dnsOk ? ' · domínio ✓ autenticado' : ' · ⚠ domínio SEM SPF/DKIM verificados (bloqueia o canal até autenticar)'}`);
+  lines.push(`**WhatsApp** — ${wallet.usedToday.whatsapp}/${wallet.caps.whatsapp} hoje · requer a sessão pareada (QR)`);
+  const steps = [];
+  if (!dnsOk) steps.push('Autenticar o domínio: publicar SPF, DKIM e DMARC no DNS (me peça "listar os registros DNS" que eu mostro cada um)');
+  steps.push(`Comprar mais saldo: painel de saldo do Studio (Stripe) — a reposição diária também libera mais${replenishAt ? ` às ${replenishAt}` : ''}; enquanto isso, você já pode criar e aprovar campanhas`);
+  steps.push('Manter o WhatsApp pareado — se a sessão cair, me peça "mostrar o QR do WhatsApp"');
+  lines.push(steps.map((s, i) => `${i + 1}. ${s}`).join(' '));
+  return { type: 'balance', label: 'Saldo de envios — e-mail e WhatsApp no mesmo pool', detail: lines.join('\n') };
 }
 
 /**

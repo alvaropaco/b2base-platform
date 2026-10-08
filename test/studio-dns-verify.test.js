@@ -39,7 +39,7 @@ function seedOrg(prisma, { status = null } = {}) {
   prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
   if (status) {
     prisma.studioReputationAccount.rows.push({
-      id: 'acc-1', orgId: 'org-1', channel: 'email',
+      id: 'acc-1', orgId: 'org-1', channel: 'unified',
       balance: 100, floor: 10, ceiling: 100, rampStage: 0,
       domainAuthStatus: status, domainAuthDetail: {},
     });

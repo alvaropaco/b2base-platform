@@ -90,16 +90,22 @@ export interface StudioApiError {
 
 // ── Cockpit (specs/011) ─────────────────────────────────────────────────────
 
-/** Saldo de um Canal do Orçamento de Reputação (FR-14/FR-20). */
+/** Carteira ÚNICA de envios (2026-10-08 — e-mail + WhatsApp no mesmo pool;
+ *  cada canal mantém teto diário de ritmo e requisito próprio). */
 export interface ReputationBalance {
-  channel: 'email' | 'whatsapp';
+  channel: 'unified';
   balance: number;
   available: number;
   floor: number;
   ceiling: number;
   rampStage: number;
-  domainAuthStatus: 'unverified' | 'verified' | 'failed';
+  caps: { email: number; whatsapp: number };
+  usedToday: { email: number; whatsapp: number };
+  domainAuthStatus: 'unverified' | 'verified' | 'prewarmed' | 'failed';
   domainAuthCheckedAt?: string | null;
+  /** true quando balance ≤ 25% do teto (pop-up "saldo acabando"). */
+  lowBalance: boolean;
+  threshold: number;
   updatedAt?: string;
 }
 

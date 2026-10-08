@@ -31,7 +31,7 @@ test('respostas quentes (dinheiro parado) vencem o ranking e citam o dado (FR-21
     leads: 200,
     campaigns: [{ id: 'c-1', name: 'ERP SP', status: 'scheduled', updatedAt: new Date('2026-09-24T10:00:00Z') }],
   });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'email', balance: 400, floor: 10, ceiling: 400, rampStage: 2, domainAuthStatus: 'verified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'unified', balance: 400, floor: 10, ceiling: 400, rampStage: 2, domainAuthStatus: 'verified' });
   prisma.studioReplyClassification.rows.push(
     { orgId: 'org-1', label: 'interested', confidence: 0.92, createdAt: new Date('2026-09-23T11:00:00Z') },
     { orgId: 'org-1', label: 'meeting_request', confidence: 0.88, createdAt: new Date('2026-09-23T12:00:00Z') },
@@ -92,7 +92,7 @@ test('saldo saudável + campanha pronta → chip de autorização com % citável
   const prisma = seedOrg(createFakePrisma(), {
     campaigns: [{ id: 'c-1', name: 'ERP SP', status: 'approved', updatedAt: new Date('2026-09-24T10:00:00Z') }],
   });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'email', balance: 330, floor: 10, ceiling: 400, rampStage: 3, domainAuthStatus: 'verified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'unified', balance: 330, floor: 10, ceiling: 400, rampStage: 3, domainAuthStatus: 'verified' });
   const home = await suggestions.suggestions(prisma, { orgId: 'org-1', now: NOW });
   const balance = home.chips.find((c) => c.kind === 'balance_window');
   assert.ok(balance, 'chip de janela+saldo');
@@ -127,7 +127,7 @@ test('GET /cockpit/home: sugestões + saldo + pausa + campanha ativa num único 
   const { server, prisma, api } = await startServer();
   try {
     prisma.studioCampaign.rows.push({ id: 'c-1', orgId: 'org-1', name: 'Ativa', status: 'running', channels: ['email'], schedule: {} });
-    prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'email', balance: 200, floor: 10, ceiling: 400, rampStage: 1, domainAuthStatus: 'verified' });
+    prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'unified', balance: 200, floor: 10, ceiling: 400, rampStage: 1, domainAuthStatus: 'verified' });
     const { res, body } = await api('GET', '/cockpit/home');
     assert.equal(res.status, 200);
     assert.equal(body.data.diaZero, false);

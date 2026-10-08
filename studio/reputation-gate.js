@@ -22,10 +22,17 @@ const BLOCK_CODES = {
   ORG_PAUSED: 'ORG_PAUSA_GLOBAL',
   CHANNEL_MISSING: 'CANAL_NAO_CONFIGURADO',
   BALANCE: 'SALDO_INSUFICIENTE',
+  DAILY_CAP: 'LIMITE_DIARIO_CANAL',
+  DOMAIN: 'DOMINIO_NAO_VERIFICADO',
   CERTIFICATE: 'CERTIFICADO_REPROVADO',
   TECHNICAL: 'GATE_ERRO_TECNICO',
   NO_CONSENT: 'SEM_CONSENTIMENTO',
 };
+
+/** Rótulo pt-BR do canal (copies explicáveis). */
+function channelLabel(channel) {
+  return channel === 'whatsapp' ? 'WhatsApp' : 'e-mail';
+}
 
 /** A pausa global da org está ativa? (persistido — nunca só em memória) */
 async function isOrgPaused(prisma, orgId) {
@@ -89,6 +96,23 @@ async function precheck(prisma, { orgId, channel, campaign = null, now = new Dat
     };
   }
 
+  // 2.5) Elegibilidade do E-MAIL: domínio com SPF+DKIM verificados (AD-8).
+  //     Desde o saldo único (2026-10-08) isso é GATE explícito — o saldo do
+  //     pool não é mais refém do domínio; bloqueia com instrução acionável.
+  if (channel === 'email') {
+    const account = await reputation.ensureAccount(prisma, orgId);
+    const eligible = ['verified', 'prewarmed'].includes(account.domainAuthStatus);
+    if (!eligible) {
+      return {
+        allow: false,
+        code: BLOCK_CODES.DOMAIN,
+        reason:
+          'Domínio de envio sem SPF/DKIM verificados — o e-mail fica bloqueado até autenticar. ' +
+          'Me peça "mostrar os registros DNS" que eu listo cada um para publicar no seu provedor.',
+      };
+    }
+  }
+
   // 3) Certificado vigente re-avaliado (só para campanhas com selo — AD-7).
   //    Onda "criação sem bloqueios" (2026-09-29): a re-avaliação é em modo
   //    DISPARO (`forDispatch`) — a liberdade é na CRIAÇÃO; aqui itens
@@ -123,22 +147,36 @@ async function evaluate(prisma, { orgId, channel, units, campaign = null, now = 
     const pre = await precheck(prisma, { orgId, channel, campaign, now });
     if (!pre.allow) return pre;
 
-    // 4) Saldo ≥ unidades (floor efetivo do writer único).
-    const account = await reputation.ensureAccount(prisma, orgId, channel);
+    // 4) Saldo ÚNICO ≥ unidades E cap diário do canal com folga.
+    const account = await reputation.ensureAccount(prisma, orgId);
     const available = reputation.effectiveBalance(account);
+    const cap = reputation.capFor(channel, account.rampStage);
+    const used = reputation.usedToday(account, channel, now);
     if (available < requested) {
       return {
         allow: false,
         code: BLOCK_CODES.BALANCE,
-        reason: `Saldo insuficiente: ${available} unidade(s) disponível(is), ${requested} necessária(s).`,
+        reason: `Saldo único insuficiente: ${available} envio(s) disponível(is) no pool, ${requested} necessária(s) — compre mais saldo no painel ou aguarde a reposição diária.`,
         available,
         requested,
         deficit: requested - available,
         availableAt: reputation.nextReplenishAt(now),
       };
     }
+    if (used + requested > cap) {
+      return {
+        allow: false,
+        code: BLOCK_CODES.DAILY_CAP,
+        reason: `Teto diário do ${channelLabel(channel)} atingido: ${used}/${cap} hoje — o ritmo do canal volta amanhã (o saldo único ainda tem ${available}).`,
+        available,
+        requested,
+        cap,
+        used,
+        availableAt: reputation.nextReplenishAt(now),
+      };
+    }
 
-    return { allow: true, available, requested };
+    return { allow: true, available, requested, cap, used };
   } catch (err) {
     // Fail-closed é lei (AD-4): erro/timeout → bloqueia com motivo técnico.
     console.error('[studio:gate] falha na avaliação (fail-closed):', err.message);
@@ -172,17 +210,23 @@ async function consume(prisma, { orgId, channel, units, campaign = null, refType
       refId,
       reason,
       metadata,
+      now, // o dia do cap/contador é o do CALLER (scheduler usa tempo determinístico)
     });
     if (!result.ok) {
+      const capBlock = result.code === BLOCK_CODES.DAILY_CAP;
       return {
         granted: 0,
         blocked: {
           allow: false,
           code: result.code || BLOCK_CODES.BALANCE,
-          reason: `Saldo insuficiente: ${result.available} unidade(s) disponível(is) de ${result.requested} pedida(s). Faltam ${result.deficit} — libera em ${result.availableAt.toISOString()}.`,
+          reason: capBlock
+            ? `Teto diário do ${channelLabel(channel)} atingido (${result.capUsed}/${result.cap} hoje) — o ritmo do canal volta amanhã (o saldo único ainda tem ${result.available}).`
+            : `Saldo único insuficiente: ${result.available} envio(s) disponível(is) de ${result.requested} pedida(s). Faltam ${result.deficit} — libera em ${result.availableAt.toISOString()} ou compre mais saldo no painel.`,
           available: result.available,
           requested: result.requested,
           deficit: result.deficit,
+          cap: result.cap,
+          capUsed: result.capUsed,
           availableAt: result.availableAt,
         },
       };
@@ -198,16 +242,24 @@ async function consume(prisma, { orgId, channel, units, campaign = null, refType
       requested: result.requested,
       deficit: result.deficit || 0,
       balance: result.balance,
+      cap: result.cap,
+      capUsed: result.capUsed,
       replayed: result.replayed,
-      // Debitou uma fatia e o restante ficou sem cobertura: bloqueio explicável.
+      // Debitou uma fatia e o restante ficou sem cobertura: bloqueio explicável
+      // pelo eixo que limitou (saldo único ou teto diário do canal).
       blocked: (result.deficit || 0) > 0
         ? {
             allow: false,
-            code: BLOCK_CODES.BALANCE,
-            reason: `Saldo cobriu ${result.granted} de ${result.requested} unidade(s). Faltam ${result.deficit} — libera em ${nextReplenish.toISOString()}.`,
+            code: result.limitBinding === 'cap' ? BLOCK_CODES.DAILY_CAP : BLOCK_CODES.BALANCE,
+            reason:
+              result.limitBinding === 'cap'
+                ? `O teto diário do ${channelLabel(channel)} cobriu ${result.granted} de ${result.requested} (${result.capUsed}/${result.cap} hoje) — o restante volta amanhã.`
+                : `O saldo único cobriu ${result.granted} de ${result.requested} envio(s). Faltam ${result.deficit} — libera em ${nextReplenish.toISOString()} ou compre mais saldo no painel.`,
             available: result.balance,
             requested: result.requested,
             deficit: result.deficit,
+            cap: result.cap,
+            capUsed: result.capUsed,
             availableAt: nextReplenish,
           }
         : null,

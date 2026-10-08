@@ -1525,17 +1525,26 @@ model StudioChatTrace {
 // AD-3/AD-4 da spine de arquitetura.
 // ============================================================================
 
-// Conta de saldo por Canal (orgId+channel unique). `balance` só muta na MESMA
-// transação que insere o StudioReputationEvent correspondente (AD-3).
+// Conta de saldo ÚNICA da org (channel='unified' — e-mail e WhatsApp dividem
+// o mesmo pool; tetos DIÁRIOS por canal são a camada de ritmo, derivados do
+// estágio de rampa e contados em emailSentToday/whatsappSentToday). `balance`
+// só muta na MESMA transação que insere o StudioReputationEvent correspondente
+// (AD-3).
 model StudioReputationAccount {
   id                String    @id @default(cuid())
   orgId             String
-  channel           String    // email | whatsapp
-  balance           Int       @default(0)   // unidades disponíveis (1 unidade = 1 envio)
-  floor             Int       @default(0)   // reserva mínima; efetivo só com domínio verificado (FR-16)
-  ceiling           Int       @default(0)   // teto da rampa atual (warm-up contínuo — FR-17/FR-18)
-  rampStage         Int       @default(0)   // estágio da rampa de warm-up
-  // unverified | verified | failed — verificado por DNS (AD-8), nunca declarado
+  channel           String    // 'unified' (legado pré-migração: email | whatsapp)
+  balance           Int       @default(0)   // unidades disponíveis (1 unidade = 1 envio, pool único)
+  floor             Int       @default(0)   // reserva mínima do pool
+  ceiling           Int       @default(0)   // teto da rampa atual (reposição diária — FR-17)
+  rampStage         Int       @default(0)   // estágio da rampa (define ceiling E os caps diários por canal)
+  // Uso do dia POR CANAL (reset diário; usageDay = chave UTC do dia contado)
+  emailSentToday    Int       @default(0)
+  whatsappSentToday Int       @default(0)
+  usageDay          String?
+  // unverified | verified | failed — verificado por DNS (AD-8), nunca declarado.
+  // Elegibilidade do CANAL E-MAIL: sem verificação, o gate bloqueia o e-mail
+  // com instrução (o saldo único não é refém do domínio).
   domainAuthStatus  String    @default("unverified")
   domainAuthCheckedAt DateTime?
   domainAuthDetail  Json      @default("{}") // {spf, dkim, dmarc} + detalhes da última checagem

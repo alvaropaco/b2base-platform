@@ -1,8 +1,20 @@
 'use strict';
 
 /**
- * studio/reputation.js — Orçamento de Reputação: WRITER ÚNICO do saldo
- * (specs/011, AD-3 da spine).
+ * studio/reputation.js — Saldo ÚNICO de envios: WRITER ÚNICO do saldo
+ * (specs/011, AD-3 da spine; unificação e-mail+WhatsApp decidida pelo dono
+ * em 2026-10-08).
+ *
+ * Modelo (decisão de produto):
+ *  - UMA conta por org (channel='unified') — e-mail e WhatsApp dividem o
+ *    MESMO pool. Comprar saldo via Stripe credita o pool; disparar por
+ *    qualquer canal debita o mesmo pool.
+ *  - Tetos DIÁRIOS por canal continuam como camada de ritmo (proteção de
+ *    reputação): emailSentToday/whatsappSentToday contam o dia e o cap vem
+ *    do estágio de rampa (CHANNEL_CAP_RAMPS). Saldo comprado NÃO compra
+ *    ritmo no dia 1 — o estágio sobe 1x/dia no cron.
+ *  - Elegibilidade do e-mail (DNS verificado) é GATE (reputation-gate), não
+ *    matemática de saldo.
  *
  * Regras inegociáveis:
  *  - `balance` só muta NA MESMA transação que insere o evento correspondente
@@ -10,9 +22,10 @@
  *  - Nenhum outro módulo deriva, ajusta ou re-computa saldo/floor/unidade —
  *    consulta do painel lê a account; auditoria lê o ledger.
  *  - Estorno idempotente por refId (unique (type, refId)) — AD-13.
+ *  - Alocação é decisão do BANCO (UPDATE condicional, AD-4) — partial grant
+ *    por saldo E por cap do canal.
  *
- * Unidades: 1 unidade = 1 envio. Números de rampa (Deferred na spine) vivem
- * AQUI — nada fora deste módulo os conhece. WhatsApp é conservador (FR-18).
+ * Unidades: 1 unidade = 1 envio. Números de rampa vivem AQUI.
  *
  * `$transaction` do Prisma real é usado quando disponível; no fake-prisma dos
  * testes o módulo degrada para operações sequenciais (mesma semântica).
@@ -20,35 +33,52 @@
 
 const crypto = require('crypto');
 
-const CHANNELS = ['email', 'whatsapp'];
+/** Canais de DISPARO (rótulo de ledger + cap diário). A conta é única. */
+const SEND_CHANNELS = ['email', 'whatsapp'];
+const UNIFIED_CHANNEL = 'unified';
 
-// Rampa de warm-up por canal (FR-17/FR-18 — mecanismo; números calibráveis
-// por env STUDIO_REP_*). WhatsApp: rampa e teto mais conservadores (FR-18).
-// Piso base configurável (STUDIO_REP_FLOOR, default 10) — um piso fixo alto
-// drenaria o fatiamento "saldo 30, lote 100 → 30 enfileiradas".
-const BASE_FLOOR = Number(process.env.STUDIO_REP_FLOOR || 10);
-const CHANNEL_POLICY = {
-  email: {
-    startBalance: Number(process.env.STUDIO_REP_EMAIL_START || 100),
-    floor: Number(process.env.STUDIO_REP_EMAIL_FLOOR || BASE_FLOOR),
-    rampStages: [100, 200, 400, 800], // teto por estágio (unidades/dia)
-  },
-  whatsapp: {
-    startBalance: Number(process.env.STUDIO_REP_WA_START || 30),
-    floor: Number(process.env.STUDIO_REP_WA_FLOOR || BASE_FLOOR),
-    rampStages: [30, 50, 80], // conservador (FR-18)
-  },
+// Rampa única da CARTEIRA (teto de reposição diária — env-tunable via
+// STUDIO_REP_*). Piso: reserva mínima do pool (não drena o fatiamento
+// "saldo 30, lote 100 → 30 enfileiradas").
+const WALLET_POLICY = {
+  startBalance: Number(process.env.STUDIO_REP_START || process.env.STUDIO_REP_EMAIL_START || 100),
+  floor: Number(process.env.STUDIO_REP_FLOOR || 10),
+  rampStages: [100, 200, 400, 800],
 };
 
-function channelPolicy(channel) {
-  const policy = CHANNEL_POLICY[channel];
-  if (!policy) {
-    const err = new Error(`Canal de reputação não suportado: ${channel}`);
+// Tetos DIÁRIOS por canal por estágio de rampa (WhatsApp conservador — FR-18).
+// Avançam JUNTOS com o estágio da carteira (1 estágio/dia no cron).
+const CHANNEL_CAP_RAMPS = {
+  email: [Number(process.env.STUDIO_REP_EMAIL_START || 100), 200, 400, 800],
+  whatsapp: [Number(process.env.STUDIO_REP_WA_START || 30), 50, 80],
+};
+
+// % do teto que dispara o aviso de "saldo acabando" (pop-up do Studio).
+const LOW_BALANCE_PCT = Math.min(100, Math.max(1, Number(process.env.STUDIO_LOW_BALANCE_PCT || 25)));
+
+const CAP_FIELD = { email: 'emailSentToday', whatsapp: 'whatsappSentToday' };
+
+function channelPolicy() {
+  return WALLET_POLICY;
+}
+
+/** Teto diário do canal no estágio de rampa atual. */
+function capFor(channel, rampStage) {
+  const ramp = CHANNEL_CAP_RAMPS[channel];
+  if (!ramp) {
+    const err = new Error(`Canal de disparo não suportado: ${channel}`);
     err.code = 'CANAL_NAO_SUPORTADO';
     err.status = 400;
     throw err;
   }
-  return policy;
+  const idx = Math.min(Math.max(0, Number(rampStage) || 0), ramp.length - 1);
+  return ramp[idx];
+}
+
+/** Contador do canal já usado hoje (0 quando o dia mudou — reset lazy). */
+function usedToday(account, channel, now = new Date()) {
+  if (account.usageDay !== dayKey(now)) return 0;
+  return Math.max(0, Number(account[CAP_FIELD[channel]] || 0));
 }
 
 /** Suporta Prisma real ($transaction) e fake-prisma (sequencial nos testes). */
@@ -60,28 +90,14 @@ async function withTx(prisma, fn) {
 }
 
 function nextRampStage(account) {
-  const stages = channelPolicy(account.channel).rampStages;
+  const stages = WALLET_POLICY.rampStages;
   const idx = Math.min(Number(account.rampStage || 0), stages.length - 1);
   return { stage: idx, ceiling: stages[idx] };
 }
 
-/**
- * Floor EFETIVO (AD-3/FR-16): e-mail sem SPF+DKIM verificados tem saldo
- * efetivo zero — floor vira o saldo inteiro (nada parte), EXCETO quando a org
- * declarou domínio pré-aquecido ('prewarmed' — FR-17/FR-28, override sob
- * responsabilidade do cliente). WhatsApp segue o floor configurado.
- */
-function effectiveFloor(account) {
-  const eligible = ['verified', 'prewarmed'].includes(account.domainAuthStatus);
-  if (account.channel === 'email' && !eligible) {
-    return Math.max(account.balance, account.floor || 0);
-  }
-  return account.floor || 0;
-}
-
-/** Saldo disponível para débito (nunca negativo). */
+/** Saldo disponível para débito (respeita o piso do pool; nunca negativo). */
 function effectiveBalance(account) {
-  return Math.max(0, account.balance - effectiveFloor(account));
+  return Math.max(0, account.balance - (account.floor || 0));
 }
 
 /** Quando o próximo aporte de rampa libera (para explicar bloqueios — FR-15). */
@@ -114,63 +130,83 @@ function dayKey(now = new Date()) {
 }
 
 /**
- * Garante a account da org+canal com os defaults da rampa (idempotente).
+ * Garante a conta ÚNICA da org com os defaults da rampa (idempotente).
  * Org nova começa com saldo conservador (FR-17).
  */
-async function ensureAccount(prisma, orgId, channel) {
+async function ensureAccount(prisma, orgId) {
   const existing = await prisma.studioReputationAccount.findFirst({
-    where: { orgId, channel },
+    where: { orgId, channel: UNIFIED_CHANNEL },
   });
   if (existing) return existing;
-  const policy = channelPolicy(channel);
-  const { ceiling } = { ceiling: policy.rampStages[0] };
+  const policy = channelPolicy();
   try {
     return await prisma.studioReputationAccount.create({
       data: {
         orgId,
-        channel,
+        channel: UNIFIED_CHANNEL,
         balance: policy.startBalance,
         floor: policy.floor,
-        ceiling,
+        ceiling: policy.rampStages[0],
         rampStage: 0,
         domainAuthStatus: 'unverified',
       },
     });
   } catch (err) {
     if (err && err.code === 'P2002') {
-      return prisma.studioReputationAccount.findFirst({ where: { orgId, channel } });
+      return prisma.studioReputationAccount.findFirst({ where: { orgId, channel: UNIFIED_CHANNEL } });
     }
     throw err;
   }
 }
 
-async function getAccount(prisma, orgId, channel) {
-  return prisma.studioReputationAccount.findFirst({ where: { orgId, channel } });
+/**
+ * Account da org (row unified). `channel` é ACEITO e IGNORADO — callers
+ * legados (certificate/suggestions) passam o canal do disparo.
+ */
+async function getAccount(prisma, orgId, _channel = null) {
+  return prisma.studioReputationAccount.findFirst({ where: { orgId, channel: UNIFIED_CHANNEL } });
 }
 
-/** Visão do painel de saldo (FR-20): valores efetivos + teto + rampa. */
-async function getBalance(prisma, orgId, channel) {
-  const account = await getAccount(prisma, orgId, channel);
+/**
+ * Visão completa da carteira (painel/chat/pop-up): pool único + ritmo por
+ * canal + sinal de saldo baixo (≤ LOW_BALANCE_PCT% do teto).
+ */
+async function getWallet(prisma, orgId, now = new Date()) {
+  const account = await getAccount(prisma, orgId);
   if (!account) return null;
+  const { stage, ceiling } = nextRampStage(account);
+  const threshold = Math.ceil((LOW_BALANCE_PCT / 100) * ceiling);
   return {
-    channel: account.channel,
+    channel: UNIFIED_CHANNEL,
     balance: account.balance,
     available: effectiveBalance(account),
-    floor: effectiveFloor(account),
-    ceiling: account.ceiling,
-    rampStage: account.rampStage,
+    floor: account.floor || 0,
+    ceiling,
+    rampStage: stage,
+    caps: {
+      email: capFor('email', stage),
+      whatsapp: capFor('whatsapp', stage),
+    },
+    usedToday: {
+      email: usedToday(account, 'email', now),
+      whatsapp: usedToday(account, 'whatsapp', now),
+    },
     domainAuthStatus: account.domainAuthStatus,
     domainAuthCheckedAt: account.domainAuthCheckedAt,
+    lowBalance: account.balance <= threshold,
+    threshold,
     updatedAt: account.updatedAt,
   };
 }
 
-async function listBalances(prisma, orgId) {
-  const out = [];
-  for (const channel of CHANNELS) {
-    out.push(await getBalance(prisma, orgId, channel));
-  }
-  return out.filter(Boolean);
+/**
+ * COMPAT: a leitura antiga devolvia uma conta POR CANAL; hoje existe uma só.
+ * Devolve [wallet] para consumidores que iteram a lista (cockpit home,
+ * suggestions) sem quebrar a forma do payload.
+ */
+async function listBalances(prisma, orgId, now = new Date()) {
+  const wallet = await getWallet(prisma, orgId, now);
+  return wallet ? [wallet] : [];
 }
 
 /** Auditoria do ledger (FR-20/FR-29). */
@@ -209,45 +245,67 @@ async function insertEvent(prisma, data) {
 
 /**
  * Débito transacional — a AUTORIDADE DE ALOCAÇÃO (AD-4). `amount` é o
- * pedido; o banco concede a fatia que o saldo efetivo cobre
- * (partial grant: saldo 30 + lote 100 → granted 30, deficit 70). Nunca
- * deixa saldo negativo. Idempotente por refId (o mesmo lote nunca debita 2×).
+ * pedido; o banco concede a fatia que o SALDO ÚNICO e o CAP DIÁRIO DO CANAL
+ * cobrem (partial grant nos dois eixos). Nunca deixa saldo negativo nem
+ * estoura o cap. Idempotente por refId (o mesmo lote nunca debita 2×).
+ * `channel` é o canal do DISPARO (rótulo do ledger + cap de ritmo).
  */
-async function debit(prisma, { orgId, channel, amount, refType = 'batch', refId, reason, metadata = {} }) {
+async function debit(prisma, { orgId, channel, amount, refType = 'batch', refId, reason, metadata = {}, now = new Date() }) {
   const requested = Math.max(0, Math.floor(Number(amount) || 0));
+  const capField = CAP_FIELD[channel];
+  if (!capField) {
+    const err = new Error(`Canal de disparo não suportado: ${channel}`);
+    err.code = 'CANAL_NAO_SUPORTADO';
+    err.status = 400;
+    throw err;
+  }
   return withTx(prisma, async (tx) => {
     if (requested === 0) {
-      const account = await ensureAccount(tx, orgId, channel);
+      const account = await ensureAccount(tx, orgId);
       return { ok: true, granted: 0, balance: account.balance, replayed: false };
     }
     if (refId) {
       const prior = await tx.studioReputationEvent.findFirst({ where: { type: 'debit', refId } });
       if (prior) {
-        const account = await tx.studioReputationAccount.findFirst({ where: { orgId, channel } });
+        const account = await tx.studioReputationAccount.findFirst({ where: { orgId, channel: UNIFIED_CHANNEL } });
         return { ok: true, granted: 0, balance: account ? account.balance : 0, replayed: true, event: prior };
       }
     }
-    const account = await ensureAccount(tx, orgId, channel);
+    const account = await ensureAccount(tx, orgId);
     const available = effectiveBalance(account);
-    // Concede só a fatia coberta pelo saldo efetivo (floor respeitado).
-    const grant = Math.min(requested, available);
+    const cap = capFor(channel, account.rampStage);
+    const used = usedToday(account, channel, now);
+    const capHeadroom = Math.max(0, cap - used);
+    // Concede só a fatia coberta pelo saldo efetivo E pelo cap do canal.
+    const grant = Math.min(requested, available, capHeadroom);
+    const availableAt = nextReplenishAt(now);
     if (grant <= 0) {
-      metrics.incGateBlock('SALDO_INSUFICIENTE');
+      const semSaldo = available <= 0;
+      const code = semSaldo ? 'SALDO_INSUFICIENTE' : 'LIMITE_DIARIO_CANAL';
+      metrics.incGateBlock(code);
       return {
         ok: false,
         granted: 0,
         balance: account.balance,
         available,
         requested,
-        deficit: requested - available,
-        availableAt: nextReplenishAt(),
-        code: 'SALDO_INSUFICIENTE',
+        deficit: requested - grant,
+        cap,
+        capUsed: used,
+        availableAt,
+        code,
       };
     }
     // UPDATE condicional: a alocação é decisão do banco, não do caller (AD-4).
+    // Reset lazy do contador quando o dia virou (usageDay ≠ hoje).
+    const stale = account.usageDay !== dayKey(now);
     const updated = await tx.studioReputationAccount.updateMany({
-      where: { orgId, channel, balance: { gte: grant } },
-      data: { balance: { decrement: grant } },
+      where: { orgId, channel: UNIFIED_CHANNEL, balance: { gte: grant } },
+      data: {
+        balance: { decrement: grant },
+        usageDay: dayKey(now),
+        [capField]: stale ? grant : { increment: grant },
+      },
     });
     if (updated.count === 0) {
       // Corrida entre leitura e escrita: falha fechada (nunca negativo).
@@ -259,14 +317,16 @@ async function debit(prisma, { orgId, channel, amount, refType = 'batch', refId,
         available,
         requested,
         deficit: requested,
-        availableAt: nextReplenishAt(),
+        cap,
+        capUsed: used,
+        availableAt,
         code: 'SALDO_INSUFICIENTE',
       };
     }
-    const after = await tx.studioReputationAccount.findFirst({ where: { orgId, channel } });
+    const after = await tx.studioReputationAccount.findFirst({ where: { orgId, channel: UNIFIED_CHANNEL } });
     const { event } = await insertEvent(tx, {
       orgId,
-      channel,
+      channel, // rótulo do canal do disparo (auditoria) — o pool é único
       type: 'debit',
       amount: grant,
       balanceAfter: after.balance,
@@ -281,8 +341,12 @@ async function debit(prisma, { orgId, channel, amount, refType = 'batch', refId,
       granted: grant,
       requested,
       deficit: Math.max(0, requested - grant),
-      availableAt: nextReplenishAt(),
+      availableAt,
       balance: after.balance,
+      cap,
+      capUsed: used + grant,
+      // O que limitou o grant no eixo que sobrou (explicável no gate/card).
+      limitBinding: requested - grant > 0 ? (capHeadroom <= available ? 'cap' : 'balance') : null,
       replayed: false,
       event,
     };
@@ -290,36 +354,37 @@ async function debit(prisma, { orgId, channel, amount, refType = 'batch', refId,
 }
 
 /**
- * Crédito (reposição/estorno) idempotente por refId — AD-13. Estorno de
- * mensagem: refType='send', refId=messageId (unique impede duplo estorno).
- * O replay é detectado ANTES de mutar o saldo (nunca credita 2×).
+ * Crédito (reposição/estorno/compra) idempotente por refId — AD-13. Credita
+ * o POOL ÚNICO; `channel` é só rótulo de auditoria. Estorno de mensagem:
+ * refType='send', refId=messageId (unique impede duplo estorno). O replay é
+ * detectado ANTES de mutar o saldo (nunca credita 2×).
  */
 async function credit(prisma, { orgId, channel, amount, refType = 'ramp', refId, reason, metadata = {} }) {
   const n = Math.max(0, Math.floor(Number(amount) || 0));
   return withTx(prisma, async (tx) => {
     if (n === 0) {
-      const account = await getAccount(tx, orgId, channel);
+      const account = await getAccount(tx, orgId);
       return { ok: true, credited: 0, balance: account ? account.balance : 0, replayed: false };
     }
     if (refId) {
       const prior = await tx.studioReputationEvent.findFirst({ where: { type: 'credit', refId } });
       if (prior) {
-        const account = await tx.studioReputationAccount.findFirst({ where: { orgId, channel } });
+        const account = await tx.studioReputationAccount.findFirst({ where: { orgId, channel: UNIFIED_CHANNEL } });
         return { ok: true, credited: 0, balance: account ? account.balance : 0, replayed: true, event: prior };
       }
     }
-    const account = await ensureAccount(tx, orgId, channel);
+    const account = await ensureAccount(tx, orgId);
     const updated = await tx.studioReputationAccount.updateMany({
-      where: { orgId, channel },
+      where: { orgId, channel: UNIFIED_CHANNEL },
       data: { balance: { increment: n } },
     });
     if (updated.count === 0) {
       return { ok: false, credited: 0, balance: account.balance, code: 'CANAL_NAO_CONFIGURADO' };
     }
-    const after = await tx.studioReputationAccount.findFirst({ where: { orgId, channel } });
+    const after = await tx.studioReputationAccount.findFirst({ where: { orgId, channel: UNIFIED_CHANNEL } });
     const { event, replayed } = await insertEvent(tx, {
       orgId,
-      channel,
+      channel: SEND_CHANNELS.includes(channel) ? channel : UNIFIED_CHANNEL,
       type: 'credit',
       amount: n,
       balanceAfter: after.balance,
@@ -331,12 +396,12 @@ async function credit(prisma, { orgId, channel, amount, refType = 'ramp', refId,
     if (replayed) {
       // Corrida: outra transação credentou o mesmo refId — desfaz o incremento.
       await tx.studioReputationAccount.updateMany({
-        where: { orgId, channel },
+        where: { orgId, channel: UNIFIED_CHANNEL },
         data: { balance: { decrement: n } },
       });
       return { ok: true, credited: 0, balance: after.balance - n, replayed: true, event };
     }
-    metrics.incLedgerEvent('credit', channel);
+    metrics.incLedgerEvent('credit', SEND_CHANNELS.includes(channel) ? channel : UNIFIED_CHANNEL);
     return { ok: true, credited: n, balance: after.balance, replayed: false, event };
   });
 }
@@ -368,10 +433,13 @@ async function refundBatch(prisma, { orgId, channel, batchId, units, reason }) {
   });
 }
 
-/** Reposição diária por warm-up (FR-17) — idempotente por dia (refId). */
-async function applyDailyReplenishment(prisma, orgId, channel, now = new Date()) {
-  const account = await ensureAccount(prisma, orgId, channel);
-  const policy = channelPolicy(channel);
+/**
+ * Reposição diária da CARTEIRA (FR-17) — idempotente por dia (refId sem
+ * canal). Os contadores de uso do dia são zerados LAZILMENTE no débito
+ * (usageDay); a reposição credita até o teto do estágio atual.
+ */
+async function applyDailyReplenishment(prisma, orgId, now = new Date()) {
+  const account = await ensureAccount(prisma, orgId);
   const { stage, ceiling } = nextRampStage(account);
   const headroom = Math.max(0, ceiling - account.balance);
   const grant = Math.min(headroom, Math.max(1, Math.round(ceiling / 4)));
@@ -381,38 +449,39 @@ async function applyDailyReplenishment(prisma, orgId, channel, now = new Date())
   }
   const result = await credit(prisma, {
     orgId,
-    channel,
+    channel: UNIFIED_CHANNEL,
     amount: grant,
     refType: 'ramp',
-    refId: `ramp:${orgId}:${channel}:${dayKey(now)}`,
+    refId: `ramp:${orgId}:${dayKey(now)}`,
     reason: `reposição diária de warm-up (estágio ${stage + 1}, teto ${ceiling})`,
   });
   return { ...result, ceiling, stage };
 }
 
-/** Sinal positivo (engajamento) sobe a rampa (FR-17) — estágio só avança. */
-async function promoteRamp(prisma, orgId, channel) {
-  const account = await ensureAccount(prisma, orgId, channel);
-  const stages = channelPolicy(channel).rampStages;
+/** Sinal positivo (engajamento) sobe a rampa (FR-17) — estágio só avança.
+ *  O estágio define o teto da carteira E os caps diários por canal. */
+async function promoteRamp(prisma, orgId) {
+  const account = await ensureAccount(prisma, orgId);
+  const stages = WALLET_POLICY.rampStages;
   const nextStage = Math.min(Number(account.rampStage || 0) + 1, stages.length - 1);
   return prisma.studioReputationAccount.updateMany({
-    where: { orgId, channel, rampStage: { lt: nextStage } },
+    where: { orgId, channel: UNIFIED_CHANNEL, rampStage: { lt: nextStage } },
     data: { rampStage: nextStage, ceiling: stages[nextStage] },
   });
 }
 
-/** Sinal negativo (rejeição/bloqueio WhatsApp, complaint) derruba o saldo (FR-18/FR-14). */
+/** Sinal negativo (rejeição/bloqueio WhatsApp, complaint) drenagem do POOL (FR-18/FR-14). */
 async function penalize(prisma, { orgId, channel, amount, reason, refId }) {
-  const account = await ensureAccount(prisma, orgId, channel);
+  const account = await ensureAccount(prisma, orgId);
   const cut = Math.min(amount, Math.max(0, account.balance - 0));
   if (cut <= 0) return { ok: true, penalized: 0, balance: account.balance };
   return withTx(prisma, async (tx) => {
     const updated = await tx.studioReputationAccount.updateMany({
-      where: { orgId, channel, balance: { gte: cut } },
+      where: { orgId, channel: UNIFIED_CHANNEL, balance: { gte: cut } },
       data: { balance: { decrement: cut } },
     });
     if (updated.count === 0) return { ok: true, penalized: 0, balance: account.balance };
-    const after = await tx.studioReputationAccount.findFirst({ where: { orgId, channel } });
+    const after = await tx.studioReputationAccount.findFirst({ where: { orgId, channel: UNIFIED_CHANNEL } });
     const { event, replayed } = await insertEvent(tx, {
       orgId,
       channel,
@@ -431,13 +500,13 @@ async function penalize(prisma, { orgId, channel, amount, reason, refId }) {
 /**
  * Registra o resultado de uma verificação DNS (AD-8) e/ou o histórico
  * declarado do domínio (FR-28). Estados: 'unverified' | 'verified' |
- * 'prewarmed' | 'failed'. Falha → floor efetivo zero (o gate bloqueia com
- * instrução); verificado/prewarmed → floor configurado volta a valer.
- * `history` ('novo' | 'pre-aquecido' | 'penalizado') responde o piso:
- * pré-aquecido eleva, penalizado derruba ao mínimo (Despertar no job).
+ * 'prewarmed' | 'failed'. A elegibilidade do E-MAIL vive aqui e o GATE
+ * bloqueia com instrução (não é mais matemática de piso). `history`
+ * ('novo' | 'pre-aquecido' | 'penalizado') responde o PISO DO POOL:
+ * pré-aquecido eleva, penalizado derruba ao mínimo.
  */
 async function recordDomainAuth(prisma, orgId, { status, detail, checkedAt, history } = {}) {
-  const policy = channelPolicy('email');
+  const policy = channelPolicy();
   const data = {
     domainAuthStatus: status,
     domainAuthCheckedAt: checkedAt || new Date(),
@@ -448,9 +517,9 @@ async function recordDomainAuth(prisma, orgId, { status, detail, checkedAt, hist
     else if (history === 'pre-aquecido') data.floor = policy.floor * 4; // FR-17 override
     else data.floor = policy.floor; // novo: piso padrão conservador
   }
-  await ensureAccount(prisma, orgId, 'email');
+  await ensureAccount(prisma, orgId);
   return prisma.studioReputationAccount.updateMany({
-    where: { orgId, channel: 'email' },
+    where: { orgId, channel: UNIFIED_CHANNEL },
     data,
   });
 }
@@ -464,12 +533,17 @@ function stableHash(value) {
 let metrics = require('../metrics');
 
 module.exports = {
-  CHANNELS,
-  CHANNEL_POLICY,
+  SEND_CHANNELS,
+  UNIFIED_CHANNEL,
+  WALLET_POLICY,
+  CHANNEL_CAP_RAMPS,
+  LOW_BALANCE_PCT,
+  capFor,
+  usedToday,
   channelPolicy,
   ensureAccount,
   getAccount,
-  getBalance,
+  getWallet,
   listBalances,
   listEvents,
   debit,
@@ -481,7 +555,6 @@ module.exports = {
   penalize,
   recordDomainAuth,
   effectiveBalance,
-  effectiveFloor,
   nextReplenishAt,
   nextReplenishLabel,
   stableHash,

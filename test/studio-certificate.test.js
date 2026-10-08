@@ -19,7 +19,7 @@ function seedCampaign(prisma, { channels = ['email'], content = {}, approval = {
   prisma.organization.rows.push({ id: 'org-1', plan: 'premium', studioSendPaused: false });
   prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
   prisma.studioReputationAccount.rows.push({
-    id: 'acc-1', orgId: 'org-1', channel: 'email',
+    id: 'acc-1', orgId: 'org-1', channel: 'unified',
     balance: 100, floor: 10, ceiling: 100, rampStage: 0,
     domainAuthStatus: 'verified', domainAuthDetail: {},
   });
@@ -101,7 +101,10 @@ test('domínio sem SPF/DKIM é AVISO não-bloqueante, com passo a passo leigo (F
   assert.ok(domain.detail.includes('Registros DNS'), 'passo a passo leigo (painel do provedor → DNS)');
   assert.ok(domain.detail.includes('peça'), 'oferece ajuda do agente (listar registros)');
   const saldo = verdict.items.find((i) => i.key === 'saldo');
-  assert.equal(saldo.level, 'pending', 'saldo efetivo 0 segue visível — como pendência de disparo (o gate decide no envio)');
+  assert.ok(
+    !saldo || saldo.level === 'ok',
+    'saldo único NÃO é refém do domínio — o bloqueio do e-mail sem DNS é do gate (DOMINIO_NAO_VERIFICADO), não pendência de saldo'
+  );
   assert.equal(verdict.level, 'amber', 'criação segue liberada com pendências');
 });
 
@@ -117,7 +120,7 @@ test('consentimento WhatsApp é INFORMATIVO na criação e bloqueia só no dispa
   // Canal WhatsApp conectado (isola o item `canal`) + saldo do canal
   // WhatsApp (v1: 1 conta por canal — PRD §9).
   prisma.whatsappAccount.rows.push({ id: 'wa-1', orgId: 'org-1', status: 'CONNECTED' });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'unified', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
   const verdict = await certificate.evaluate(prisma, campaign);
   assert.equal(verdict.level, 'amber', 'consentimento não bloqueia a criação');
   const consent = verdict.items.find((i) => i.key === 'consent_whatsapp');
@@ -148,7 +151,7 @@ test('consentimento com canal e-mail na campanha: copy diz "recebem só e-mail" 
     members: [{ prospectId: 'l1', included: true }],
   });
   prisma.whatsappAccount.rows.push({ id: 'wa-1', orgId: 'org-1', status: 'CONNECTED' });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'unified', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
   const verdict = await certificate.evaluate(prisma, campaign, { skipPersist: true });
   const consent = verdict.items.find((i) => i.key === 'consent_whatsapp');
   assert.ok(consent.detail.includes('recebem só e-mail'), 'E12: com canal e-mail, copy explica que recebem e-mail');
@@ -162,7 +165,7 @@ test('sem canal de envio conectado: item `canal` pendente com caminho (Story 1.5
   });
   // Nenhuma conta conectada: remove o e-mail da seed.
   prisma.emailAccount.rows.length = 0;
-  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'unified', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
   const verdict = await certificate.evaluate(prisma, campaign, { skipPersist: true });
   const canal = verdict.items.find((i) => i.key === 'canal');
   assert.ok(canal, 'item de canal presente');
@@ -180,7 +183,7 @@ test('consentimento: resposta prévia a e-mail (REPLIED) conta como porta de ent
     members: [{ prospectId: 'l1', included: true }],
   });
   prisma.whatsappAccount.rows.push({ id: 'wa-1', orgId: 'org-1', status: 'CONNECTED' });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'unified', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
   prisma.outreachContact.rows.push({ id: 'oc-1', campaignId: 'exec-1', prospectId: 'l1', status: 'REPLIED' });
   const verdict = await certificate.evaluate(prisma, campaign, { skipPersist: true });
   assert.equal(verdict.level, 'green', 'lead que respondeu e-mail tem consentimento inferível do registro');
@@ -192,8 +195,11 @@ test('gate re-avalia o selo no release: certificado reprovado bloqueia mesmo apr
     members: [{ prospectId: 'l1', included: true }],
     approval: { certificate: { level: 'green', items: [], evaluatedAt: '2026-09-01T00:00:00Z' } }, // selo VELHO
   });
-  // O domínio PERDEU a verificação depois da aprovação (job diário revalidou).
-  prisma.studioReputationAccount.rows[0].domainAuthStatus = 'failed';
+  // O SALDO zerou depois da aprovação (o domínio segue verificado — a perda
+  // de DNS virou gate próprio DOMINIO_NAO_VERIFICADO): o selo re-avaliado no
+  // release reprova pelo item de saldo (AD-7 segue valendo).
+  prisma.studioReputationAccount.rows[0].domainAuthStatus = 'verified';
+  prisma.studioReputationAccount.rows[0].balance = 0;
   const release = await reputationGate.evaluate(prisma, { orgId: 'org-1', channel: 'email', units: 1, campaign });
   assert.equal(release.allow, false, 'selo vencido/reprovado bloqueia');
   assert.equal(release.code, 'CERTIFICADO_REPROVADO');
@@ -212,7 +218,7 @@ test('Teste da Maria é AVISO, não bloqueio: conteúdo longo marca warning (FR-
     channels: ['whatsapp'],
     members: [{ prospectId: 'l1', included: true }],
   });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'unified', balance: 30, floor: 5, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
   prisma.studioLeadConsent.rows.push({ id: 'consent-1', orgId: 'org-1', prospectId: 'l1', channel: 'whatsapp', source: 'opt_in' });
   prisma.studioContent.rows[0].whatsappText = 'palavra '.repeat(200);
   const verdict = await certificate.evaluate(prisma, campaign, { skipPersist: true });
@@ -333,7 +339,7 @@ test('POST /reputation/pause: pausa 1-clique persistida e retomada explícita (F
 test('GET /reputation: painel com saldo por canal e eventos explicados (FR-20)', async () => {
   const { server, prisma, api } = await startServer();
   try {
-    prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'email', balance: 90, floor: 10, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
+    prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'unified', balance: 90, floor: 10, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
     prisma.studioReputationEvent.rows.push({ id: 'ev-1', orgId: 'org-1', channel: 'email', type: 'debit', amount: 10, balanceAfter: 90, refType: 'batch', refId: 'batch-1', reason: 'lote da campanha X' });
     const { res, body } = await api('GET', '/reputation');
     assert.equal(res.status, 200);

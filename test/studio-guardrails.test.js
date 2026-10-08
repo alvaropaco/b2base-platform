@@ -63,7 +63,7 @@ test('aprovação do 1º lote destrava a fila (guardrails.firstBatchApprovedAt)'
   const prisma = createFakePrisma();
   // specs/011: o gate exige canal configurado e domínio verificado (FR-16).
   prisma.emailAccount.rows.push({ id: 'ea-1', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'email', balance: 100, floor: 10, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'unified', balance: 100, floor: 10, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
   prisma.studioCampaign.rows.push(automationCampaign());
   prisma.outreachCampaign.rows.push({ id: 'exec-auto', tenantId: 'org-1', guardrails: {} });
   prisma.outreachContact.rows.push(queuedContact('oc-1', 'lead-1'));

@@ -63,7 +63,7 @@ function seedCampaignWithExecution(prisma, { withExecution = true } = {}) {
     kind: 'base', stepIndex: 1, variantLabel: 'A',
     subject: 'Olá {{firstName}}', emailDoc: { blocks: [{ type: 'text', text: 'Corpo.' }] },
   });
-  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'email', balance: 50, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-1', orgId: 'org-1', channel: 'unified', balance: 50, floor: 0, ceiling: 100, rampStage: 0, domainAuthStatus: 'verified' });
   return prisma.studioCampaign.rows[0];
 }
 
@@ -424,7 +424,7 @@ test('V3: follow-up (stepIndex > 0) NUNCA leva mídia — sai como texto (guard 
 test('V3: arquivo de mídia ausente → falha segura (FAILED + estorno idempotente, E11)', async () => {
   useTempStorage();
   const prisma = seedOrg(createFakePrisma());
-  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'whatsapp', balance: 19, floor: 0, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'unified', balance: 19, floor: 0, ceiling: 30, rampStage: 0, domainAuthStatus: 'unverified' });
   prisma.studioReputationEvent.rows.push({ id: 'ev-1', orgId: 'org-1', channel: 'whatsapp', type: 'debit', amount: 1, balanceAfter: 19, refType: 'batch', refId: 'batch-1' });
   seedWhatsAppMotor(prisma, [{ attachmentId: 'att-x', fileName: 'sumiu.png', originalName: 'sumiu.png', mimeType: 'image/png', sizeBytes: 5 }]);
   prisma.whatsAppMessage.rows[0].stepIndex = null;
