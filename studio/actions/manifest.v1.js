@@ -106,6 +106,11 @@ const ACTIONS_V1 = {
   // idempotency 'none': rodar de novo é INTENCIONAL (base cresceu, site ganhou
   // WhatsApp) — a própria busca só preenche quem está sem telefone.
   enrich_whatsapp: { version: 1, idempotency: 'none', description: 'Procura o WhatsApp das empresas na internet (site, domínio) e cadastra nos leads sem telefone — destrava o disparo por WhatsApp' },
+  // Cadastro manual pelo chat (reclamação do dono, 2026-10-08: a IA dizia
+  // "não consigo cadastrar lead pelo chat" — falso: faltava a action).
+  // Idempotency 'params': o MESMO payload 2× devolve o mesmo card (e o
+  // handler dedupa por CNPJ/nome — lead não nasce duplicado).
+  create_lead: { version: 1, idempotency: 'params', description: 'Cadastra um lead novo na base da organização com os dados informados pelo usuário (nome, CNPJ, telefone, e-mail, cidade…)' },
 };
 
 /**
@@ -306,6 +311,15 @@ function validate(action, params = {}) {
     case 'remove_suppression': {
       if (!params.email || !String(params.email).trim()) {
         const err = new Error(`${action} exige \`email\` (o endereço na lista de supressão).`);
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
+    case 'create_lead': {
+      if (!params.companyName || !String(params.companyName).trim()) {
+        const err = new Error('create_lead exige `companyName` (o nome da empresa do lead).');
         err.code = 'INVALID_ACTION_PARAMS';
         err.status = 400;
         throw err;

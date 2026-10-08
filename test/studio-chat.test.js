@@ -1783,3 +1783,60 @@ test('QA: QR disponível → card traz o código para escanear', async () => {
   }
 });
 
+
+// ── 2026-10-08: cadastro de lead PELO CHAT (o dono manda os dados) ───────────
+
+test('QA: "cadastra esse lead" com dados na mão cria o prospect com telefone/consentimento', async () => {
+  let turno = 0;
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      turno += 1;
+      // 2º turno com CNPJ PONTUADO (como o usuário escreve) — hash diferente
+      // da 1ª run, então o handler executa e o dedupe por CNPJ age de verdade.
+      const cnpj = turno === 1 ? '12345678000199' : '12.345.678/0001-99';
+      return {
+        content: JSON.stringify({
+          reply: 'Cadastrando!',
+          actions: [{
+            type: 'create_lead',
+            companyName: 'Comercial Aurora LTDA',
+            cnpj,
+            contactName: 'Maria Souza',
+            phone: '(11) 98765-4321',
+            email: 'comercial@aurora.com.br',
+            city: 'São Paulo',
+            state: 'sp',
+            industry: 'comércio atacadista',
+          }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Base', channels: ['whatsapp'] });
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'cadastra esse lead: Comercial Aurora, CNPJ 12.345.678/0001-99, telefone (11) 98765-4321, e-mail comercial@aurora.com.br' });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'lead_created');
+    assert.ok(card, 'card de lead criado');
+    assert.match(card.label, /Comercial Aurora LTDA/);
+    const lead = prisma.prospect.rows.find((r) => r.companyName === 'Comercial Aurora LTDA');
+    assert.ok(lead, 'prospect criado');
+    assert.equal(lead.cnpj, '12.345.678/0001-99', 'CNPJ formatado');
+    assert.equal(lead.cnpjPhones[0], '+5511987654321', 'telefone com DDI 55 na frente');
+    assert.equal(lead.cnpjEmail, 'comercial@aurora.com.br');
+    assert.equal(lead.state, 'SP', 'UF normalizada');
+    assert.equal(lead.captureSource, 'chat');
+    const consent = prisma.studioLeadConsent.rows.find((r) => r.prospectId === lead.id);
+    assert.ok(consent, 'consentimento WhatsApp registrado (dono atestou ao cadastrar)');
+
+    // MESMO lead de novo → card de duplicado, nenhum prospect novo.
+    const again = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'cadastra de novo' });
+    const dup = again.body.data.cards.find((card) => card.type === 'lead_created');
+    assert.equal(dup.duplicate, true, 'dedupe por CNPJ');
+    assert.equal(prisma.prospect.rows.filter((r) => r.companyName === 'Comercial Aurora LTDA').length, 1);
+  } finally {
+    server.close();
+  }
+});

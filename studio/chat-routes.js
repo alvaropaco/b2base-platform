@@ -75,6 +75,17 @@ function actionParams(action) {
       return { email: action.email || null };
     case 'enrich_whatsapp':
       return {}; // idempotency none — rodar de novo é intencional (base cresce)
+    case 'create_lead':
+      return {
+        companyName: action.companyName || null,
+        cnpj: action.cnpj || null,
+        contactName: action.contactName || null,
+        phone: action.phone || null,
+        email: action.email || null,
+        city: action.city || null,
+        state: action.state || null,
+        industry: action.industry || null,
+      };
     case 'create_campaign':
       return { name: action.name || null, channels: Array.isArray(action.channels) ? action.channels.map(String) : null };
     case 'rename_campaign':
@@ -1620,7 +1631,7 @@ function registerChatRoutes(router, context) {
             '**Jornada da campanha aberta** — objetivo, audiência por linguagem natural, ajuste fino de leads, captura de leads novos, conteúdo (gerar, editar e MOSTRAR aqui no chat) e agendamento.\n' +
             '**Aprovação e disparo** — aprovar a campanha pelo mesmo fluxo do Pré-voo, ENVIAR UMA MENSAGEM DE TESTE para o seu WhatsApp ou e-mail antes de valer, COLOCAR EM VOO na hora (disparo único, e-mail e WhatsApp — sem perguntas de agenda) e mostrar o que falta para poder disparar (saldo, certificado).\n' +
             '**Canais** — conectar a conta de e-mail de disparo (Resend com a sua API key ou SMTP com senha de app), DESCONECTAR a conta de envio (disconnect_email — sempre confirmo antes), mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
-            '**Leads** — consultar e editar dados de empresa/contato, ENRIQUECER a base procurando o WhatsApp das empresas na internet (enrich_whatsapp) e cadastrar nos leads, mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
+            '**Leads** — consultar e editar dados de empresa/contato, CADASTRAR lead novo com os dados que você passar (create_lead), ENRIQUECER a base procurando o WhatsApp das empresas na internet (enrich_whatsapp) e cadastrar nos leads, mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
             'Não faço ainda: publicar os registros DNS no provedor do domínio (eu mostro, você publica) e ler a caixa de entrada inteira fora das respostas classificadas.',
         };
 
@@ -2075,6 +2086,88 @@ function registerChatRoutes(router, context) {
           found: found.map((f) => f.companyName),
           notFound,
           restantes,
+        };
+      }
+
+      case 'create_lead': {
+        // Cadastro MANUAL pelo chat (2026-10-08 — o dono mandou os dados do
+        // lead e a IA dizia "não consigo"). Mesma forma de lead da captura
+        // (status 'prospect' + searchText + consentimento WhatsApp quando
+        // vem telefone), com dedupe por CNPJ → nome.
+        const name = String(action.companyName).trim();
+        const digits = action.cnpj ? String(action.cnpj).replace(/\D/g, '') : '';
+        if (digits && digits.length !== 14) {
+          throw httpError('INVALID_CNPJ', 400, 'CNPJ deve ter 14 dígitos (com ou sem pontuação) — confere aí?');
+        }
+        const formatted = digits ? `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8, 12)}-${digits.slice(12)}` : null;
+        // Dedupe: CNPJ (chave oficial) → nome exato (lead sem CNPJ).
+        let existing = formatted
+          ? await prisma.prospect.findFirst({ where: { orgId, OR: [{ cnpj: formatted }, { cnpj: digits }] } })
+          : await prisma.prospect.findFirst({ where: { orgId, companyName: { equals: name, mode: 'insensitive' } } });
+        if (existing) {
+          return {
+            type: 'lead_created',
+            label: `**${existing.companyName}** já está na sua base`,
+            detail:
+              'Nada duplicado. Se quiser ATUALIZAR os dados dela (telefone, e-mail, cidade…), me diga o que muda que eu edito; ' +
+              'se quiser procurar o WhatsApp dela na internet, me peça "enriquece o lead".',
+            prospectId: existing.id,
+            duplicate: true,
+          };
+        }
+        // Telefone → DDI 55 quando faltou (mesma regra do worker digital).
+        let phone = null;
+        if (action.phone) {
+          const d = String(action.phone).replace(/\D/g, '');
+          if (d.length >= 10 && d.length <= 13) {
+            phone = `+${d.length <= 11 && !d.startsWith('55') ? '55' : ''}${d}`;
+          }
+        }
+        const { buildSearchText } = require('../search-text');
+        const created = await prisma.prospect.create({
+          data: {
+            orgId,
+            companyName: name,
+            tradeName: action.tradeName ? String(action.tradeName).trim() : null,
+            cnpj: formatted,
+            contactName: action.contactName ? String(action.contactName).trim() : null,
+            cnpjEmail: action.email ? String(action.email).trim() : null,
+            cnpjPhones: phone ? [phone] : [],
+            city: action.city ? String(action.city).trim() : null,
+            state: action.state ? String(action.state).trim().toUpperCase().slice(0, 2) : null,
+            industry: action.industry ? String(action.industry).trim() : null,
+            status: 'prospect',
+            captureSource: 'chat',
+            searchText: buildSearchText({ industry: action.industry || null, companyName: name, tradeName: action.tradeName || null }),
+          },
+        });
+        // Consentimento WhatsApp automático (mesma diretriz da captura: o
+        // dono cadastrou o lead — ele atesta a relação; trilha auditável).
+        if (phone) {
+          const certificate = require('./certificate');
+          await certificate
+            .grantConsent(prisma, { orgId, prospectId: created.id, source: 'chat', grantedById: userId })
+            .catch(() => {});
+        }
+        const resumo = [
+          name,
+          formatted || null,
+          action.contactName ? `contato ${action.contactName}` : null,
+          phone ? `WhatsApp/telefone ${phone}` : null,
+          action.email ? action.email : null,
+          action.city ? `${action.city}${action.state ? '/' + String(action.state).toUpperCase() : ''}` : null,
+        ].filter(Boolean);
+        return {
+          type: 'lead_created',
+          label: `Lead **${name}** cadastrado na sua base`,
+          detail:
+            `Cadastro: ${resumo.join(' · ')}. ` +
+            (phone
+              ? 'Já nasceu com consentimento WhatsApp registrado (seu atesto) — pode entrar em campanha. '
+              : 'SEM telefone no cadastro: me passe o número (com DDD) que eu completo, ou me peça para procurar o WhatsApp dela na internet. ') +
+            'Para colocar numa campanha, me diga qual e eu adiciono à audiência.',
+          prospectId: created.id,
+          phone: phone || null,
         };
       }
 
@@ -2592,6 +2685,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     show_dns_records: 'Conferindo o DNS do seu domínio…',
     connect_email: 'Conectando o e-mail de disparo…',
     enrich_whatsapp: 'Procurando WhatsApps das empresas na internet…',
+    create_lead: 'Cadastrando o lead na sua base…',
     show_capabilities: 'Organizando o que eu sei fazer…',
   };
 
