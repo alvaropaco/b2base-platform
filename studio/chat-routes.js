@@ -1100,20 +1100,52 @@ function registerChatRoutes(router, context) {
         // base CNPJ não retornou celular; o WhatsApp é impossível para eles e
         // o card precisava dizer isso com nomes).
         if (campaign.whatsappExecutionId) {
+          // Diagnóstico HONESTO do no_phone (2026-10-09, caso MB: a IA dizia
+          // "SEM TELEFONE" para lead que JÁ tinha número cadastrado — o motivo
+          // real era outro). Re-checa o cadastro atual e o consentimento:
+          // sem número → e-mail/cadastro manual; com número sem consentimento
+          // → autorizar; com número e consentimento → volta no reforço.
+          const { usablePhone } = require('../whatsapp-utils');
+          const temTelefone = (p) => Boolean(usablePhone(p.cnpjPhones));
           const waContacts = await prisma.whatsAppCampaignContact.findMany({
             where: { campaignId: campaign.whatsappExecutionId, status: 'CANCELLED', cancelReason: 'no_phone' },
             take: 200,
           });
           if (waContacts.length > 0) {
-            const prospectIds = waContacts.map((c) => c.prospectId);
-            const pros = await prisma.prospect.findMany({ where: { id: { in: prospectIds } }, select: { companyName: true, cnpjEmail: true } });
-            const comEmail = pros.filter((p) => p.cnpjEmail).length;
-            const nomes = pros.slice(0, 5).map((p) => p.companyName).join(', ');
-            launchNotes.push(
-              `⚠️ ${waContacts.length} lead(s) SEM TELEFONE no cadastro (a base não trouxe celular): ${nomes}` +
-              `${pros.length > 5 ? '…' : ''}. WhatsApp é impossível sem número — ` +
-              (comEmail > 0 ? `${comEmail} deles têm E-MAIL: me peça para gerar a mensagem de e-mail e disparar por lá, ou atualize os telefones no cadastro.` : 'atualize os telefones no cadastro.')
-            );
+            const prospectIds = [...new Set(waContacts.map((c) => c.prospectId))];
+            const pros = await prisma.prospect.findMany({
+              where: { id: { in: prospectIds } },
+              select: { id: true, companyName: true, cnpjEmail: true, cnpjPhones: true },
+            });
+            let consented = new Set();
+            try {
+              consented = await require('./certificate').whatsappConsentedSet(prisma, orgId, prospectIds);
+            } catch (_e) { /* sem o módulo no harness: cai no aviso genérico */ }
+            const semTelefoneReal = pros.filter((p) => !temTelefone(p));
+            const comTelefone = pros.filter((p) => temTelefone(p));
+            const faltaConsentimento = comTelefone.filter((p) => !consented.has(p.id));
+            const prontosRelancar = comTelefone.filter((p) => consented.has(p.id));
+            if (semTelefoneReal.length > 0) {
+              const comEmail = semTelefoneReal.filter((p) => p.cnpjEmail).length;
+              const nomes = semTelefoneReal.slice(0, 5).map((p) => p.companyName).join(', ');
+              launchNotes.push(
+                `⚠️ ${semTelefoneReal.length} lead(s) SEM TELEFONE no cadastro (nem no site foi encontrado número): ${nomes}` +
+                `${semTelefoneReal.length > 5 ? '…' : ''}. WhatsApp é impossível sem número — ` +
+                (comEmail > 0 ? `${comEmail} deles têm E-MAIL: me peça para gerar a mensagem de e-mail e disparar por lá, ou atualize os telefones no cadastro.` : 'me peça para enriquecer a base procurando o WhatsApp na internet ou atualize os telefones no cadastro.')
+              );
+            }
+            if (faltaConsentimento.length > 0) {
+              const nomesC = faltaConsentimento.slice(0, 5).map((p) => p.companyName).join(', ');
+              launchNotes.push(
+                `⚠️ ${faltaConsentimento.length} lead(s) TÊM número no cadastro mas ficaram FORA por falta de consentimento WhatsApp ` +
+                `(regra anti-bloqueio/LGPD): ${nomesC}${faltaConsentimento.length > 5 ? '…' : ''}. Se o lead autorizou, me diga "<nome> autorizou WhatsApp" que eu registro e reforço a fila.`
+              );
+            }
+            if (prontosRelancar.length > 0) {
+              launchNotes.push(
+                `ℹ️ ${prontosRelancar.length} lead(s) têm número e consentimento e voltam para a fila no próximo reforço de disparo — o envio re-lê o cadastro no momento de enviar.`
+              );
+            }
           }
         }
         if (alreadyRunning) {
@@ -1686,7 +1718,7 @@ function registerChatRoutes(router, context) {
             '**Jornada da campanha aberta** — objetivo, audiência por linguagem natural, ajuste fino de leads, captura de leads novos, conteúdo (gerar, editar e MOSTRAR aqui no chat) e agendamento.\n' +
             '**Aprovação e disparo** — aprovar a campanha pelo mesmo fluxo do Pré-voo, ENVIAR UMA MENSAGEM DE TESTE para o seu WhatsApp ou e-mail antes de valer, COLOCAR EM VOO na hora (disparo único, e-mail e WhatsApp — sem perguntas de agenda) e mostrar o que falta para poder disparar (saldo, certificado).\n' +
             '**Canais** — conectar a conta de e-mail de disparo (Resend com a sua API key ou SMTP com senha de app), DESCONECTAR a conta de envio (disconnect_email — sempre confirmo antes), mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
-            '**Campanhas em voo** — CANCELAR a campanha pelo chat (cancel_campaign — para os disparos, estorna o não enviado e cancela a fila; sempre confirmo antes) e ESCOLHER os canais de disparo a qualquer momento: e-mail + WhatsApp, só WhatsApp ou só e-mail (set_channels). **Leads** — consultar e editar dados de empresa/contato, CADASTRAR lead novo com os dados que você passar (create_lead), ENRIQUECER a base procurando o WhatsApp das empresas na internet (enrich_whatsapp) e cadastrar nos leads, mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
+            '**Campanhas em voo** — CANCELAR a campanha pelo chat (cancel_campaign — para os disparos, estorna o não enviado e cancela a fila; sempre confirmo antes) e ESCOLHER os canais de disparo a qualquer momento: e-mail + WhatsApp, só WhatsApp ou só e-mail (set_channels). **Leads** — consultar e editar dados de empresa/contato, CADASTRAR lead novo com os dados que você passar (create_lead), ENRIQUECER a base procurando o WhatsApp das empresas na internet (enrich_whatsapp) — atualiza TODOS os leads: cadastra em quem está sem número e põe o WhatsApp NA FRENTE do cadastro de quem já tem telefone — mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
             'Não faço ainda: publicar os registros DNS no provedor do domínio (eu mostro, você publica) e ler a caixa de entrada inteira fora das respostas classificadas.',
         };
 
@@ -2049,15 +2081,22 @@ function registerChatRoutes(router, context) {
       }
 
       case 'enrich_whatsapp': {
-        // Enriquecimento PELO CHAT (pedido do dono, 2026-10-08): procura o
-        // WhatsApp das empresas NA INTERNET — o MESMO motor do worker
-        // company.digital_presence (descoberta de domínio via SearXNG +
-        // crawl do site + validação Twilio quando o registry existe) — e
-        // cadastra o número na FRENTE do cnpjPhones (o disparo usa [0]),
-        // destravando os leads no_phone.
+        // Enriquecimento PELO CHAT (pedido do dono, 2026-10-08; "atualize
+        // TUDO", 2026-10-09): procura o WhatsApp das empresas NA INTERNET —
+        // o MESMO motor do worker company.digital_presence (descoberta de
+        // domínio via SearXNG + crawl do site + validação Twilio quando o
+        // registry existe) — e ATUALIZA o cadastro inteiro: quem está SEM
+        // número tem prioridade; quem JÁ TEM telefone recebe o WhatsApp do
+        // site na FRENTE do cnpjPhones (o disparo usa [0] e um fixo na frente
+        // matava o disparo mesmo com WhatsApp registrado atrás). O domínio
+        // descoberto é persistido quando falta (chave das próximas rodas).
         const digitalPresence = require('../workers/digital-presence');
-        const limit = Math.min(20, Math.max(1, Number(action.limit) || 10));
-        const semTelefone = (p) => !Array.isArray(p.cnpjPhones) || p.cnpjPhones.filter(Boolean).length === 0;
+        const limit = Math.min(100, Math.max(1, Number(action.limit) || 40));
+        // Mesma regra do disparo (whatsapp-utils.usablePhone): 10-13 dígitos
+        // com DDI 55 quando presente. O +91… (Índia) do crawler antigo conta
+        // como SEM telefone — o enriquecimento novo substitui o lixo.
+        const { usablePhone } = require('../whatsapp-utils');
+        const semTelefone = (p) => !usablePhone(p.cnpjPhones);
 
         // Escopo: nomes citados → audiência da campanha aberta → base da org.
         let candidates = [];
@@ -2079,67 +2118,105 @@ function registerChatRoutes(router, context) {
           }
           candidates = ids && ids.length
             ? await prisma.prospect.findMany({ where: { orgId, id: { in: ids } }, orderBy: { createdAt: 'desc' } })
-            : await prisma.prospect.findMany({ where: { orgId }, orderBy: { createdAt: 'desc' }, take: 200 });
+            : await prisma.prospect.findMany({ where: { orgId }, orderBy: { createdAt: 'desc' }, take: 400 });
         }
+        // "Atualizar TUDO": sem número primeiro (destrava o disparo), quem já
+        // tem telefone entra na sequência para promoção do WhatsApp à frente.
         const semNumero = candidates.filter(semTelefone);
-        const restantes = Math.max(0, semNumero.length - limit);
-        const lote = semNumero.slice(0, limit);
+        const comNumero = candidates.filter((p) => !semTelefone(p));
+        const restantes = Math.max(0, candidates.length - limit);
+        const lote = [...semNumero, ...comNumero].slice(0, limit);
 
         const logger = { info() {}, warn() {}, error() {}, child() { return this; } };
         const found = [];
+        const promoted = [];
         const notFound = [];
-        for (const lead of lote) {
-          try {
-            const outcome = await digitalPresence.executors['company.digital_presence'](
-              {
-                input: { companyName: String(lead.companyName || lead.tradeName || ''), domain: lead.domain || null },
-                capability: 'company.digital_presence', timeoutMs: 30000,
-              },
-              { signal: AbortSignal.timeout(32000), logger }
-            );
-            const wa = outcome && outcome.data && outcome.data.digital_presence ? outcome.data.digital_presence.whatsapp : null;
+        const semNovo = [];
+        // Descoberta multi-fonte (2026-10-09): a busca por empresa leva ~5-15s
+        // (2-3 queries + até 3 páginas). Em paralelo (5 por vez) um lote de 40
+        // roda em ~1-2 min; sequencial estouraria o pedido do chat.
+        const CHUNK = 5;
+        const { isCompanyDomain } = digitalPresence;
+        for (let i = 0; i < lote.length; i += CHUNK) {
+          const chunk = lote.slice(i, i + CHUNK);
+          const outcomes = await Promise.all(chunk.map(async (lead) => {
+            const nome = String(lead.companyName || lead.tradeName || lead.id);
+            try {
+              const outcome = await digitalPresence.executors['company.digital_presence'](
+                {
+                  input: {
+                    companyName: String(lead.companyName || lead.tradeName || ''),
+                    tradeName: lead.tradeName || undefined,
+                    state: lead.state || undefined,
+                    domain: lead.domain || null,
+                  },
+                  capability: 'company.digital_presence', timeoutMs: 30000,
+                },
+                { signal: AbortSignal.timeout(32000), logger }
+              );
+              return { lead, nome, outcome };
+            } catch (err) {
+              return { lead, nome, outcome: null };
+            }
+          }));
+          for (const { lead, nome, outcome } of outcomes) {
+            const dp = (outcome && outcome.data) || {};
+            const wa = dp.digital_presence ? dp.digital_presence.whatsapp : null;
+            const domain = dp.domain || null;
             if (!wa) {
-              notFound.push(String(lead.companyName || lead.tradeName || lead.id));
+              (semTelefone(lead) ? notFound : semNovo).push(nome);
               continue;
             }
+            const digits = String(wa).replace(/\D/g, '');
             const current = Array.isArray(lead.cnpjPhones) ? lead.cnpjPhones.filter(Boolean) : [];
-            const digits = wa.replace(/\D/g, '');
-            const already = current.some((p) => String(p).replace(/\D/g, '') === digits);
-            if (!already) {
-              await prisma.prospect.update({
-                where: { id: lead.id },
-                data: { cnpjPhones: [wa, ...current] },
-              });
+            const frontDigits = current.length ? String(current[0]).replace(/\D/g, '') : null;
+            if (frontDigits === digits) {
+              // Número já está na frente — cadastro em dia, nada a gravar.
+              found.push({ prospectId: lead.id, companyName: nome, whatsapp: wa });
+              continue;
             }
-            found.push({ prospectId: lead.id, companyName: String(lead.companyName || lead.tradeName || lead.id), whatsapp: wa });
-          } catch (err) {
-            notFound.push(String(lead.companyName || lead.tradeName || lead.id));
+            const updates = { cnpjPhones: [wa, ...current.filter((p) => String(p).replace(/\D/g, '') !== digits)] };
+            // Domínio só vira lead.domain quando é site DA EMPRESA — catálogo
+            // digital (diggy.menu) e agregador (taplink/linktr) não são o site
+            // e poluiriam a chave de enriquecimento das próximas rodas.
+            if (domain && !lead.domain && isCompanyDomain(domain)) updates.domain = domain;
+            await prisma.prospect.update({ where: { id: lead.id }, data: updates });
+            (current.length ? promoted : found).push({ prospectId: lead.id, companyName: nome, whatsapp: wa, anterior: current[0] || null });
           }
         }
 
         const lines = [];
-        if (found.length) {
-          lines.push(found.map((f) => `• **${f.companyName}** — ${f.whatsapp} ✓ cadastrado na frente do cadastro`).join('\n'));
+        const cadastrados = [...found, ...promoted];
+        if (cadastrados.length) {
+          lines.push(cadastrados.map((f) => {
+            const trocou = f.anterior ? ` (substituiu ${f.anterior} na frente)` : '';
+            return `• **${f.companyName}** — ${f.whatsapp} ✓ WhatsApp cadastrado na frente do cadastro${trocou}`;
+          }).join('\n'));
         }
         if (notFound.length) {
-          lines.push(`⚠️ ${notFound.length} lead(s) SEM WhatsApp encontrado no site: ${notFound.slice(0, 5).join(', ')}${notFound.length > 5 ? '…' : ''}`);
+          lines.push(`⚠️ ${notFound.length} lead(s) SEM WhatsApp público encontrado na internet (site, catálogo, redes): ${notFound.slice(0, 5).join(', ')}${notFound.length > 5 ? '…' : ''}`);
+        }
+        if (semNovo.length) {
+          lines.push(`ℹ️ ${semNovo.length} lead(s) já tinham telefone e não achei WhatsApp novo na internet — cadastro mantido: ${semNovo.slice(0, 5).join(', ')}${semNovo.length > 5 ? '…' : ''}`);
         }
         if (restantes > 0) {
-          lines.push(`Ainda há ${restantes} lead(s) sem telefone — me peça "continua o enriquecimento" para o próximo lote de ${limit}.`);
+          lines.push(`Ainda há ${restantes} lead(s) fora deste lote — me peça "continua o enriquecimento" para o próximo lote de ${limit}.`);
         }
-        if (found.length) {
-          lines.push('Agora pode disparar por WhatsApp — os números novos entram na fila na matrícula (e leads cancelados por no_phone voltam quando o telefone é atualizado).');
+        if (cadastrados.length) {
+          lines.push('Pode disparar por WhatsApp: quem tem número no cadastro entra na fila na matrícula — e contato cancelado por no_phone volta sozinho no reforço de fila (o disparo re-lê o cadastro no envio). Lembrando: lead SEM consentimento WhatsApp registrado continua fora até você autorizar ("<nome> autorizou WhatsApp").');
         } else {
-          lines.push('Nada a comemorar ainda: sem número no site, o WhatsApp continua impossível para esses leads — me peça para atualizar os telefones manualmente ou capture leads novos.');
+          lines.push('Nada novo encontrado nesta rodada: sem número público na internet, o WhatsApp continua impossível para quem está sem telefone — me peça para atualizar os telefones manualmente ou capture leads novos.');
         }
         return {
           type: 'enrichment_done',
-          label: found.length
-            ? `Enriquecimento concluído — ${found.length} WhatsApp(s) cadastrado(s)`
-            : 'Enriquecimento concluído — nenhum WhatsApp encontrado',
+          label: cadastrados.length
+            ? `Enriquecimento concluído — ${cadastrados.length} WhatsApp(s) cadastrado(s)`
+            : 'Enriquecimento concluído — nenhum WhatsApp novo encontrado',
           detail: lines.join('\n'),
-          found: found.map((f) => f.companyName),
+          found: cadastrados.map((f) => f.companyName),
+          promoted: promoted.map((f) => f.companyName),
           notFound,
+          semNovo,
           restantes,
         };
       }

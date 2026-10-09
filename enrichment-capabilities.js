@@ -80,15 +80,22 @@ const CAPABILITIES = {
     // QA 2026-10-07: extrai o WhatsApp do SITE da empresa (wa.me /
     // api.whatsapp.com) — o melhor número para disparo; o enrichment-manager
     // aplica na FRENTE de cnpjPhones. Basic: todos os planos precisam.
+    // 2026-10-09 (caso MB): sem site, a descoberta multi-fonte varre snippets,
+    // catálogo digital da loja e agregadores de link — mais lento, timeout 60s.
     family: 'company',
     tier: 'basic',
     enabled: true,
     entityType: ['prospect', 'company'],
-    timeoutMs: 30000,
+    timeoutMs: 60000,
     maxAttempts: 2,
     priority: 2,
     providers: ['site.crawl'],
-    inputSchema: { domain: { type: 'string', required: false }, companyName: { type: 'string', required: false } },
+    inputSchema: {
+      domain: { type: 'string', required: false },
+      companyName: { type: 'string', required: false },
+      tradeName: { type: 'string', required: false },
+      state: { type: 'string', required: false },
+    },
     expand: [],
   },
 

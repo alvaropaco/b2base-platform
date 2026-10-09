@@ -17,7 +17,7 @@ const { getWhatsAppQueues } = require('./whatsapp-queues');
 const { registerProcessor } = require('./outreach-queues');
 const { WAHAWhatsAppProvider } = require('./waha-provider');
 const { checkLimit, calculateDelay } = require('./whatsapp-rate-limiter');
-const { toChatId, normalizePhone, renderTemplate, truncateForWhatsApp, BLOCKLIST } = require('./whatsapp-utils');
+const { toChatId, normalizePhone, usablePhone, renderTemplate, truncateForWhatsApp, BLOCKLIST } = require('./whatsapp-utils');
 const llm = require('./llm-client');
 // Stub injetável nos testes (gera JSON sem chamar o gateway real).
 let llmClient = llm;
@@ -176,6 +176,15 @@ async function generateStepMessage(prisma, { prospect, campaign, step }) {
   }
 }
 
+// ─── Telefones ───────────────────────────────────────────────────────────────
+// Snapshot utilizável do cadastro do lead vem de whatsapp-utils.usablePhone
+// (10-13 dígitos, DDI 55 quando presente — rejeita o lixo estrangeiro que o
+// crawler antigo registrava, ex.: +91… da Índia). Garante que um número
+// registrado no LEAD chegue ao CONTATO da campanha — a matrícula do Studio
+// cria o contato sem snapshot e cancelar por no_phone com número no cadastro
+// era o bug do caso MB (2026-10-09: enriquecimento cadastrou, disparo dizia
+// "sem número").
+
 // ─── Queue: whatsapp:sequence ────────────────────────────────────────────────
 async function processSequence(job) {
   const { contactId, stepIndex } = job.data;
@@ -258,7 +267,21 @@ async function processSequence(job) {
   }
 
   const step = steps[stepIndex];
-  const phoneNumber = normalizePhone(contact.phoneNumber);
+  let phoneNumber = normalizePhone(contact.phoneNumber);
+  if (!phoneNumber) {
+    // Cura do snapshot no envio: contato sem telefone (matrícula do Studio ou
+    // lead enriquecido DEPOIS do cancelamento) re-lê o cadastro ATUAL do
+    // lead e persiste o número — as próximas etapas não repetem a cura.
+    // Cancelar no_phone com número no cadastro devolvia o lead da IA para a
+    // fila morta exatamente quando o usuário já tinha cadastrado o WhatsApp.
+    phoneNumber = usablePhone(prospect.cnpjPhones);
+    if (phoneNumber) {
+      await prisma.whatsAppCampaignContact.update({
+        where: { id: contactId },
+        data: { phoneNumber },
+      });
+    }
+  }
   if (!phoneNumber) {
     await prisma.whatsAppCampaignContact.update({
       where: { id: contactId },
@@ -688,7 +711,7 @@ async function startCampaign(prisma, { campaignId, prospectIds, orgId }) {
     // chega depois (ex.: enriquecimento completou após o lançamento).
     const prior = await prisma.whatsAppCampaignContact.findUnique({
       where: { campaignId_prospectId: { campaignId, prospectId } },
-      select: { id: true, status: true, cancelReason: true, nextSendAt: true },
+      select: { id: true, status: true, cancelReason: true, nextSendAt: true, phoneNumber: true },
     });
     const retryableNoPhone = prior?.status === 'CANCELLED' && prior.cancelReason === 'no_phone';
     if (prior && !retryableNoPhone) {
@@ -698,6 +721,18 @@ async function startCampaign(prisma, { campaignId, prospectIds, orgId }) {
       // foi alocado continua aguardando o gate; quem já tem sequência em
       // curso (job idempotente pelo status do contato) não duplica.
       if (prior.status === CONTACT_STATUS.QUEUED && prior.nextSendAt) {
+        // Backfill do snapshot: a matrícula do Studio cria o contato SEM
+        // telefone — sem isto o worker cancelava no_phone na 1ª passada
+        // mesmo com o número no cadastro do lead (caso MB, 2026-10-09).
+        if (!normalizePhone(prior.phoneNumber)) {
+          const healed = usablePhone(prospect.cnpjPhones);
+          if (healed) {
+            await prisma.whatsAppCampaignContact.update({
+              where: { id: prior.id },
+              data: { phoneNumber: healed },
+            });
+          }
+        }
         await queue.sequence.add(
           { contactId: prior.id, stepIndex: 0, prospectId, campaignId },
           { delay: 0, attempts: 1000 }
@@ -709,9 +744,9 @@ async function startCampaign(prisma, { campaignId, prospectIds, orgId }) {
       continue;
     }
 
-    const phoneNumber = (Array.isArray(prospect.cnpjPhones) && prospect.cnpjPhones[0])
-      ? normalizePhone(prospect.cnpjPhones[0])
-      : null;
+    // Mesmo critério do worker de envio (10-13 dígitos): número curto/lixo no
+    // cadastro não vira chatId inválido — fica no_phone para curar depois.
+    const phoneNumber = usablePhone(prospect.cnpjPhones);
 
     const contactable = await isContactable(prisma, { orgId, prospectId });
 

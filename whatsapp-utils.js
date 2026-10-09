@@ -26,6 +26,25 @@ function normalizePhone(input) {
   return digits;
 }
 
+/**
+ * Snapshot utilizável para DISPARO WhatsApp: 1º telefone com 10-13 dígitos
+ * que, quando já traz DDI, seja o 55 (BR). Número estrangeiro (ex.: +91… da
+ * Índia que o crawler antigo registrava como "WhatsApp" do lead) NUNCA é
+ * utilizável — a conta de disparo é BR e mandar para outro país queima o
+ * número. Percorre a lista: lixo na frente não esconde o número bom atrás.
+ */
+function usablePhone(phones) {
+  const list = Array.isArray(phones) ? phones : [];
+  for (const raw of list) {
+    if (raw == null || !String(raw).trim()) continue;
+    const digits = String(raw).replace(/\D/g, '');
+    if (digits.length < 10 || digits.length > 13) continue;
+    if (digits.length > 11 && !digits.startsWith('55')) continue;
+    return normalizePhone(digits);
+  }
+  return null;
+}
+
 function toChatId(phone) {
   // JIDs completos (ex.: "850...@lid", "1203...@g.us") passam inalterados —
   // reconstruir "<digits>@c.us" quebra chats LID/grupo.
@@ -248,6 +267,7 @@ function asStringList(value) {
 
 module.exports = {
   normalizePhone,
+  usablePhone,
   toChatId,
   phoneFromChatId,
   renderTemplate,

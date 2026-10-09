@@ -524,7 +524,7 @@ async function enqueueBatch(prisma, { campaign, channel, prospectIds, now = new 
       })
       .catch(() => []);
     if (cancelledNoPhone.length > 0) {
-      const { normalizePhone } = require('../whatsapp-utils');
+      const { usablePhone } = require('../whatsapp-utils');
       const prospects = await prisma.prospect
         .findMany({
           where: { id: { in: cancelledNoPhone.map((c) => c.prospectId) }, orgId: campaign.orgId },
@@ -533,7 +533,7 @@ async function enqueueBatch(prisma, { campaign, channel, prospectIds, now = new 
         .catch(() => []);
       const phoneByProspect = new Map(
         prospects
-          .map((p) => [p.id, normalizePhone((p.cnpjPhones || [])[0])])
+          .map((p) => [p.id, usablePhone(p.cnpjPhones)])
           .filter(([, phone]) => Boolean(phone))
       );
       let consented = new Set();

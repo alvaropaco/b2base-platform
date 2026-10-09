@@ -99,13 +99,15 @@ const ACTIONS_V1 = {
   add_suppression: { version: 1, idempotency: 'params', description: 'Adiciona um e-mail à lista de supressão (opt-out — deixa de receber disparo)' },
   remove_suppression: { version: 1, idempotency: 'none', description: 'Reabilita um contato removendo-o da lista de supressão — sempre pede confirmação' },
   disconnect_email: { version: 1, idempotency: 'none', description: 'Desconecta a conta de e-mail de disparo (status revoked) — sempre pede confirmação' },
-  // Enriquecimento pelo chat (pedido do dono, 2026-10-08): procura o WhatsApp
-  // das empresas NA INTERNET (descoberta de domínio + crawl do site + validação
-  // Twilio — o MESMO motor do worker company.digital_presence) e cadastra no
-  // lead (frente do cnpjPhones), destravando o disparo por WhatsApp.
+  // Enriquecimento pelo chat (pedido do dono, 2026-10-08; "atualize TUDO",
+  // 2026-10-09): procura o WhatsApp das empresas NA INTERNET (descoberta de
+  // domínio + crawl do site + validação Twilio — o MESMO motor do worker
+  // company.digital_presence) e ATUALIZA o cadastro: cadastra em quem está
+  // sem telefone (prioridade) e PROMOVE o WhatsApp para a FRENTE do
+  // cnpjPhones de quem já tem outro número — o disparo usa cnpjPhones[0].
   // idempotency 'none': rodar de novo é INTENCIONAL (base cresceu, site ganhou
-  // WhatsApp) — a própria busca só preenche quem está sem telefone.
-  enrich_whatsapp: { version: 1, idempotency: 'none', description: 'Procura o WhatsApp das empresas na internet (site, domínio) e cadastra nos leads sem telefone — destrava o disparo por WhatsApp' },
+  // WhatsApp) — a busca reprocessa toda a audiência/base.
+  enrich_whatsapp: { version: 1, idempotency: 'none', description: 'Procura o WhatsApp das empresas na internet e ATUALIZA o cadastro de TODOS os leads (cadastra em quem está sem telefone e põe o WhatsApp na frente de quem já tem número) — destrava o disparo por WhatsApp' },
   // Cadastro manual pelo chat (reclamação do dono, 2026-10-08: a IA dizia
   // "não consigo cadastrar lead pelo chat" — falso: faltava a action).
   // Idempotency 'params': o MESMO payload 2× devolve o mesmo card (e o

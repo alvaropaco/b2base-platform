@@ -45,10 +45,14 @@ function buildCapabilityInput(capability, prospect) {
     case 'company.logo':
       return domain ? { domain } : null;
     case 'company.digital_presence':
-      // Sem domínio no cadastro, o worker DESCOBRE o site pelo nome (searxng).
+      // Sem domínio no cadastro, o worker DESCOBRE pelo nome (searxng) — e
+      // desde 2026-10-09 a descoberta multi-fonte usa fantasia + UF para
+      // buscar o WhatsApp de quem não tem site (catálogo digital, snippets).
       return domain
-        ? { domain }
-        : (prospect.companyName ? { companyName: prospect.companyName } : null);
+        ? { domain, tradeName: prospect.tradeName || undefined, state: prospect.state || undefined }
+        : (prospect.companyName
+          ? { companyName: prospect.companyName, tradeName: prospect.tradeName || undefined, state: prospect.state || undefined }
+          : null);
     case 'company.profile.deep':
       return prospect.companyName
         ? { companyName: prospect.companyName, domain: domain || undefined }

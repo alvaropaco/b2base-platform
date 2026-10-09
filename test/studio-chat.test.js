@@ -1956,3 +1956,110 @@ test('QA: rascunho troca canais direto (fricção zero) e valida os valores', as
     server.close();
   }
 });
+
+// ── 2026-10-09 (caso MB): "atualize TUDO" — enriquecimento promove o WhatsApp
+// para a FRENTE do cadastro mesmo de quem JÁ tem telefone (o disparo usa
+// cnpjPhones[0]; fixo na frente matava o disparo com WhatsApp atrás).
+
+test('QA: enriquecimento PROMOVE o WhatsApp achado na internet para a frente de lead que já tem telefone', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({ reply: 'Vou atualizar!', actions: [{ type: 'enrich_whatsapp' }] }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  const mock = (() => {
+    const orig = global.fetch;
+    const html = '<html><body><a href="https://wa.me/11987654321">Fale no WhatsApp</a></body></html>';
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('127.0.0.1')) return orig(url, opts);
+      return { ok: true, status: 200, text: async () => html };
+    };
+    return { restore() { global.fetch = orig; } };
+  })();
+  try {
+    prisma.prospect.rows.push({
+      id: 'lead-p1', orgId: 'org-1', companyName: 'Fixo Na Frente LTDA',
+      domain: 'fixo.com.br', cnpjPhones: ['+551133334444'],
+    });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Promove', channels: ['whatsapp'] });
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-p', orgId: 'org-1', campaignId: c.data.id,
+      criteriaVersion: {}, totalCount: 1, includedCount: 1, excludedCount: 0, status: 'active',
+    });
+    prisma.studioAudienceMember.rows.push(
+      { id: 'mp1', snapshotId: 'snap-p', orgId: 'org-1', prospectId: 'lead-p1', included: true, excludeReason: null }
+    );
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'atualiza os telefones da base' });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'enrichment_done');
+    assert.ok(card, 'card de enriquecimento presente');
+    assert.match(card.label, /1 WhatsApp\(s\) cadastrado/, 'promoção conta como cadastro');
+    assert.ok(card.promoted.includes('Fixo Na Frente LTDA'), 'lead aparece como promovido');
+    const lead = prisma.prospect.rows.find((r) => r.id === 'lead-p1');
+    assert.equal(lead.cnpjPhones[0], '+5511987654321', 'WhatsApp do site na FRENTE do cadastro');
+    assert.equal(lead.cnpjPhones[1], '+551133334444', 'telefone antigo preservado atrás');
+  } finally {
+    mock.restore();
+    server.close();
+  }
+});
+
+// ── 2026-10-09: diagnóstico HONESTO do disparo — lead com número no cadastro
+// cancelado por no_phone tem outro motivo (consentimento), não "SEM TELEFONE".
+
+test('QA: disparo WA separa "SEM TELEFONE" de "TEM número mas falta consentimento"', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({ reply: 'Disparando.', actions: [{ type: 'launch_campaign' }] }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    prisma.whatsAppAccount.rows.push({ id: 'wacc-h', orgId: 'org-1', sessionName: 'sess-h', status: 'CONNECTED' });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Honesto', channels: ['whatsapp'] });
+    prisma.studioCampaign.rows[0].status = 'running';
+    prisma.studioCampaign.rows[0].whatsappExecutionId = 'wexec-h';
+    prisma.whatsAppCampaign.rows.push({ id: 'wexec-h', orgId: 'org-1', studioCampaignId: c.data.id, status: 'RUNNING' });
+    prisma.studioContent.rows.push({
+      id: 'cw-h', orgId: 'org-1', campaignId: c.data.id, channel: 'whatsapp',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      whatsappText: 'Oi {{firstName}}!', emailDoc: null,
+    });
+    prisma.whatsAppCampaignContact.rows.push(
+      { id: 'wcc-h1', campaignId: 'wexec-h', prospectId: 'lead-h1', status: 'CANCELLED', cancelReason: 'no_phone' },
+      { id: 'wcc-h2', campaignId: 'wexec-h', prospectId: 'lead-h2', status: 'CANCELLED', cancelReason: 'no_phone' }
+    );
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-h', orgId: 'org-1', campaignId: c.data.id,
+      criteriaVersion: {}, totalCount: 2, includedCount: 2, excludedCount: 0, status: 'active',
+    });
+    prisma.studioAudienceMember.rows.push(
+      { id: 'mh1', snapshotId: 'snap-h', orgId: 'org-1', prospectId: 'lead-h1', included: true, excludeReason: null },
+      { id: 'mh2', snapshotId: 'snap-h', orgId: 'org-1', prospectId: 'lead-h2', included: true, excludeReason: null }
+    );
+    // h1 TEM telefone (cadastrado depois) mas SEM consentimento; h2 não tem número.
+    prisma.prospect.rows.push(
+      { id: 'lead-h1', orgId: 'org-1', companyName: 'TEM NUMERO LTDA', cnpjPhones: ['+5511990000000'], cnpjEmail: null },
+      { id: 'lead-h2', orgId: 'org-1', companyName: 'SEM NUMERO LTDA', cnpjEmail: 'h2@email.com' }
+    );
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'dispara' });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'campaign_launched');
+    assert.ok(card, 'card de launch');
+    assert.match(card.detail, /1 lead\(s\) SEM TELEFONE no cadastro/, 'só o h2 é "sem telefone"');
+    assert.match(card.detail, /SEM NUMERO LTDA/, 'h2 nomeado');
+    assert.match(card.detail, /TÊM número no cadastro mas ficaram FORA por falta de consentimento/, 'h1 com a causa real');
+    assert.match(card.detail, /TEM NUMERO LTDA/, 'h1 nomeado na nota de consentimento');
+  } finally {
+    server.close();
+  }
+});

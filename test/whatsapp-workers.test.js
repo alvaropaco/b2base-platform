@@ -401,3 +401,135 @@ test('startCampaign: pré-matriculado SEM alocação (nextSendAt null) continua 
   assert.strictEqual(result.jobsQueued, 0);
   assert.strictEqual(queues.sequence.adds.length, 0);
 });
+
+// ── 2026-10-09 (caso MB): número no CADASTRO do lead tem que chegar ao ENVIO ─
+// A matrícula do Studio cria o contato SEM phoneNumber e o disparo cancelava
+// por no_phone mesmo com cnpjPhones preenchido — a IA dizia "WhatsApp
+// cadastrado" e o disparo dizia "sem número". O worker re-lê o cadastro.
+
+test('processSequence: contato SEM snapshot de telefone é curado com o cnpjPhones do lead (mensagem sai)', async () => {
+  const prisma = makeFakePrisma();
+  prisma.db.campaigns.push({
+    id: 'camp_1', orgId: 'org_1', status: 'RUNNING', source: 'studio',
+    objective: null, offer: null, whatsappAccountId: 'acc_1',
+  });
+  prisma.db.accounts.push({ id: 'acc_1', orgId: 'org_1', sessionName: 'sess', status: 'CONNECTED' });
+  prisma.db.prospects.push({
+    id: 'pr_1', orgId: 'org_1', companyName: 'MB Máquinas', contactName: 'Ana',
+    cnpjPhones: ['+5512987654321'], // cadastrado DEPOIS do lançamento (enriquecimento)
+  });
+  // Contato criado pela matrícula do Studio: SEM phoneNumber.
+  prisma.db.contacts.push({
+    id: 'cc_1', campaignId: 'camp_1', prospectId: 'pr_1', phoneNumber: null,
+    status: 'QUEUED', currentStepIndex: 0,
+  });
+  prisma.db.steps.push({
+    id: 'step_1', campaignId: 'camp_1', orderIndex: 0,
+    messageTemplate: 'Olá {{firstName}}.', aiPersonalized: false, delayMinutes: 0,
+  });
+
+  const queues = makeFakeQueues();
+  workers._setPrismaForTests(prisma);
+  workers._setQueuesForTests(queues);
+
+  const result = await workers.processSequence({ data: { contactId: 'cc_1', stepIndex: 0 } });
+
+  assert.ok(result.messageId, `mensagem criada com o número do cadastro (${JSON.stringify(result)})`);
+  assert.strictEqual(prisma.db.contacts[0].phoneNumber, '5512987654321', 'snapshot persistido no contato');
+  assert.strictEqual(prisma.db.contacts[0].status, 'SENDING', 'seguiu para envio — não cancela por no_phone');
+  assert.strictEqual(prisma.db.messages.length, 1);
+});
+
+test('processSequence: contato sem telefone E lead sem telefone → CANCELLED no_phone (comportamento mantido)', async () => {
+  const prisma = makeFakePrisma();
+  prisma.db.campaigns.push({
+    id: 'camp_1', orgId: 'org_1', status: 'RUNNING', source: 'studio',
+    objective: null, offer: null, whatsappAccountId: 'acc_1',
+  });
+  prisma.db.accounts.push({ id: 'acc_1', orgId: 'org_1', sessionName: 'sess', status: 'CONNECTED' });
+  prisma.db.prospects.push({ id: 'pr_1', orgId: 'org_1', companyName: 'Sem Fone', cnpjPhones: [] });
+  prisma.db.contacts.push({
+    id: 'cc_1', campaignId: 'camp_1', prospectId: 'pr_1', phoneNumber: null,
+    status: 'QUEUED', currentStepIndex: 0,
+  });
+  prisma.db.steps.push({
+    id: 'step_1', campaignId: 'camp_1', orderIndex: 0,
+    messageTemplate: 'Olá {{firstName}}.', aiPersonalized: false, delayMinutes: 0,
+  });
+
+  const queues = makeFakeQueues();
+  workers._setPrismaForTests(prisma);
+  workers._setQueuesForTests(queues);
+
+  const result = await workers.processSequence({ data: { contactId: 'cc_1', stepIndex: 0 } });
+  assert.strictEqual(result.skipped, 'no_phone');
+  assert.strictEqual(prisma.db.contacts[0].status, 'CANCELLED');
+  assert.strictEqual(prisma.db.contacts[0].cancelReason, 'no_phone');
+  assert.strictEqual(prisma.db.messages.length, 0);
+});
+
+test('startCampaign: pré-matriculado ALOCADO sem phoneNumber recebe backfill do cadastro antes do job', async () => {
+  const prisma = makeFakePrisma();
+  prisma.db.campaigns.push({
+    id: 'camp_1', orgId: 'org_1', status: 'DRAFT', source: 'studio',
+    objective: null, offer: null, whatsappAccountId: 'acc_1',
+  });
+  prisma.db.accounts.push({ id: 'acc_1', orgId: 'org_1', sessionName: 'sess', status: 'CONNECTED' });
+  prisma.db.steps.push({
+    id: 'step_1', campaignId: 'camp_1', orderIndex: 0,
+    messageTemplate: 'Olá {{firstName}}.', aiPersonalized: false, delayMinutes: 0,
+  });
+  prisma.db.prospects.push({ id: 'pr_1', orgId: 'org_1', companyName: 'Ang', cnpjPhones: ['(12) 99820-0795'] });
+  // Matrícula do Studio: QUEUED + alocado pelo gate, PORÉM sem snapshot.
+  prisma.db.contacts.push({
+    id: 'cc_1', campaignId: 'camp_1', prospectId: 'pr_1', phoneNumber: null,
+    status: 'QUEUED', currentStepIndex: 0, nextSendAt: new Date('2026-10-09T12:00:00Z'),
+  });
+
+  const queues = makeFakeQueues();
+  workers._setPrismaForTests(prisma);
+  workers._setQueuesForTests(queues);
+
+  const result = await workers.startCampaign(prisma, {
+    campaignId: 'camp_1',
+    prospectIds: ['pr_1'],
+    orgId: 'org_1',
+  });
+
+  assert.strictEqual(result.jobsQueued, 1, 'job enfileirado');
+  assert.strictEqual(prisma.db.contacts[0].phoneNumber, '5512998200795', 'backfill do snapshot a partir do cadastro');
+});
+
+test('startCampaign: número curto/lixo no cadastro NÃO vira chatId inválido — fica no_phone', async () => {
+  const prisma = makeFakePrisma();
+  prisma.db.campaigns.push({
+    id: 'camp_1', orgId: 'org_1', status: 'DRAFT', source: 'studio',
+    objective: null, offer: null, whatsappAccountId: 'acc_1',
+  });
+  prisma.db.accounts.push({ id: 'acc_1', orgId: 'org_1', sessionName: 'sess', status: 'CONNECTED' });
+  prisma.db.steps.push({
+    id: 'step_1', campaignId: 'camp_1', orderIndex: 0,
+    messageTemplate: 'Olá {{firstName}}.', aiPersonalized: false, delayMinutes: 0,
+  });
+  prisma.db.prospects.push({ id: 'pr_1', orgId: 'org_1', companyName: 'Lixo', cnpjPhones: ['3232-1212'] });
+  prisma.db.contacts.push({
+    id: 'cc_1', campaignId: 'camp_1', prospectId: 'pr_1', phoneNumber: null,
+    status: 'QUEUED', currentStepIndex: 0, nextSendAt: new Date('2026-10-09T12:00:00Z'),
+  });
+
+  const queues = makeFakeQueues();
+  workers._setPrismaForTests(prisma);
+  workers._setQueuesForTests(queues);
+
+  const result = await workers.startCampaign(prisma, {
+    campaignId: 'camp_1',
+    prospectIds: ['pr_1'],
+    orgId: 'org_1',
+  });
+
+  // 8 dígitos sem DDD é inutilizável para WhatsApp: o contato segue o fluxo
+  // (job enfileirado), mas o worker do envio cura/re-cancela — aqui o
+  // backfill NÃO grava o lixo no snapshot.
+  assert.strictEqual(result.jobsQueued, 1);
+  assert.strictEqual(prisma.db.contacts[0].phoneNumber, null, 'lixo não é promovido a snapshot');
+});
