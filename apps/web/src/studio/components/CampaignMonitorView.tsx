@@ -342,6 +342,19 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
             )}
           </section>
 
+          {/* Muro de no_phone visível (2026-10-09, caso do dono: o funil em 0
+             com a fila cheia de "Cancelado" parecia monitor quebrado — era a
+             base sem telefone; o monitor agora diz isso de cara). */}
+          {(() => {
+            const semTelefone = rows.filter((r) => r.status === 'CANCELLED' && r.cancelReason === 'no_phone').length;
+            if (semTelefone <= 0) return null;
+            return (
+              <section className="cockpit-glass mb-4 rounded-2xl border border-amber-300/60 bg-amber-50/70 p-3 text-xs text-amber-900">
+                <strong>{semTelefone} lead(s) ficaram fora do WhatsApp por NÃO ter telefone no cadastro</strong> — a plataforma não inventa número: o disparo só sai para quem tem. Rode o enriquecimento ("enriquece minha base" no chat, procura o WhatsApp na internet), atualize os telefones no cadastro ou dispare por e-mail para esses.
+              </section>
+            );
+          })()}
+
           {/* Fila por lead — QUEM foi/será contactado, mais recente primeiro. */}
           <section>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">

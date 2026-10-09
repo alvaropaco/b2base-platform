@@ -34,6 +34,14 @@ function registerAnalyticsRoutes(router, context) {
     try {
       const { orgId } = req.studio;
       const campaign = await loadCampaign(prisma, orgId, req.params.id);
+      // P0 2026-10-09 (dono: monitor em 0 com mensagens COMPLETED na fila): o
+      // funil não pode depender do job de 5min — se o Bull/Redis morrer o
+      // rollup morre em silêncio e o monitor mentia para sempre. Rollup é
+      // idempotente (upsert por @@unique): recalcular NA LEITURA custa duas
+      // queries e o monitor passa a dizer a verdade no instante da visita.
+      await analytics.rollupDaily(prisma, campaign.id).catch((err) =>
+        console.error('[studio:analytics] rollup on-demand falhou (seguindo com o rollup existente):', err.message)
+      );
       let rows = await prisma.studioMetricDaily.findMany({ where: { campaignId: campaign.id } });
 
       // Corte por canal (FR-065).
@@ -76,6 +84,9 @@ function registerAnalyticsRoutes(router, context) {
     try {
       const { orgId } = req.studio;
       const campaign = await loadCampaign(prisma, orgId, req.params.id);
+      await analytics.rollupDaily(prisma, campaign.id).catch((err) =>
+        console.error('[studio:analytics] rollup on-demand (daily) falhou:', err.message)
+      );
       const rows = await prisma.studioMetricDaily.findMany({ where: { campaignId: campaign.id } });
       res.json({ success: true, data: rows, count: rows.length });
     } catch (err) {

@@ -105,3 +105,47 @@ test('rollup: canal WHATSAPP conta envio, entrega, leitura, resposta e descadast
   assert.equal(row.unsubs, 1, 'OPTED_OUT conta descadastro');
   assert.equal(row.bounces, 1, 'FAILED conta como falha de entrega');
 });
+
+// ── P0 2026-10-09 (dono: "monitor em 0" com 2 mensagens COMPLETED na fila) ──
+// O funil não pode depender do job de 5min (Bull/Redis morto = mentira para
+// sempre): o GET da rota tem que RECALCULAR o rollup na própria leitura.
+
+test('rota GET /analytics recalcula o rollup on-demand — sem job, Enviados reflete a fila', async () => {
+  const express = require('express');
+  const { registerAnalyticsRoutes: analyticsRoutes } = require('../studio/analytics-routes');
+
+  const prisma = basePrisma();
+  prisma.studioCampaign.rows[0].channels = ['whatsapp'];
+  prisma.studioCampaign.rows[0].whatsappExecutionId = 'wexec-1';
+  const dia = new Date('2026-10-09T18:56:00Z');
+  prisma.whatsAppCampaignContact.rows.push(
+    { id: 'wcc-ok1', campaignId: 'wexec-1', prospectId: 'l1', status: 'COMPLETED', lastSentAt: dia, phoneNumber: '5511987654321' },
+    { id: 'wcc-ok2', campaignId: 'wexec-1', prospectId: 'l2', status: 'COMPLETED', lastSentAt: dia, phoneNumber: '5511987654322' },
+    { id: 'wcc-np1', campaignId: 'wexec-1', prospectId: 'l3', status: 'CANCELLED', cancelReason: 'no_phone' }
+  );
+  prisma.whatsAppMessage.rows.push(
+    { id: 'wm-ok1', campaignContactId: 'wcc-ok1', status: 'SENT', createdAt: dia },
+    { id: 'wm-ok2', campaignContactId: 'wcc-ok2', status: 'SENT', createdAt: dia }
+  );
+
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => { req.studio = { orgId: 'org-1', userId: 'u1' }; next(); });
+  analyticsRoutes(app, { prisma });
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/campaigns/camp-a/analytics`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.data.funnel.sent, 2, 'Enviados 2 (antes: 0 para sempre até o job rodar)');
+    // Nenhuma linha de rollup existia ANTES do GET — a rota materializou.
+    assert.ok(prisma.studioMetricDaily.rows.length > 0, 'rollup materializado na leitura');
+    // Idempotente: segunda leitura não duplica.
+    await fetch(`http://127.0.0.1:${server.address().port}/campaigns/camp-a/analytics`);
+    assert.equal(prisma.studioMetricDaily.rows.filter((r) => r.channel === 'whatsapp').length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
