@@ -95,7 +95,8 @@ async function startServer({ orgPlan = 'premium', llmImpl, overrides: extraOverr
   prisma.organization.rows.push({ id: 'org-1', plan: orgPlan });
   prisma.commercialSettings.rows.push({ orgId: 'org-1', productDescription: 'software de prospecção B2B' });
   app.use((req, _res, next) => {
-    req.user = { id: 'user-1', orgId: 'org-1' };
+    // Testes multi-tenant: header x-test-org simula outro usuário/org.
+    req.user = { id: 'user-1', orgId: req.headers['x-test-org'] || 'org-1' };
     next();
   });
   app.use('/api/studio', createStudioRouter(prisma, {
@@ -115,10 +116,10 @@ async function startServer({ orgPlan = 'premium', llmImpl, overrides: extraOverr
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   const base = `http://127.0.0.1:${server.address().port}`;
-  const api = async (method, path, body) => {
+  const api = async (method, path, body, extraHeaders = {}) => {
     const res = await fetch(`${base}/api/studio${path}`, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...extraHeaders },
       body: body ? JSON.stringify(body) : undefined,
     });
     return { res, body: await res.json() };
@@ -2063,3 +2064,77 @@ test('QA: disparo WA separa "SEM TELEFONE" de "TEM número mas falta consentimen
     server.close();
   }
 });
+
+// ── 2026-10-09: ISOLAMENTO multi-tenant do enriquecimento — a busca roda
+// SÓ na base do usuário; lead de outra organização nunca é citado nem tocado.
+
+test('QA: enriquecimento NÃO mistura bases — org-2 não vê nem grava lead da org-1', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({ reply: 'Vou procurar!', actions: [{ type: 'enrich_whatsapp' }] }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  const mock = (() => {
+    const orig = global.fetch;
+    const html = '<html><body><a href="https://wa.me/11987654321">Fale no WhatsApp</a></body></html>';
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('127.0.0.1')) return orig(url, opts);
+      return { ok: true, status: 200, text: async () => html };
+    };
+    return { restore() { global.fetch = orig; } };
+  })();
+  try {
+    // org-1 tem a "ACME Industria"; org-2 NÃO tem esse lead.
+    prisma.prospect.rows.push(
+      { id: 'lead-org1', orgId: 'org-1', companyName: 'ACME Industria', domain: 'acme.com.br' },
+      { id: 'lead-org2', orgId: 'org-2', companyName: 'Comercio Do Usuario LTDA', domain: 'comerciousuario.com.br' }
+    );
+    // Campanha da org-2 com audiência SÓ do lead dela.
+    const { res, body } = await api('POST', '/campaigns', { name: 'Da Org 2', channels: ['whatsapp'] }, { 'x-test-org': 'org-2' });
+    assert.equal(res.status, 201, 'campanha criada na org-2');
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-iso', orgId: 'org-2', campaignId: c_id(body),
+      criteriaVersion: {}, totalCount: 1, includedCount: 1, excludedCount: 0, status: 'active',
+    });
+    prisma.studioAudienceMember.rows.push(
+      { id: 'm-iso', snapshotId: 'snap-iso', orgId: 'org-2', prospectId: 'lead-org2', included: true, excludeReason: null }
+    );
+
+    const chat = await api('POST', `/campaigns/${c_id(body)}/chat`, { message: 'enriquece minha base com whatsapp' }, { 'x-test-org': 'org-2' });
+    assert.equal(chat.res.status, 200);
+    const card = chat.body.data.cards.find((card) => card.type === 'enrichment_done');
+    assert.ok(card, 'card de enriquecimento presente');
+    assert.ok(!JSON.stringify(card).includes('ACME'), 'lead da org-1 NÃO aparece no card da org-2');
+    assert.ok(card.detail.includes('Comercio Do Usuario'), 'lead da própria org é enriquecido');
+    assert.ok(card.detail.includes('Escopo: procurei na SUA base'), 'card prova o escopo da busca');
+    const lead2 = prisma.prospect.rows.find((r) => r.id === 'lead-org2');
+    assert.equal(lead2.cnpjPhones[0], '+5511987654321', 'lead da org-2 ganhou o WhatsApp');
+    const lead1 = prisma.prospect.rows.find((r) => r.id === 'lead-org1');
+    assert.equal(lead1.cnpjPhones, undefined, 'lead da org-1 NÃO foi tocado');
+
+    // Simetria: da org-1, a mesma busca não toca o lead da org-2.
+    const chat1 = await api('POST', '/campaigns', { name: 'Da Org 1', channels: ['whatsapp'] });
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-iso1', orgId: 'org-1', campaignId: c_id(chat1.body),
+      criteriaVersion: {}, totalCount: 1, includedCount: 1, excludedCount: 0, status: 'active',
+    });
+    prisma.studioAudienceMember.rows.push(
+      { id: 'm-iso1', snapshotId: 'snap-iso1', orgId: 'org-1', prospectId: 'lead-org1', included: true, excludeReason: null }
+    );
+    const chatOrg1 = await api('POST', `/campaigns/${c_id(chat1.body)}/chat`, { message: 'enriquece minha base' });
+    const card1 = chatOrg1.body.data.cards.find((card) => card.type === 'enrichment_done');
+    assert.ok(card1, 'card da org-1');
+    assert.ok(!JSON.stringify(card1).includes('Comercio Do Usuario'), 'lead da org-2 NÃO aparece para a org-1');
+    assert.equal(prisma.prospect.rows.find((r) => r.id === 'lead-org1').cnpjPhones[0], '+5511987654321', 'org-1 enriquece o lead DELA');
+    assert.equal(lead2.cnpjPhones[0], '+5511987654321', 'org-2 segue intocada pela rodada da org-1');
+  } finally {
+    mock.restore();
+    server.close();
+  }
+});
+
+function c_id(body) { return body.data.id; }

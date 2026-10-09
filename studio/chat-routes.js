@@ -304,7 +304,7 @@ async function currentExtras(prisma, campaign) {
       });
       includedIds = members.map((m) => m.prospectId);
       const prospects = includedIds.length
-        ? await prisma.prospect.findMany({ where: { id: { in: includedIds } }, select: { id: true, companyName: true } })
+        ? await prisma.prospect.findMany({ where: { orgId: campaign.orgId, id: { in: includedIds } }, select: { id: true, companyName: true } })
         : [];
       const byId = new Map(prospects.map((p) => [p.id, p.companyName]));
       extras.audienceLeadSample = includedIds.map((id) => ({ id, empresa: byId.get(id) || 'lead' }));
@@ -366,7 +366,7 @@ async function currentExtras(prisma, campaign) {
       .slice(0, 5);
     if (hot.length > 0) {
       const prospectIds = [...new Set(hot.map((r) => r.prospectId))];
-      const prospects = await prisma.prospect.findMany({ where: { id: { in: prospectIds } } });
+      const prospects = await prisma.prospect.findMany({ where: { orgId, id: { in: prospectIds } } });
       const byId = new Map(prospects.map((p) => [p.id, p]));
       extras.respostasQuentes = hot.map((r) => {
         const p = byId.get(r.prospectId);
@@ -1114,7 +1114,7 @@ function registerChatRoutes(router, context) {
           if (waContacts.length > 0) {
             const prospectIds = [...new Set(waContacts.map((c) => c.prospectId))];
             const pros = await prisma.prospect.findMany({
-              where: { id: { in: prospectIds } },
+              where: { orgId, id: { in: prospectIds } },
               select: { id: true, companyName: true, cnpjEmail: true, cnpjPhones: true },
             });
             let consented = new Set();
@@ -1618,7 +1618,7 @@ function registerChatRoutes(router, context) {
           .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
           .slice(0, 5);
         const prospectIds = [...new Set(rows.map((r) => r.prospectId))];
-        const prospects = prospectIds.length ? await prisma.prospect.findMany({ where: { id: { in: prospectIds } } }) : [];
+        const prospects = prospectIds.length ? await prisma.prospect.findMany({ where: { orgId, id: { in: prospectIds } } }) : [];
         const byId = new Map(prospects.map((p) => [p.id, p]));
         const nameOf = (r) => byId.get(r.prospectId)?.companyName || 'lead';
         const needsReview = rows.filter((r) => r.needsHumanReview).length;
@@ -2187,6 +2187,9 @@ function registerChatRoutes(router, context) {
 
         const lines = [];
         const cadastrados = [...found, ...promoted];
+        // Escopo EXPLÍCITO no card: a busca foi SÓ sobre a base do usuário —
+        // nenhum lead de outra organização entra aqui (isolamento por orgId).
+        lines.unshift(`🔎 Escopo: procurei na SUA base — ${candidates.length} lead(s) no raio desta campanha/org (${semNumero.length} sem telefone, ${comNumero.length} para atualizar), lote de ${lote.length}.`);
         if (cadastrados.length) {
           lines.push(cadastrados.map((f) => {
             const trocou = f.anterior ? ` (substituiu ${f.anterior} na frente)` : '';
