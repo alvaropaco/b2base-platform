@@ -726,6 +726,7 @@ test('enqueueBatch WA: CANCELLED por no_phone ressuscita quando o lead GANHA tel
   const revived = prisma.whatsAppCampaignContact.rows.find((r) => r.id === 'wcc-fone');
   assert.equal(revived.status, 'QUEUED', 'ressuscitado');
   assert.equal(revived.cancelReason, null, 'motivo limpo');
+  assert.equal(revived.phoneNumber, '5512982007955', 'snapshot do telefone preenchido — sem isso o worker re-cancela por no_phone');
   const still = prisma.whatsAppCampaignContact.rows.find((r) => r.id === 'wcc-semtel');
   assert.equal(still.status, 'CANCELLED', 'sem telefone continua fora');
   assert.equal(still.cancelReason, 'no_phone');

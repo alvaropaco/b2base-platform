@@ -531,8 +531,10 @@ async function enqueueBatch(prisma, { campaign, channel, prospectIds, now = new 
           select: { id: true, cnpjPhones: true },
         })
         .catch(() => []);
-      const comTelefone = new Set(
-        prospects.filter((p) => normalizePhone((p.cnpjPhones || [])[0])).map((p) => p.id)
+      const phoneByProspect = new Map(
+        prospects
+          .map((p) => [p.id, normalizePhone((p.cnpjPhones || [])[0])])
+          .filter(([, phone]) => Boolean(phone))
       );
       let consented = new Set();
       try {
@@ -542,17 +544,23 @@ async function enqueueBatch(prisma, { campaign, channel, prospectIds, now = new 
           cancelledNoPhone.map((c) => c.prospectId)
         );
       } catch (_e) { /* sem o módulo em alguns harnesses: não ressuscita */ }
-      const revive = cancelledNoPhone
-        .filter((c) => comTelefone.has(c.prospectId) && consented.has(c.prospectId))
-        .map((c) => c.id);
-      if (revive.length > 0) {
-        await waContactModel(prisma)
-          .updateMany({
-            where: { id: { in: revive } },
-            data: { status: 'QUEUED', cancelReason: null, nextSendAt: null },
-          })
-          .catch(() => {});
-        console.warn(`[studio:bridge] ${revive.length} contato(s) CANCELADO(s) por no_phone ressuscitado(s) — o lead agora tem telefone e consentimento`);
+      const revives = cancelledNoPhone
+        .filter((c) => phoneByProspect.has(c.prospectId) && consented.has(c.prospectId))
+        .map((c) => ({ id: c.id, phoneNumber: phoneByProspect.get(c.prospectId) }));
+      if (revives.length > 0) {
+        // O telefone vai DENTRO do contato: o worker normaliza o snapshot
+        // (contact.phoneNumber) no envio — ressuscitar sem ele devolvia o
+        // lead para CANCELLED/no_phone na primeira passada (caso do dono,
+        // 09/10: nextSendAt marcado e re-cancelado 291ms depois).
+        for (const rev of revives) {
+          await waContactModel(prisma)
+            .update({
+              where: { id: rev.id },
+              data: { status: 'QUEUED', cancelReason: null, nextSendAt: null, phoneNumber: rev.phoneNumber },
+            })
+            .catch(() => {});
+        }
+        console.warn(`[studio:bridge] ${revives.length} contato(s) CANCELADO(s) por no_phone ressuscitado(s) com telefone — o lead agora tem número e consentimento`);
       }
     }
     enrolled = await waContactModel(prisma).findMany({
