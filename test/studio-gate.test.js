@@ -731,3 +731,45 @@ test('enqueueBatch WA: CANCELLED por no_phone ressuscita quando o lead GANHA tel
   assert.equal(still.status, 'CANCELLED', 'sem telefone continua fora');
   assert.equal(still.cancelReason, 'no_phone');
 });
+
+test('enqueueBatch WA: SENDING com slot vencido re-enfileira a mensagem PENDING (cura de presos)', async () => {
+  // Bull falso: a cura adiciona o job de reenvio numa fila real — sem o stub,
+  // o Bull vivo retenta Redis (127.0.0.1) e segura o processo do teste.
+  const queuesMod = require('../outreach-queues');
+  class FakeBullQueue {
+    add() { return Promise.resolve({ id: 'fake' }); }
+    process() {}
+    getRepeatableJobs() { return []; }
+    getJobCounts() { return {}; }
+    async close() {}
+  }
+  queuesMod._setBullForTests(FakeBullQueue);
+  const prisma = seed(createFakePrisma());
+  prisma.whatsappAccount.rows.push({ id: 'wacc-1', orgId: 'org-1', status: 'CONNECTED' });
+  prisma.studioReputationAccount.rows.push({ id: 'acc-wa', orgId: 'org-1', channel: 'unified', balance: 50, floor: 0, ceiling: 50, rampStage: 0, emailSentToday: 0, whatsappSentToday: 0, usageDay: null, domainAuthStatus: 'verified' });
+  prisma.studioCampaign.rows.push(campaignFixture({ channels: ['whatsapp'], emailExecutionId: null, whatsappExecutionId: 'exec-1' }));
+  // SENDING com slot VENCIDO (nextSendAt há 2h) e mensagem PENDING: o job
+  // morreu entre marcar e o resultado do WAHA.
+  prisma.whatsAppCampaignContact.rows.push(
+    { id: 'wcc-stuck', campaignId: 'exec-1', prospectId: 'lead-1', status: 'SENDING', phoneNumber: '5511987654321', nextSendAt: new Date(Date.now() - 2 * 3600 * 1000) }
+  );
+  prisma.whatsAppMessage.rows.push(
+    { id: 'wm-stuck', campaignContactId: 'wcc-stuck', status: 'PENDING', createdAt: new Date(Date.now() - 2 * 3600 * 1000) }
+  );
+  // lead com telefone e consentimento para o fluxo do teste anterior reviver/remejar
+  prisma.prospect.rows.push({ id: 'lead-1', orgId: 'org-1', cnpjPhones: ['5511987654321'] });
+  prisma.studioLeadConsent.rows.push({ id: 'cons-1', orgId: 'org-1', prospectId: 'lead-1', channel: 'whatsapp', source: 'chat' });
+
+  const enqueued = [];
+  const result = await bridge.enqueueBatch(prisma, {
+    campaign: prisma.studioCampaign.rows[0],
+    channel: 'whatsapp',
+    prospectIds: ['lead-1'],
+    enqueue: async (channel, ids) => enqueued.push({ channel, ids }),
+  });
+  // O contato SENDING não entra no filtro (só QUEUED) — mas a cura não pode
+  // lançar ReferenceError nem duplicar alocação.
+  assert.ok(result, 'enqueueBatch completa sem erro');
+  const stuck = prisma.whatsAppCampaignContact.rows.find((r) => r.id === 'wcc-stuck');
+  assert.equal(stuck.status, 'SENDING', 'SENDING aguarda o reprocesso do send job (não duplica)');
+});

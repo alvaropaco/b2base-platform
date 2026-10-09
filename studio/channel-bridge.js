@@ -563,35 +563,46 @@ async function enqueueBatch(prisma, { campaign, channel, prospectIds, now = new 
         console.warn(`[studio:bridge] ${revives.length} contato(s) CANCELADO(s) por no_phone ressuscitado(s) com telefone — o lead agora tem número e consentimento`);
       }
     }
-    // Cura de SENDING presos (2026-10-09: 46 acumulados em produção — o job
-    // morre entre marcar SENDING e o resultado; >24h parado é lixo: com
-    // mensagem já enviada → COMPLETED, sem mensagem → volta a QUEUED).
+    // Cura de SENDING presos (2026-10-09, caso real: 46 acumulados — o job
+    // morre entre marcar SENDING e o resultado, e retries tocam updatedAt, então
+    // o critério é o SLOT VENCIDO: SENDING com nextSendAt há >30min). Com
+    // mensagem PENDING → re-enfileira o ENVIO (o processador reconcilia conta/
+    // telefone); sem mensagem nenhuma → volta a QUEUED (órfão).
     const stuckSending = await waContactModel(prisma)
       .findMany({
         where: {
           campaignId: whatsappExecutionId,
           status: 'SENDING',
-          updatedAt: { lt: new Date(Date.now() - 24 * 3600 * 1000) },
+          nextSendAt: { lt: new Date(Date.now() - 30 * 60 * 1000) },
         },
         select: { id: true },
       })
       .catch(() => []);
     if (stuckSending.length > 0) {
-      const withMsg = new Set(
-        (await prisma.whatsAppMessage.findMany({
-          where: { campaignContactId: { in: stuckSending.map((c) => c.id) } },
-          select: { campaignContactId: true },
-        }).catch(() => [])).map((m) => m.campaignContactId)
-      );
+      const messages = await prisma.whatsAppMessage
+        .findMany({
+          where: { campaignContactId: { in: stuckSending.map((c) => c.id) }, status: 'PENDING' },
+          select: { id: true, campaignContactId: true },
+        })
+        .catch(() => []);
+      const pendingByContact = new Map(messages.map((m) => [m.campaignContactId, m.id]));
+      const { createQueue } = require('../outreach-queues');
+      const sendQueue = createQueue('whatsapp:send');
       for (const c of stuckSending) {
-        await waContactModel(prisma)
-          .update({
-            where: { id: c.id },
-            data: withMsg.has(c.id) ? { status: 'COMPLETED' } : { status: 'QUEUED', nextSendAt: null },
-          })
-          .catch(() => {});
+        const pendingMessageId = pendingByContact.get(c.id);
+        if (pendingMessageId) {
+          // Race com timeout: Redis ausente (testes) não pode pendurar o lote.
+          await Promise.race([
+            sendQueue.add({ messageId: pendingMessageId }, { attempts: 3, jobId: `cure-${pendingMessageId}` }),
+            new Promise((resolve) => setTimeout(resolve, 3000)),
+          ]).catch(() => {});
+        } else {
+          await waContactModel(prisma)
+            .update({ where: { id: c.id }, data: { status: 'QUEUED', nextSendAt: null } })
+            .catch(() => {});
+        }
       }
-      console.warn(`[studio:bridge] ${stuckSending.length} contato(s) SENDING preso(s) >24h reconciliado(s)`);
+      console.warn(`[studio:bridge] ${stuckSending.length} contato(s) SENDING com slot vencido reconciliado(s) (${pendingByContact.size} re-enfileirado(s))`);
     }
     enrolled = await waContactModel(prisma).findMany({
       where: { campaignId: whatsappExecutionId, prospectId: { in: requestedIds }, status: 'QUEUED', nextSendAt: null },
