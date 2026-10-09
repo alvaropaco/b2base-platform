@@ -354,8 +354,26 @@ async function processSend(job) {
     return { already_sent: true };
   }
 
-  let account = message.conversation.whatsappAccount;
-  if (!account) throw new Error('Conta WhatsApp não conectada');
+  // Conversa pode estar ÓRFÃ de conta (criada antes do pareamento ou com a
+  // conta recriada — caso MB maquinas, 09/10: whatsappAccountId null → o
+  // disparo morria com "Conta WhatsApp não conectada" para sempre, mesmo com
+  // a sessão CONNECTED). Resolve a conta CONECTADA da organização e RELINKA a
+  // conversa; só falha de verdade se não houver conta conectada alguma.
+  let account = message.conversation && message.conversation.whatsappAccount;
+  if (!account) {
+    account = await prisma.whatsAppAccount.findFirst({
+      where: { orgId: message.orgId || campaign.orgId, status: ACCOUNT_STATUS.CONNECTED },
+    });
+    if (account && message.conversationId) {
+      await prisma.whatsAppConversation
+        .update({ where: { id: message.conversationId }, data: { whatsappAccountId: account.id } })
+        .catch(() => {});
+      if (message.conversation) message.conversation.whatsappAccountId = account.id;
+    }
+  }
+  if (!account) {
+    throw new Error('Nenhuma conta WhatsApp CONECTADA nesta organização — pareie o WhatsApp (QR no chat) para enviar.');
+  }
 
   // Status no banco pode estar defasado (evento DISCONNECTED transitório do
   // WAHA): reconcilia antes de falhar o envio.

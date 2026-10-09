@@ -44,6 +44,7 @@ const QUEUE_STATUS_LABEL: Record<string, string> = {
   REPLIED: 'Respondeu',
   CANCELLED: 'Cancelado',
   FAILED: 'Falhou',
+  SENDING: 'Enviando',
 };
 
 /** Por que o lead saiu da fila — "Cancelado" seco deixa o dono sem resposta. */
