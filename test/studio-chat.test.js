@@ -1896,3 +1896,63 @@ test('QA: "cancela a campanha" → gate de confirmação e, confirmado, para os 
     server.close();
   }
 });
+
+// ── 2026-10-09: escolha de canais por campanha (set_channels) ────────────────
+
+test('QA: "dispara só pelo whatsapp" → set_channels troca os canais; em voo pede confirmação', async () => {
+  let turno = 0;
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      turno += 1;
+      const actions = turno === 1
+        ? [{ type: 'set_channels', channels: ['whatsapp'] }]
+        : [{ type: 'set_channels', channels: ['whatsapp'], confirmed: true }];
+      return { content: JSON.stringify({ reply: 'Ajustando!', actions }) };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Canais', channels: ['email', 'whatsapp'] });
+    prisma.studioCampaign.rows[0].status = 'running';
+    prisma.studioCampaign.rows[0].whatsappExecutionId = 'wexec-sc';
+    prisma.whatsappAccount.rows.push({ id: 'wa-1', orgId: 'org-1', status: 'CONNECTED' });
+
+    // Em voo: SEM confirmação → gate, canais intactos.
+    const gate = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'dispara só pelo whatsapp' });
+    const gateCard = gate.body.data.cards.find((card) => card.type === 'confirm_change');
+    assert.ok(gateCard, 'mudança de canais em voo pede confirmação');
+    assert.equal(gateCard.kind, 'canais');
+    assert.equal(prisma.studioCampaign.rows[0].channels.join(','), 'email,whatsapp', 'nada mudado no gate');
+
+    // Confirmado → canais trocados.
+    const done = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'pode' });
+    const card = done.body.data.cards.find((card) => card.type === 'channels_updated');
+    assert.ok(card, 'card de canais atualizados');
+    assert.deepEqual(card.channels, ['whatsapp']);
+    assert.deepEqual(prisma.studioCampaign.rows[0].channels, ['whatsapp']);
+  } finally {
+    server.close();
+  }
+});
+
+test('QA: rascunho troca canais direto (fricção zero) e valida os valores', async () => {
+  const impl = async () => ({ content: JSON.stringify({ reply: 'ok', actions: [{ type: 'none' }] }) });
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Rascunho canais', channels: ['whatsapp'] });
+    const ok = await api('POST', `/campaigns/${c.data.id}/actions`, { type: 'set_channels', params: { channels: ['email', 'whatsapp'] } });
+    assert.equal(ok.res.status, 200);
+    assert.equal(ok.body.data.card.type, 'channels_updated');
+    assert.deepEqual(prisma.studioCampaign.rows[0].channels, ['email', 'whatsapp']);
+
+    const bad = await api('POST', `/campaigns/${c.data.id}/actions`, { type: 'set_channels', params: { channels: ['sms'] } });
+    assert.equal(bad.res.status, 400);
+    assert.equal(bad.body.error, 'INVALID_ACTION_PARAMS');
+
+    const empty = await api('POST', `/campaigns/${c.data.id}/actions`, { type: 'set_channels', params: {} });
+    assert.equal(empty.res.status, 400);
+  } finally {
+    server.close();
+  }
+});

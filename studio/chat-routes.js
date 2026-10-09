@@ -77,6 +77,8 @@ function actionParams(action) {
       return {}; // idempotency none — rodar de novo é intencional (base cresce)
     case 'cancel_campaign':
       return {}; // idempotency none; campaignId entra no handler via fallback da campanha aberta
+    case 'set_channels':
+      return { channels: Array.isArray(action.channels) ? action.channels.map(String) : null };
     case 'create_lead':
       return {
         companyName: action.companyName || null,
@@ -1684,7 +1686,7 @@ function registerChatRoutes(router, context) {
             '**Jornada da campanha aberta** — objetivo, audiência por linguagem natural, ajuste fino de leads, captura de leads novos, conteúdo (gerar, editar e MOSTRAR aqui no chat) e agendamento.\n' +
             '**Aprovação e disparo** — aprovar a campanha pelo mesmo fluxo do Pré-voo, ENVIAR UMA MENSAGEM DE TESTE para o seu WhatsApp ou e-mail antes de valer, COLOCAR EM VOO na hora (disparo único, e-mail e WhatsApp — sem perguntas de agenda) e mostrar o que falta para poder disparar (saldo, certificado).\n' +
             '**Canais** — conectar a conta de e-mail de disparo (Resend com a sua API key ou SMTP com senha de app), DESCONECTAR a conta de envio (disconnect_email — sempre confirmo antes), mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
-            '**Campanhas em voo** — CANCELAR a campanha pelo chat (cancel_campaign — para os disparos, estorna o não enviado e cancela a fila; sempre confirmo antes). **Leads** — consultar e editar dados de empresa/contato, CADASTRAR lead novo com os dados que você passar (create_lead), ENRIQUECER a base procurando o WhatsApp das empresas na internet (enrich_whatsapp) e cadastrar nos leads, mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
+            '**Campanhas em voo** — CANCELAR a campanha pelo chat (cancel_campaign — para os disparos, estorna o não enviado e cancela a fila; sempre confirmo antes) e ESCOLHER os canais de disparo a qualquer momento: e-mail + WhatsApp, só WhatsApp ou só e-mail (set_channels). **Leads** — consultar e editar dados de empresa/contato, CADASTRAR lead novo com os dados que você passar (create_lead), ENRIQUECER a base procurando o WhatsApp das empresas na internet (enrich_whatsapp) e cadastrar nos leads, mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
             'Não faço ainda: publicar os registros DNS no provedor do domínio (eu mostro, você publica) e ler a caixa de entrada inteira fora das respostas classificadas.',
         };
 
@@ -2224,6 +2226,29 @@ function registerChatRoutes(router, context) {
         };
       }
 
+      case 'set_channels': {
+        // Escolha de CANAIS por campanha (pedido do dono, 2026-10-09):
+        // e-mail + WhatsApp, só WhatsApp ou só e-mail — o usuário decide a
+        // qualquer momento; o disparo segue os canais declarados ∩ conectados.
+        const channels = action.channels.map((c) => String(c).trim().toLowerCase());
+        const updated = await prisma.studioCampaign.update({
+          where: { id: campaign.id },
+          data: { channels },
+        });
+        Object.assign(campaign, updated);
+        const labelCanais = channels.includes('email') && channels.includes('whatsapp')
+          ? 'e-mail + WhatsApp'
+          : channels[0] === 'email' ? 'só e-mail' : 'só WhatsApp';
+        return {
+          type: 'channels_updated',
+          label: `Canais de disparo: ${labelCanais}`,
+          detail:
+            `A campanha **${campaign.name}** vai disparar por **${labelCanais}**. ` +
+            'O disparo usa o canal só se ele tiver CONTA CONECTADA e conteúdo gerado — me peça "ver o saldo" para conferir o que falta.',
+          channels,
+        };
+      }
+
       case 'none':
       default:
         return null;
@@ -2282,6 +2307,12 @@ async function confirmRequired(type, { campaign, prisma, params = {} }) {
       if (!['running', 'scheduled', 'paused', 'approved'].includes(campaign.status)) return null;
       return 'cancelamento';
     }
+    case 'set_channels': {
+      // Mudança de canais EM VOO/AGENDADA altera as próximas filas — pede
+      // confirmação; em rascunho/aprovada troca direto (fricção zero).
+      if (!['running', 'scheduled'].includes(campaign.status)) return null;
+      return 'canais';
+    }
     case 'disconnect_email': {
       const where = {
         tenantId: campaign.orgId,
@@ -2320,6 +2351,7 @@ const CONFIRM_COPY = {
   audiencia: 'vou SUBSTITUIR a audiência decidida — a fila sincroniza e o que já saiu não volta',
   supressao: 'vou REABILITAR esse contato — ele volta a poder receber disparos de e-mail',
   cancelamento: 'vou CANCELAR a campanha — os disparos param, a fila pendente é cancelada com estorno; a campanha e os leads continuam na base',
+  canais: 'vou ALTERAR os canais de disparo desta campanha — as próximas filas seguem SÓ os canais escolhidos',
   desconexao: 'vou DESCONECTAR a conta de envio — ela para de poder disparar até você conectar outra',
 };
 
@@ -2747,6 +2779,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     enrich_whatsapp: 'Procurando WhatsApps das empresas na internet…',
     create_lead: 'Cadastrando o lead na sua base…',
     cancel_campaign: 'Cancelando a campanha…',
+    set_channels: 'Ajustando os canais de disparo…',
     show_capabilities: 'Organizando o que eu sei fazer…',
   };
 

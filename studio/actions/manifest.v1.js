@@ -116,6 +116,10 @@ const ACTIONS_V1 = {
   // PARA os disparos, estorna o que não saiu e cancela a fila; a campanha e
   // os leads continuam na base. Sempre confirmado.
   cancel_campaign: { version: 1, idempotency: 'none', description: 'Cancela a campanha em voo/agendada — para os disparos, estorna o não enviado e cancela a fila (a campanha e os leads continuam na base)' },
+  // Escolha de CANAIS por campanha (pedido do dono, 2026-10-09): e-mail +
+  // WhatsApp, só WhatsApp ou só e-mail. idempotency 'none': voltar atrás é
+  // intencional. Em voo/agendada passa pelo gate de confirmação.
+  set_channels: { version: 1, idempotency: 'none', description: 'Define os canais de disparo da campanha (email e whatsapp, só whatsapp ou só email)' },
 };
 
 /**
@@ -317,6 +321,17 @@ function validate(action, params = {}) {
     case 'remove_suppression': {
       if (!params.email || !String(params.email).trim()) {
         const err = new Error(`${action} exige \`email\` (o endereço na lista de supressão).`);
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
+    case 'set_channels': {
+      const chs = Array.isArray(params.channels) ? params.channels.map(String) : [];
+      const valid = chs.length > 0 && chs.every((c) => ['email', 'whatsapp'].includes(c));
+      if (!valid) {
+        const err = new Error('set_channels exige `channels` — array com "email", "whatsapp" ou os dois.');
         err.code = 'INVALID_ACTION_PARAMS';
         err.status = 400;
         throw err;
