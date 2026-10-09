@@ -90,9 +90,10 @@ function currentRailStep(detail: {
   return 'balance';
 }
 
-/** Canal saudável = acima do piso do Orçamento de Reputação (FR-14). */
+/** Carteira saudável = há saldo DISPONÍVEL (o gate só bloqueia com 0 —
+ *  2026-10-09: antes comparava available > floor, dupla dedução do piso). */
 function channelHealthy(b: ReputationBalance): boolean {
-  return b.available > b.floor;
+  return b.available > 0;
 }
 
 const CHANNEL_ICON = { email: Mail, whatsapp: MessageSquare } as const;
@@ -237,11 +238,13 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
   /** Compra de envios: Checkout Stripe (redireciona e volta pro /studio). */
   const buyEnvios = async (units: number) => {
     setTopupBusy(String(units));
+    setTopupError(false);
     try {
       const { url } = await createTopupCheckout(units);
       window.location.assign(url);
     } catch (_) {
       setTopupBusy(null);
+      setTopupError(true);
     }
   };
 
@@ -713,6 +716,11 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                       </p>
                     </div>
                   </div>
+                  {topupError && (
+                    <p className="mb-1.5 rounded-lg bg-rose-50 px-2 py-1 text-rose-800">
+                      Não foi possível abrir o Checkout agora — tente de novo em instantes.
+                    </p>
+                  )}
                   {topupPacks && topupPacks.length > 0 && (
                     <div>
                       <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">

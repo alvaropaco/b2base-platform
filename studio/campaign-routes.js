@@ -527,9 +527,27 @@ function registerCampaignRoutes(router, context) {
       });
       const audienceByCampaign = new Map(snapshots.map((s) => [s.campaignId, s.includedCount]));
 
+      // Disparos realizados por campanha (P0 pente-fino 2026-10-09: a lista
+      // mostrava "0 disparos" eterno — sentCount nunca voltava).
+      const sentByCampaign = new Map();
+      for (const c of campaigns) {
+        let sent = 0;
+        if (c.whatsappExecutionId) {
+          sent += await prisma.whatsAppCampaignContact.count({
+            where: { campaignId: c.whatsappExecutionId, lastSentAt: { not: null } },
+          }).catch(() => 0);
+        }
+        if (c.emailExecutionId) {
+          sent += await prisma.outreachContact.count({
+            where: { campaignId: c.emailExecutionId, sentAt: { not: null } },
+          }).catch(() => 0);
+        }
+        sentByCampaign.set(c.id, sent);
+      }
       const data = campaigns.map((c) => ({
         ...c,
         audienceCount: audienceByCampaign.get(c.id) || 0,
+        sentCount: sentByCampaign.get(c.id) || 0,
       }));
       res.json({ success: true, data, count: data.length });
     } catch (err) {

@@ -17,7 +17,7 @@
 
 const { createEmbeddingsClient, toPgVector } = require('../studio/ai/embeddings');
 
-const DEFAULT_BATCH = 128; // publisher: EMBEDDING_BATCH_SIZE
+const DEFAULT_BATCH = 100; // teto do BatchEmbedContents do Gemini (limite de 100 requests/chamada)
 const DEFAULT_MAX_ROWS_PER_RUN = 500; // teto por boot — o próximo boot retoma
 
 function envInt(name, fallback) {
@@ -37,7 +37,7 @@ async function runEmbeddingsBackfill(prisma, { batchSize, maxRows, embeddings: e
   if (!embeddings.isConfigured()) {
     return { skipped: true, reason: 'embeddings_not_configured' };
   }
-  const batch = Math.min(Number(batchSize) > 0 ? Number(batchSize) : envInt('STUDIO_EMBEDDING_BACKFILL_BATCH', DEFAULT_BATCH), 128);
+  const batch = Math.min(Number(batchSize) > 0 ? Number(batchSize) : envInt('STUDIO_EMBEDDING_BACKFILL_BATCH', DEFAULT_BATCH), 100);
   const cap = Number(maxRows) > 0 ? Number(maxRows) : envInt('STUDIO_EMBEDDING_BACKFILL_MAX_ROWS', DEFAULT_MAX_ROWS_PER_RUN);
 
   let embedded = 0;

@@ -563,6 +563,36 @@ async function enqueueBatch(prisma, { campaign, channel, prospectIds, now = new 
         console.warn(`[studio:bridge] ${revives.length} contato(s) CANCELADO(s) por no_phone ressuscitado(s) com telefone — o lead agora tem número e consentimento`);
       }
     }
+    // Cura de SENDING presos (2026-10-09: 46 acumulados em produção — o job
+    // morre entre marcar SENDING e o resultado; >24h parado é lixo: com
+    // mensagem já enviada → COMPLETED, sem mensagem → volta a QUEUED).
+    const stuckSending = await waContactModel(prisma)
+      .findMany({
+        where: {
+          campaignId: whatsappExecutionId,
+          status: 'SENDING',
+          updatedAt: { lt: new Date(Date.now() - 24 * 3600 * 1000) },
+        },
+        select: { id: true },
+      })
+      .catch(() => []);
+    if (stuckSending.length > 0) {
+      const withMsg = new Set(
+        (await prisma.whatsAppMessage.findMany({
+          where: { campaignContactId: { in: stuckSending.map((c) => c.id) } },
+          select: { campaignContactId: true },
+        }).catch(() => [])).map((m) => m.campaignContactId)
+      );
+      for (const c of stuckSending) {
+        await waContactModel(prisma)
+          .update({
+            where: { id: c.id },
+            data: withMsg.has(c.id) ? { status: 'COMPLETED' } : { status: 'QUEUED', nextSendAt: null },
+          })
+          .catch(() => {});
+      }
+      console.warn(`[studio:bridge] ${stuckSending.length} contato(s) SENDING preso(s) >24h reconciliado(s)`);
+    }
     enrolled = await waContactModel(prisma).findMany({
       where: { campaignId: whatsappExecutionId, prospectId: { in: requestedIds }, status: 'QUEUED', nextSendAt: null },
     });

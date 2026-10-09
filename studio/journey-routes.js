@@ -30,6 +30,29 @@ async function loadJourney(prisma, orgId, id) {
 function registerJourneyRoutes(router, context) {
   const { prisma } = context;
 
+  // GET /campaigns/:id/journey — devolve a jornada salva (P0 pente-fino
+  // 2026-10-09: só existia PUT — o canvas carregava sempre vazio com
+  // fallback silencioso, sem erro na UI).
+  router.get('/campaigns/:id/journey', async (req, res, next) => {
+    try {
+      const { orgId } = req.studio;
+      const campaign = await prisma.studioCampaign.findUnique({ where: { id: req.params.id } });
+      if (!campaign || campaign.orgId !== orgId) throw httpError('NOT_FOUND', 404, 'Campanha não encontrada');
+      const journey = await prisma.studioJourney.findFirst({
+        where: { campaignId: campaign.id },
+        orderBy: { updatedAt: 'desc' },
+      });
+      res.json({
+        success: true,
+        data: journey
+          ? { id: journey.id, campaignId: journey.campaignId, definition: journey.definition, triggers: journey.triggers, stopConditions: journey.stopConditions, status: journey.status, updatedAt: journey.updatedAt }
+          : null,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // PUT /campaigns/:id/journey — salva definição + gatilhos + paradas.
   router.put('/campaigns/:id/journey', async (req, res, next) => {
     try {

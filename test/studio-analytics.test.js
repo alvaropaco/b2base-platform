@@ -74,3 +74,34 @@ test('ROI: valor declarado (conversões × convertedValue) distinto de métrica 
   assert.equal(roi.declaredRevenue, 1_000_000, '2 conversões × R$5.000,00 (centavos)');
   assert.equal(roi.revenuePerSend, 10_000);
 });
+
+// ── 2026-10-09: o Monitor tem que contar WHATSAPP (caso do dono: campanha
+// WhatsApp em voo mostrava Enviados 0) ───────────────────────────────────────
+
+test('rollup: canal WHATSAPP conta envio, entrega, leitura, resposta e descadastro', async () => {
+  const prisma = basePrisma();
+  prisma.studioCampaign.rows[0].channels = ['whatsapp'];
+  prisma.studioCampaign.rows[0].whatsappExecutionId = 'wexec-1';
+  const dia1 = new Date('2026-10-08T12:00:00Z');
+  prisma.whatsAppCampaignContact.rows.push(
+    { id: 'wcc-1', campaignId: 'wexec-1', prospectId: 'l1', status: 'COMPLETED', lastSentAt: dia1, phoneNumber: '5511987654321' },
+    { id: 'wcc-2', campaignId: 'wexec-1', prospectId: 'l2', status: 'REPLIED', lastSentAt: dia1, phoneNumber: '5511987654322' },
+    { id: 'wcc-3', campaignId: 'wexec-1', prospectId: 'l3', status: 'OPTED_OUT', updatedAt: dia1 },
+    { id: 'wcc-4', campaignId: 'wexec-1', prospectId: 'l4', status: 'QUEUED' }
+  );
+  prisma.whatsAppMessage.rows.push(
+    { id: 'wm-1', campaignContactId: 'wcc-1', status: 'DELIVERED', createdAt: dia1 },
+    { id: 'wm-2', campaignContactId: 'wcc-1', status: 'READ', createdAt: dia1 },
+    { id: 'wm-3', campaignContactId: 'wcc-2', status: 'FAILED', createdAt: dia1 }
+  );
+
+  await analytics.rollupDaily(prisma, 'camp-a');
+  const row = prisma.studioMetricDaily.rows.find((r) => r.channel === 'whatsapp');
+  assert.ok(row, 'linha de rollup do canal whatsapp');
+  assert.equal(row.sent, 2, 'envio = contato com lastSentAt (QUEUED/OPTED_OUT sem envio não conta)');
+  assert.equal(row.delivered, 2, 'entrega = mensagens DELIVERED/READ (por mensagem)');
+  assert.equal(row.whatsappReads, 1, 'leitura contada no campo próprio');
+  assert.equal(row.replies, 1, 'REPLIED conta resposta');
+  assert.equal(row.unsubs, 1, 'OPTED_OUT conta descadastro');
+  assert.equal(row.bounces, 1, 'FAILED conta como falha de entrega');
+});

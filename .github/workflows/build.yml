@@ -146,20 +146,26 @@ jobs:
           DEADLINE=$(( $(date +%s) + 900 ))
           RUNNING=""
           read_version() {
+            # 1) Ponte SSH (a borda pode bloquear os runners)…
             if [ "$VERIFY_VIA_VPS" = "1" ]; then
-              ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=12 "root@${VPS_HOST:-157.173.121.7}" \
+              VERIFY_RESULT=$(ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=12 "root@${VPS_HOST:-157.173.121.7}" \
                 "curl -s -m 10 $PROD_URL/api/version" 2>/dev/null \
-                | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["sha"] or "")' 2>/dev/null || true
+                | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["sha"] or "")' 2>/dev/null || echo "")
             else
-              HTTP=$(curl -s -m 10 -o /tmp/version.json -w "%{http_code}" \
+              VERIFY_RESULT=""
+            fi
+            # 2) Fallback DIRETO do runner (2026-10-09: a ponte SSH quebrou e
+            #    todo release lia "failure" com o rollout real OK — nunca mais
+            #    a ponte é a única fonte).
+            if [ -z "$VERIFY_RESULT" ]; then
+              HTTP=$(curl -s -m 10 -o /tmp/version-direct.json -w "%{http_code}" \
                 -A "Mozilla/5.0 (X11; Linux x86_64) b2base-verify/1.0" \
                 -H "Accept: application/json" "$PROD_URL/api/version" || echo "curl_failed")
               if [ "$HTTP" = "200" ]; then
-                python3 -c 'import json;print(json.load(open("/tmp/version.json"))["data"]["sha"] or "")' 2>/dev/null || true
-              else
-                echo ""
+                VERIFY_RESULT=$(python3 -c 'import json;print(json.load(open("/tmp/version-direct.json"))["data"]["sha"] or "")' 2>/dev/null || echo "")
               fi
             fi
+            echo "$VERIFY_RESULT"
           }
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             RUNNING=$(read_version)
@@ -176,12 +182,11 @@ jobs:
               fi
               echo "Produção ainda em ${RUNNING:0:7} — aguardando rollout..."
             else
-              if [ "$VERIFY_VIA_VPS" != "1" ]; then
-                echo "::warning::Runner não alcança www.b2base.net (borda bloqueia faixas de runner). Adicione o secret VPS_SSH_KEY (chave privada com acesso à VPS) para verificar via ponte SSH."
-              fi
-              echo "/api/version indisponível — tentando de novo..."
+              echo "/api/version indisponível (SSH e direto) — tentando de novo..."
             fi
             sleep 30
           done
+          echo "::error::DEPLOY NÃO CHEGOU AO CLUSTER em 15 min. Imagem buildada e tag commitada no k8s-infra, mas produção segue em '${RUNNING:0:7}'. Verifique o app do ArgoCD (sync/erro) — NUNCA considere este release válido."
+          exit 1
           echo "::error::DEPLOY NÃO CHEGOU AO CLUSTER em 15 min. Imagem buildada e tag commitada no k8s-infra, mas produção segue em '${RUNNING:0:7}'. Verifique o app do ArgoCD (sync/erro) — NUNCA considere este release válido."
           exit 1

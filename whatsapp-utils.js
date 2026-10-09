@@ -97,7 +97,14 @@ function renderTemplate(template, lead) {
   for (const [key, value] of Object.entries(vars)) {
     out = out.replace(new RegExp('\\{\\{\\s*' + key + '\\s*\\}\\}', 'g'), value);
   }
-  return stripUnresolvedPlaceholders(out);
+  out = stripUnresolvedPlaceholders(out);
+  // Variável vazia deixava resíduo de pontuação na mensagem ENVIADA
+  // ("Olá,!" — 09/10): colapsa vírgula órfã antes de pontuação final.
+  return out
+    .replace(/,\s*([!?…])/g, '$1')
+    .replace(/\s+([!?…])/g, ' $1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 /**

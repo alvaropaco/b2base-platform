@@ -18,45 +18,73 @@ async function rollupDaily(prisma, campaignId) {
   const campaign = await prisma.studioCampaign.findUnique({ where: { id: campaignId } });
   if (!campaign) return [];
 
-  // Contatos de e-mail por dia de envio.
+  const newBucket = () => ({
+    sent: 0, bounces: 0, unsubs: 0, opens: 0, clicks: 0, replies: 0,
+    delivered: 0, deliveredEstimated: 0, opensEstimated: 0, conversions: 0,
+    whatsappReads: 0,
+  });
+
+  // ── Canal E-MAIL ──────────────────────────────────────────────────────────
   if (campaign.emailExecutionId) {
     const contacts = await prisma.outreachContact.findMany({
       where: { campaignId: campaign.emailExecutionId },
     });
     const byDay = new Map();
+    const bucketFor = (key) => {
+      if (!byDay.has(key)) byDay.set(key, newBucket());
+      return byDay.get(key);
+    };
+
+    // CONTATO (fonte primária — status é terminal, conta 1× por contato):
+    // enviados/entregues no dia do envio; aberturas/respostas contadas via
+    // STATUS. Eventos complementares só valem quando o status NÃO registrou
+    // (contar status E evento duplicava cada abertura/resposta ~2×).
+    const openedViaStatus = new Set();
+    const repliedViaStatus = new Set();
     for (const contact of contacts) {
       if (!contact.sentAt) continue;
       const key = dayKey(contact.sentAt).toISOString();
-      if (!byDay.has(key)) {
-        byDay.set(key, {
-          sent: 0, bounces: 0, unsubs: 0, opens: 0, clicks: 0, replies: 0,
-          delivered: 0, deliveredEstimated: 0, opensEstimated: 0, conversions: 0,
-        });
-      }
-      const bucket = byDay.get(key);
+      const bucket = bucketFor(key);
       bucket.sent += 1;
       if (['SENT', 'DELIVERED_INFERRED', 'OPENED_INFERRED', 'REPLIED'].includes(contact.status)) bucket.delivered += 1;
-      if (contact.status === 'DELIVERED_INFERRED') bucket.deliveredEstimated += 1;
+      if (contact.status === 'DELIVERED_INFERRED') { bucket.deliveredEstimated += 1; bucket.opensEstimated += 1; }
       if (contact.status === 'BOUNCED') bucket.bounces += 1;
       if (contact.status === 'UNSUBSCRIBED') bucket.unsubs += 1;
-      if (contact.status === 'OPENED_INFERRED' || contact.status === 'REPLIED') bucket.opens += 1;
-      if (['OPENED_INFERRED', 'REPLIED'].includes(contact.status)) bucket.opensEstimated += 1;
-      if (contact.status === 'REPLIED') bucket.replies += 1;
+      if (contact.status === 'OPENED_INFERRED' || contact.status === 'REPLIED') {
+        bucket.opens += 1;
+        openedViaStatus.add(contact.id);
+      }
+      if (contact.status === 'REPLIED') {
+        bucket.replies += 1;
+        repliedViaStatus.add(contact.id);
+      }
     }
 
-    // Eventos por tipo (abertura estimada, clique, resposta).
-    for (const contact of contacts) {
+    // EVENTOS: só cobram o que o status NÃO registrou (clique não tem status;
+    // abertura/resposta de writers que só gravam evento). Dias sem envio
+    // agora criam bucket (cauda de engajamento pós-envio não se perde).
+    const contactIds = contacts.map((c) => c.id);
+    if (contactIds.length > 0) {
       const events = await prisma.outreachEvent.findMany({
-        where: { contactId: contact.id },
+        where: { contactId: { in: contactIds } },
+        select: { type: true, contactId: true, createdAt: true },
       });
       for (const event of events) {
         if (!event.createdAt) continue;
-        const key = dayKey(event.createdAt).toISOString();
-        const bucket = byDay.get(key);
-        if (!bucket) continue;
-        if (event.type === 'email_opened_inferred') bucket.opens += 1;
-        if (event.type === 'email_clicked') bucket.clicks += 1;
-        if (event.type === 'email_replied') bucket.replies += 1;
+        if (event.type === 'email_clicked') {
+          bucketFor(dayKey(event.createdAt).toISOString()).clicks += 1;
+          continue;
+        }
+        if (event.type === 'email_opened_inferred' && !openedViaStatus.has(event.contactId)) {
+          const bucket = bucketFor(dayKey(event.createdAt).toISOString());
+          bucket.opens += 1;
+          bucket.opensEstimated += 1;
+          openedViaStatus.add(event.contactId);
+        }
+        if (event.type === 'email_replied' && !repliedViaStatus.has(event.contactId)) {
+          bucketFor(dayKey(event.createdAt).toISOString()).replies += 1;
+          repliedViaStatus.add(event.contactId);
+        }
       }
     }
 
@@ -77,6 +105,62 @@ async function rollupDaily(prisma, campaignId) {
       }
     }
   }
+
+  // ── Canal WHATSAPP (2026-10-09 — o Monitor não contava WA nenhum): ────────
+  // envio = contato com lastSentAt (contado 1×, dia do 1º envio); entrega =
+  // mensagens DELIVERED/READ (dia de cada mensagem); leitura = READ;
+  // respostas = contato REPLIED; bounce = mensagem FAILED; descadastro =
+  // contato OPTED_OUT / cancelado por do_not_contact.
+  if (campaign.whatsappExecutionId) {
+    const waContacts = await prisma.whatsAppCampaignContact.findMany({
+      where: { campaignId: campaign.whatsappExecutionId },
+    });
+    const byDay = new Map();
+    const bucketFor = (key) => {
+      if (!byDay.has(key)) byDay.set(key, newBucket());
+      return byDay.get(key);
+    };
+    const contactIds = [];
+    for (const c of waContacts) {
+      contactIds.push(c.id);
+      if (c.lastSentAt) {
+        bucketFor(dayKey(c.lastSentAt).toISOString()).sent += 1;
+      }
+      if (c.status === 'REPLIED') bucketFor(dayKey(c.lastSentAt || c.updatedAt).toISOString()).replies += 1;
+      if (c.status === 'OPTED_OUT' || (c.status === 'CANCELLED' && c.cancelReason === 'do_not_contact')) {
+        bucketFor(dayKey(c.updatedAt || c.createdAt).toISOString()).unsubs += 1;
+      }
+    }
+    if (contactIds.length > 0) {
+      const messages = await prisma.whatsAppMessage.findMany({
+        where: { campaignContactId: { in: contactIds } },
+        select: { status: true, createdAt: true },
+      });
+      for (const m of messages) {
+        const bucket = bucketFor(dayKey(m.createdAt).toISOString());
+        if (m.status === 'DELIVERED' || m.status === 'READ') bucket.delivered += 1;
+        if (m.status === 'READ') bucket.whatsappReads += 1;
+        if (m.status === 'FAILED') bucket.bounces += 1;
+      }
+    }
+    for (const [key, bucket] of byDay) {
+      const day = new Date(key);
+      const existing = await prisma.studioMetricDaily.findMany({
+        where: { campaignId, day, channel: 'whatsapp', variantLabel: 'A', stepIndex: 1 },
+      });
+      if (existing[0]) {
+        await prisma.studioMetricDaily.update({ where: { id: existing[0].id }, data: bucket });
+      } else {
+        await prisma.studioMetricDaily.create({
+          data: {
+            orgId: campaign.orgId, campaignId, day, channel: 'whatsapp',
+            variantLabel: 'A', stepIndex: 1, ...bucket,
+          },
+        });
+      }
+    }
+  }
+
   return prisma.studioMetricDaily.findMany({ where: { campaignId } });
 }
 

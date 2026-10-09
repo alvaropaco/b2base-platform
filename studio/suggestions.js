@@ -71,8 +71,8 @@ async function balanceWindow(prisma, orgId, campaign) {
     kind: 'balance_window',
     priority: 2,
     campaignId: campaign.id,
-    label: `Saldo de e-mail em ${pct}% — autoriza o disparo de "${campaign.name}"?`,
-    motivo: `Orçamento de reputação: ${available} unidades disponíveis (teto ${ceiling}) e campanha "${campaign.name}" pronta.`,
+    label: `Saldo único em ${pct}% — autoriza o disparo de "${campaign.name}"?`,
+    motivo: `Saldo único (e-mail + WhatsApp): ${available} envios disponíveis (teto ${ceiling}) e campanha "${campaign.name}" pronta.`,
     prompt: `Autorize o disparo da campanha "${campaign.name}" — quero ver o certificado e o saldo antes.`,
   };
 }
@@ -126,7 +126,9 @@ async function untouchedLeads(prisma, orgId) {
   // Escopo de org: envios de OUTRAS organizações nunca contam como contato
   // dos leads desta (isolamento constituição IV).
   const contacted = await prisma.outreachContact.findMany({
-    where: { status: 'SENT', campaign: { tenantId: orgId } },
+    // Contato REALIZADO inclui quem já evoluiu além de SENT (pente-fino
+    // 2026-10-09: o chip oferecia disparo para lead já disparado).
+    where: { status: { in: ['SENT', 'DELIVERED_INFERRED', 'OPENED_INFERRED', 'REPLIED'] }, campaign: { tenantId: orgId } },
     take: 2000,
   });
   const contactedIds = new Set(contacted.map((c) => c.prospectId));

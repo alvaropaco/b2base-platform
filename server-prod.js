@@ -2326,7 +2326,9 @@ app.get('/api/analytics/operational', async (req, res) => {
         where: { status: 'SENT', contact: { campaign: { tenantId: orgId } } }
       }),
       prisma.whatsAppMessage.count({
-        where: { orgId, direction: 'OUTBOUND', status: { in: ['SENT', 'DELIVERED', 'READ'] } }
+        // Só origem CAMPANHA (pente-fino 2026-10-09): inbox manual e
+        // reengagement inflavam "enviados WhatsApp" vs o funil de e-mail.
+        where: { orgId, direction: 'OUTBOUND', status: { in: ['SENT', 'DELIVERED', 'READ'] }, campaignContactId: { not: null } }
       })
     ]);
 
@@ -4635,6 +4637,65 @@ app.delete('/api/outreach/suppression/:id', async (req, res) => {
   }
 });
 
+// ─── Automação (aba "Ações automáticas" do app) ────────────────────────────
+// P0 pente-fino 2026-10-09: a rota só existia no server legado de dev —
+// em produção o botão de criar workflow estourava 404 em silêncio.
+
+// POST /api/automation/workflow — cria regra de automação da organização.
+app.post('/api/automation/workflow', async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.user?.id }, select: { orgId: true } });
+    if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    const { name, trigger, action } = req.body || {};
+    if (!name || !trigger || !action) {
+      return res.status(400).json({ success: false, error: 'name, trigger e action são obrigatórios' });
+    }
+    const workflow = await prisma.workflow.create({
+      data: {
+        orgId: user.orgId,
+        name: String(name).slice(0, 200),
+        trigger: String(trigger).slice(0, 100),
+        action: String(action).slice(0, 100),
+        status: 'active',
+      },
+    });
+    res.status(201).json({
+      success: true,
+      workflow: {
+        id: workflow.id,
+        name: workflow.name,
+        trigger: workflow.trigger,
+        action: workflow.action,
+        status: workflow.status,
+        created_at: workflow.createdAt.toISOString(),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/automation/workflow — lista as regras da organização.
+app.get('/api/automation/workflow', async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.user?.id }, select: { orgId: true } });
+    if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    const workflows = await prisma.workflow.findMany({
+      where: { orgId: user.orgId },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({
+      success: true,
+      workflows: workflows.map((w) => ({
+        id: w.id, name: w.name, trigger: w.trigger, action: w.action, status: w.status,
+        created_at: w.createdAt.toISOString(),
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ============================================================================
 // WHATSAPP (WAHA) — Webhook + API
 // ============================================================================
@@ -5654,8 +5715,8 @@ async function start() {
         const { createQueue } = require('./outreach-queues');
         const reputationQueue = createQueue('studio:reputation:daily');
         reputationQueue
-          .add('daily', {}, { repeat: { cron: '3 7 * * *' }, jobId: 'studio-reputation-daily' })
-          .then(() => console.log('[studio:reputation] ✓ reposição diária registrada (07:03)'))
+          .add('daily', {}, { repeat: { cron: '0 0 * * *' }, jobId: 'studio-reputation-daily' })
+          .then(() => console.log('[studio:reputation] ✓ reposição diária registrada (00:00 UTC = 21h BRT)'))
           .catch((err) => console.error('[studio:reputation] falha ao registrar repeat job:', err.message));
         reputationQueue.process(async () => {
           // Saldo ÚNICO (2026-10-08): uma linha 'unified' por org — reposição

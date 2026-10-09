@@ -51,7 +51,7 @@ export function AnalyticsView({ campaignId }: { campaignId: string }) {
       const series = await get<any[]>(`/campaigns/${campaignId}/analytics/daily`);
       setDaily(
         (series || []).map((r) => ({
-          day: new Date(r.day).toLocaleDateString('pt-BR'),
+          day: new Date(r.day).toLocaleDateString('pt-BR', { timeZone: 'UTC' }), // bucket é meia-noite UTC
           enviados: r.sent,
           aberturas: r.opens,
           cliques: r.clicks,

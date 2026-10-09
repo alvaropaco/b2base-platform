@@ -148,7 +148,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <p className="mb-2 px-3 text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">Apoio comercial</p>
             <div className="space-y-1">
               {appItems.map((item) => (
-                <button key={item.label} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-white/5 dark:hover:text-white">
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={() => {
+                    // "Potencial de compra" abre a análise de risco (era botão morto).
+                    if (item.label === 'Potencial de compra') {
+                      setActiveTab('risk');
+                    }
+                  }}
+                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-white/5 dark:hover:text-white"
+                >
                   <item.icon className="h-4 w-4 text-slate-400" />
                   {item.label}
                 </button>
