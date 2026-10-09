@@ -286,18 +286,18 @@ async function tickAll(prisma, { now = new Date(), userId, overrides = {} } = {}
  */
 function registerStudioScheduler(prisma) {
   try {
-    // P0 2026-10-09: o processador ERA registrado com queue.process(fn) cru —
-    // o shim do Bull vincula o handler pelo NOME da função (anônimo → nunca
-    // casa com o job 'tick') e TODOS os ticks falhavam com "Missing process
-    // handler for job type tick" (17.420 falhas, 0 concluídos em produção).
-    // Usa o MESMO registerProcessor das filas que funcionam (outreach).
-    const { registerProcessor } = require('../outreach-queues');
-    const queue = registerProcessor('studio:scheduler', async () => {
+    // P0 2026-10-09 (raiz real, lida do stack do Bull 4.16.5): os jobs são
+    // adicionados COM NOME ('tick') e o Bull v4 exige processador NOMEADO —
+    // queue.process(fn) anônimo nunca casa ("Missing process handler for job
+    // type tick": 17.420 falhas, 0 concluídos em produção).
+    const { createQueue } = require('../outreach-queues');
+    const queue = createQueue('studio:scheduler');
+    queue.process('tick', 1, async () => {
       const result = await tickAll(prisma, { userId: null });
       const released = result.reduce((sum, r) => sum + (r.released || 0), 0);
       if (released > 0) console.log(`[studio:scheduler] ${released} lead(s) liberado(s)`);
       return result;
-    }, 1);
+    });
     queue
       .add('tick', {}, { repeat: { every: 60_000 }, jobId: 'studio-scheduler-tick' })
       .then(() => console.log('[studio:scheduler] ✓ repeat job registrado (60s)'))

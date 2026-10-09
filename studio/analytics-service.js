@@ -205,13 +205,14 @@ function registerStudioMetrics(prisma) {
   try {
     const { createQueue } = require('../outreach-queues');
     const queue = createQueue('studio:metrics');
-    queue
-      .add('rollup', {}, { repeat: { every: 300_000 }, jobId: 'studio-metrics-rollup' })
-      .then(() => console.log('[studio:metrics] ✓ repeat job registrado (5min)'))
-      .catch((err) => console.error('[studio:metrics] repeat job:', err.message));
-    queue.process(async () => {
+    // P0 2026-10-09 (raiz real no stack do Bull 4.16.5): job COM NOME
+    // ('rollup') exige processador NOMEADO — queue.process(fn) anônimo nunca
+    // casava ("Missing process handler for job type rollup": 3.509 falhas,
+    // 0 concluídos). Além disso: incluir pausadas/canceladas (o funil de
+    // campanha pausada também precisa continuar contando).
+    queue.process('rollup', 1, async () => {
       const campaigns = await prisma.studioCampaign.findMany({
-        where: { status: { in: ['running', 'scheduled', 'completed'] } },
+        where: { status: { in: ['running', 'scheduled', 'completed', 'paused', 'cancelled'] } },
       });
       for (const campaign of campaigns) {
         await rollupDaily(prisma, campaign.id).catch((err) =>
@@ -219,6 +220,10 @@ function registerStudioMetrics(prisma) {
         );
       }
     });
+    queue
+      .add('rollup', {}, { repeat: { every: 300_000 }, jobId: 'studio-metrics-rollup' })
+      .then(() => console.log('[studio:metrics] ✓ repeat job registrado (5min)'))
+      .catch((err) => console.error('[studio:metrics] repeat job:', err.message));
     return queue;
   } catch (err) {
     console.error('[studio:metrics] registro indisponível:', err.message);
