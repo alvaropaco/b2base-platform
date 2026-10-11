@@ -1,11 +1,13 @@
 // =============================================================================
 // test/helpers/fake-redis.js — fake in-memory compatível com o subconjunto
 // ioredis usado pelo enrichment-provider-registry (incr, expire, get, set,
-// setex, del, pttl). Expiração verificada lazy (no acesso).
+// setex, del, pttl) e o semáforo de concorrência com leases (zadd, zcard,
+// zrem, zremrangebyscore). Expiração verificada lazy (no acesso).
 // =============================================================================
 
 function createFakeRedis({ clock = { now: () => Date.now() } } = {}) {
   const store = new Map(); // key → { value, expiresAt }
+  const zsets = new Map(); // key → Map<member, score> (sem expiração lazy: higiene apenas)
   const now = () => clock.now();
 
   function live(key) {
@@ -20,6 +22,7 @@ function createFakeRedis({ clock = { now: () => Date.now() } } = {}) {
 
   return {
     _store: store,
+    _zsets: zsets,
     async incr(key) {
       const entry = live(key);
       if (!entry) {
@@ -77,6 +80,36 @@ function createFakeRedis({ clock = { now: () => Date.now() } } = {}) {
       const entry = live(key);
       if (!entry) return -2;
       return entry.expiresAt ? entry.expiresAt - now() : -1;
+    },
+    // ── ZSET (semáforo de concorrência com leases) ──────────────────────────
+    async zadd(key, score, member) {
+      if (!zsets.has(key)) zsets.set(key, new Map());
+      const z = zsets.get(key);
+      const created = !z.has(String(member));
+      z.set(String(member), Number(score));
+      return created ? 1 : 0;
+    },
+    async zcard(key) {
+      const z = zsets.get(key);
+      return z ? z.size : 0;
+    },
+    async zrem(key, member) {
+      const z = zsets.get(key);
+      return z && z.delete(String(member)) ? 1 : 0;
+    },
+    async zremrangebyscore(key, min, max) {
+      const z = zsets.get(key);
+      if (!z) return 0;
+      const lo = min === '-inf' ? -Infinity : Number(min);
+      const hi = max === '+inf' ? Infinity : Number(max);
+      let n = 0;
+      for (const [m, s] of [...z.entries()]) {
+        if (s >= lo && s <= hi) {
+          z.delete(m);
+          n += 1;
+        }
+      }
+      return n;
     },
   };
 }
