@@ -81,9 +81,15 @@ def main() -> int:
     logger.disabled = True
 
     try:
+        import os
+
+        import maigret as maigret_pkg
         from maigret.sites import MaigretDatabase
 
-        db = MaigretDatabase().load_from_path("maigret/resources/data.json")
+        # Banco de sites mora DENTRO do pacote instalado — path relativo só
+        # funcionava com CWD no repo do maigret (não é o caso no container).
+        db_path = os.path.join(os.path.dirname(maigret_pkg.__file__), "resources", "data.json")
+        db = MaigretDatabase().load_from_path(db_path)
         sites = db.ranked_sites_dict(top=TOP_SITES, excluded_tags=EXCLUDED_TAGS)
     except Exception as err:
         print(json.dumps({"kind": "error", "code": "MAIGRET_UNAVAILABLE", "message": str(err)[:200]}), flush=True)

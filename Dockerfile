@@ -86,7 +86,13 @@ ENV GIT_SHA=${GIT_SHA}
 # (server-prod.js defaults NATS to ON when unset; in the container we
 #  default OFF so the app boots clean with the BrasilAPI fallback.)
 ENV NATS_ENABLED=false
-RUN apk add --no-cache openssl
+# python3 + maigret (MIT, github.com/soxoj/maigret): o worker
+# company.social_presence (workers/social-presence.js) roda a lib como
+# subprocesso para mapear perfis sociais do lead. Sem ela a task falha
+# MAIGRET_UNAVAILABLE (não-retentável) — instalada aqui para a capability
+# funcionar de fábrica no cluster.
+RUN apk add --no-cache openssl python3 py3-pip \
+  && pip3 install --break-system-packages --no-cache-dir maigret
 
 # Copy node_modules (includes @prisma/client generated against schema)
 COPY --from=builder /app/node_modules ./node_modules

@@ -37,6 +37,11 @@ function makeExecutors(deps = {}) {
 
   return {
     'company.digital_presence': digitalPresence.executors['company.digital_presence'],
+    // Maigret (2026-10-10): presença social no MESMO worker — a imagem já
+    // leva python3+maigret e este pod é o lar do digital_presence (reuso do
+    // NATS durable/nats-sem-novo-deployment; ausência da lib →
+    // MAIGRET_UNAVAILABLE não-retentável, sem derrubar o worker).
+    'company.social_presence': require('./social-presence').executors['company.social_presence'],
 
     async 'company.profile.deep'(task, { logger }) {
       let profile;
