@@ -466,6 +466,20 @@ function createAdminRouter(prisma) {
 
       const data = await attachStripeSnapshots(prisma, items);
 
+      // Saldo de disparo (carteira única de reputação) por org — o painel
+      // mostra e o admin usa para creditar manualmente.
+      try {
+        const reputation = require('./studio/reputation');
+        const accounts = await prisma.studioReputationAccount.findMany({
+          where: { orgId: { in: items.map((o) => o.id) }, channel: reputation.UNIFIED_CHANNEL },
+          select: { orgId: true, balance: true },
+        });
+        const balanceByOrg = new Map(accounts.map((a) => [a.orgId, a.balance]));
+        for (const org of data) org.balance = balanceByOrg.get(org.id) || 0;
+      } catch (_e) {
+        // saldo é cosmético na listagem — falha não derruba a rota
+      }
+
       return res.json({
         success: true,
         data,
@@ -545,6 +559,71 @@ function createAdminRouter(prisma) {
 
       console.log(`[admin] Org ${orgId} (${updated.name}): plano ${existing.plan} → ${plan} por ${req.admin.username}`);
       return res.json({ success: true, data: updated });
+    } catch (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // ── Saldo de disparo da org (carteira única de reputação) ──────────────
+  router.get('/orgs/:id/balance', requireAdmin, async (req, res) => {
+    try {
+      const orgId = String(req.params.id || '');
+      const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { id: true, name: true } });
+      if (!org) {
+        return res.status(404).json({ success: false, error: 'Organização não encontrada.' });
+      }
+      const reputation = require('./studio/reputation');
+      const account = await reputation.getAccount(prisma, orgId);
+      const events = await reputation.listEvents(prisma, orgId, { limit: 10 });
+      return res.json({
+        success: true,
+        data: {
+          org,
+          balance: account ? account.balance : 0,
+          effectiveBalance: account ? reputation.effectiveBalance(account) : 0,
+          rampStage: account ? account.rampStage : null,
+          recentEvents: events,
+        },
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // POST /orgs/:id/balance { amount, reason? } — credita saldo manualmente.
+  // Passa pelo reputation.credit (ledger append-only + idempotência): cada
+  // clique é UM crédito novo (refId único por chamada), auditado com o admin
+  // que fez. Falha de org inexistente → 404; valor inválido → 400.
+  router.post('/orgs/:id/balance', requireAdmin, async (req, res) => {
+    try {
+      const orgId = String(req.params.id || '');
+      const amount = Math.floor(Number(req.body && req.body.amount));
+      const reason = String((req.body && req.body.reason) || '').trim().slice(0, 200);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({ success: false, error: 'Informe um valor inteiro maior que 0.' });
+      }
+      if (amount > 100000) {
+        return res.status(400).json({ success: false, error: 'Valor máximo por crédito: 100.000.' });
+      }
+      const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { id: true, name: true } });
+      if (!org) {
+        return res.status(404).json({ success: false, error: 'Organização não encontrada.' });
+      }
+      const reputation = require('./studio/reputation');
+      const result = await reputation.credit(prisma, {
+        orgId,
+        channel: reputation.UNIFIED_CHANNEL,
+        amount,
+        refType: 'admin',
+        refId: `admin:${req.admin.username}:${crypto.randomUUID()}`,
+        reason: reason || `crédito manual do admin ${req.admin.username}`,
+        metadata: { by: req.admin.username },
+      });
+      if (!result.ok) {
+        return res.status(409).json({ success: false, error: `Não foi possível creditar (${result.code || 'erro'}).` });
+      }
+      console.log(`[admin] Org ${orgId} (${org.name}): +${result.credited} de saldo (novo saldo ${result.balance}) por ${req.admin.username}`);
+      return res.json({ success: true, data: { credited: result.credited, balance: result.balance } });
     } catch (error) {
       return res.status(500).json({ success: false, error: error.message });
     }

@@ -39,6 +39,7 @@ export interface AdminOrgRow {
   _count: { users: number; prospects: number };
   users: Array<{ id: string; email: string; name: string | null }>;
   billingLive?: StripeBillingSnapshot;
+  balance?: number;
 }
 
 export interface AdminSummary {
@@ -182,6 +183,23 @@ export async function adminSetUserBlocked(
   const json = await res.json();
   if (!res.ok || !json.success) throw new Error(json.error || 'Erro ao alterar bloqueio');
   return json.data as AdminUserRow;
+}
+
+/** Adiciona saldo de disparo à carteira da org. Retorna crédito e novo saldo. */
+export async function adminAddOrgBalance(
+  orgId: string,
+  amount: number,
+  reason = ''
+): Promise<{ credited: number; balance: number }> {
+  const res = await fetch(`${API_BASE}/orgs/${encodeURIComponent(orgId)}/balance`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ amount, reason }),
+  });
+  const json = await res.json();
+  if (!res.ok || !json.success) throw new Error(json.error || 'Erro ao adicionar saldo');
+  return json.data as { credited: number; balance: number };
 }
 
 /** Busca o status de pagamento AO VIVO do Stripe de um org específico. */

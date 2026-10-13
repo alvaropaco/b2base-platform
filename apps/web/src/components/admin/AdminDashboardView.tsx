@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  Plus,
   Users,
   Building2,
   RefreshCw,
@@ -19,6 +20,7 @@ import {
 import {
   adminUsers,
   adminOrgs,
+  adminAddOrgBalance,
   adminSetOrgPlan,
   adminSetUserBlocked,
   adminSummary,
@@ -159,6 +161,31 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ username
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao alterar plano.');
+    } finally {
+      setBusyOrg(null);
+    }
+  };
+
+  const handleAddBalance = async (org: AdminOrgRow) => {
+    const raw = window.prompt(
+      `Quantos envios adicionar ao saldo de disparo de "${org.name}"?\nSaldo atual: ${org.balance ?? 0}`,
+      '100'
+    );
+    if (raw === null) return;
+    const amount = Math.floor(Number(raw));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError('Informe um valor inteiro maior que 0.');
+      return;
+    }
+    if (!window.confirm(`Adicionar ${amount} envio(s) ao saldo de "${org.name}"?`)) return;
+    setBusyOrg(org.id);
+    setError(null);
+    try {
+      const out = await adminAddOrgBalance(org.id, amount);
+      showToast(`+${out.credited} de saldo para "${org.name}" — novo saldo: ${out.balance}.`);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao adicionar saldo.');
     } finally {
       setBusyOrg(null);
     }
@@ -349,6 +376,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ username
                     </div>
                     <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-slate-400">
                       <span>CNPJ: {org.cnpj || '—'}</span>
+                      <span>Saldo de disparo: <span className="font-semibold text-slate-200">{org.balance ?? 0}</span></span>
                       <span>{org._count.users} usuário(s)</span>
                       <span>{org._count.prospects} lead(s)</span>
                       <span>Criado: {new Date(org.createdAt).toLocaleDateString('pt-BR')}</span>
@@ -367,6 +395,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ username
                     )}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      onClick={() => handleAddBalance(org)}
+                      disabled={busyOrg === org.id}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs font-bold text-sky-300 transition hover:bg-sky-500/20 disabled:opacity-60"
+                    >
+                      {busyOrg === org.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                      Adicionar saldo
+                    </button>
                     {org.stripeSubscriptionId && (
                       <button
                         onClick={() => openBilling(org)}
