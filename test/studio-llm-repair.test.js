@@ -112,3 +112,37 @@ test('segment-nl: critérios fora do catálogo na 1ª tentativa → reparo com o
   assert.equal(calls.length, 2);
   assert.ok(calls[1].user.includes('NÃO atendeu ao formato do catálogo'));
 });
+
+// ── 2026-10-13: {{firstName}} é OBRIGATÓRIO na mensagem de WhatsApp ─────────
+// Caso real: a IA assou o nome do USUÁRIO na saudação ("Olá, Jefferson, sou
+// Jefferson Torres") — todo lead recebeu o nome errado. O validate do
+// composeWhatsApp rejeita e o retry comunica o motivo.
+
+const WA_LITERAL = { content: JSON.stringify({ whatsapp: { text: 'Olá, Jefferson, sou Jefferson Torres. Posso te mostrar rapidinho?' } }) };
+const WA_OK = { content: JSON.stringify({ whatsapp: { text: 'Olá {{firstName}}, sou Jefferson Torres. Posso te mostrar rapidinho?' } }) };
+
+test('composeWhatsApp: saudação com nome literal é rejeitada e regenerada com {{firstName}}', async () => {
+  const calls = [];
+  const composer = createComposer({
+    callLlm: async (opts) => {
+      calls.push(opts);
+      return calls.length === 1 ? WA_LITERAL : WA_OK;
+    },
+  });
+  const { text } = await composer.composeWhatsApp({ tone: 'comercial', sourceText: 'assinatura de software' });
+  assert.equal(calls.length, 2, '1ª sem a variável → retry');
+  assert.ok(text.includes('{{firstName}}'), 'texto final usa a variável');
+  assert.ok(!text.includes('Olá, Jefferson'), 'nome literal do lead não sai');
+  assert.ok(calls[1].user.includes('{{firstName}}'), 'retry cita a regra da variável');
+  assert.ok(calls[1].user.includes('nome do destinatário') || calls[1].user.includes('Problema'), 'retry comunica o motivo real');
+});
+
+test('composeWhatsApp: mensagem com a variável passa de primeira (sem retry)', async () => {
+  const calls = [];
+  const composer = createComposer({
+    callLlm: async (opts) => { calls.push(opts); return WA_OK; },
+  });
+  const { text } = await composer.composeWhatsApp({ tone: 'comercial', sourceText: 'x' });
+  assert.equal(calls.length, 1);
+  assert.ok(text.includes('{{firstName}}'));
+});

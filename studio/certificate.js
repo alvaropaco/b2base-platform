@@ -249,6 +249,24 @@ async function evaluate(prisma, campaign, { now = new Date(), skipPersist = fals
     }
   }
 
+  // 5.5) Variável de nome na mensagem WhatsApp (2026-10-13, caso real: a
+  // mensagem padrão foi salva com o nome do PRÓPRIO usuário literal — "Olá,
+  // Jefferson, sou Jefferson Torres" — e todo lead recebeu o nome errado).
+  // Sem {{firstName}}, TODOS os leads recebem exatamente o mesmo texto.
+  if (channels.includes('whatsapp')) {
+    const semVariavel = contents.filter((c) => c.channel === 'whatsapp' && c.whatsappText && !c.whatsappText.includes('{{firstName}}'));
+    if (semVariavel.length > 0) {
+      items.push(item(
+        'whatsapp_first_name',
+        'Nome do contato na mensagem de WhatsApp',
+        'warning',
+        `A mensagem de WhatsApp não usa a variável {{firstName}} — sem ela, TODOS os leads recebem o mesmo texto, sem o nome de contato de cada um` +
+          `(e se houver um nome escrito no texto, ele vai igual para todo mundo). Me peça para reescrever a mensagem usando a variável.`,
+        { howToFix: 'reescrever a mensagem usando {{firstName}} na saudação — me peça que eu reescrevo' }
+      ));
+    }
+  }
+
   // 6) Teste da Maria — heurísticas com limites objetivos (FR-30, aviso).
   // Avalia o CORPO que o lead lê (emailDoc/texto), não o subject.
   for (const content of contents) {

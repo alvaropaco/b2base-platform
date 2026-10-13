@@ -116,7 +116,7 @@ async function callLlmJson(llm, { system, buildUser, validate, maxTokens = 1200,
       break;
     }
     const isFirst = parseFailures === 0 && validateFailures === 0;
-    let user = buildUser(isFirst ? null : lastRaw);
+    let user = buildUser(isFirst ? null : lastRaw, !isFirst ? lastProblem : null);
     if (!isFirst && lastTruncated) {
       user += '\n\nIMPORTANTE: sua resposta anterior foi CORTADA por limite de tamanho e ficou um JSON inválido. Responda de forma muito mais concisa (texts curtos, rationale em até 2 frases) garantindo que o JSON feche.';
     }

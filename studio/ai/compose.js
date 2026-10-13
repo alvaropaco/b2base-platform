@@ -140,7 +140,7 @@ function createComposer({ callLlm } = {}) {
    * próprio, sem depender do e-mail.
    */
   async function composeWhatsApp({ tone, sourceText, orgContext, objective, offer }) {
-    const buildUser = (previousRaw) => {
+    const buildUser = (previousRaw, lastProblem) => {
       const prompt = [
         `Gere a MENSAGEM DE WHATSAPP de prospecção no tom "${tone}" — somente o canal WhatsApp.`,
         ...contextLines({ sourceText, orgContext, objective, offer }),
@@ -148,6 +148,9 @@ function createComposer({ callLlm } = {}) {
         'Responda SOMENTE com JSON no formato:',
         '{"whatsapp":{"text":"mensagem curta (4-8 linhas) com {{firstName}} e um CTA claro"}}',
         'Regras: mensagem CURTA e direta (WhatsApp), com {{firstName}} e um chamado para ação;',
+        'SAUDAÇÃO: o nome do DESTINATÁRIO é SEMPRE a variável {{firstName}} — NUNCA escreva um nome',
+        'próprio literal na saudação (a MESMA mensagem vai para TODOS os leads; nome fixo = todo',
+        'mundo recebe o nome errado). Nome do VENDEDOR/assinatura pode ser literal.',
         'Use apenas variáveis do catálogo: {{firstName}}, {{companyName}}, {{city}}, {{industry}}, {{state}}.',
         'Nunca invente números ou benefícios que não estejam na base.',
       ]
@@ -155,7 +158,7 @@ function createComposer({ callLlm } = {}) {
         .join('\n');
       if (!previousRaw) return prompt;
       return [
-        'Sua resposta anterior NÃO foi JSON utilizável.',
+        lastProblem ? `Problema na sua resposta anterior: ${lastProblem}.` : 'Sua resposta anterior NÃO foi JSON utilizável.',
         'Responda novamente com o JSON COMPLETO, sem texto fora do JSON, mantendo o mesmo tom.',
         '--- RESPOSTA ANTERIOR (inválida) ---',
         String(previousRaw).slice(0, 800),
@@ -168,7 +171,14 @@ function createComposer({ callLlm } = {}) {
       buildUser,
       validate: (p) => {
         const text = p.whatsapp?.text || p.text;
-        return typeof text === 'string' && text.trim() ? null : 'mensagem de WhatsApp ausente';
+        if (typeof text !== 'string' || !text.trim()) return 'mensagem de WhatsApp ausente';
+        // Caso real (2026-10-13): a IA assou o nome do USUÁRIO na saudação
+        // ("Olá, Jefferson, sou Jefferson Torres") e TODO lead recebeu o nome
+        // errado. A variável {{firstName}} é OBRIGATÓRIA — sem ela, refaz.
+        if (!text.includes('{{firstName}}')) {
+          return 'a mensagem precisa usar a variável {{firstName}} para o nome do destinatário — nome próprio literal na saudação vai igual para todos os leads';
+        }
+        return null;
       },
       maxTokens: 1024,
       temperature: 0.7,

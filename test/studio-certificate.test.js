@@ -41,7 +41,7 @@ function seedCampaign(prisma, { channels = ['email'], content = {}, approval = {
     kind: 'base', stepIndex: 1, variantLabel: 'A',
     subject: 'Olá {{firstName}} — descadastro no rodapé',
     emailDoc: { blocks: [{ type: 'text', text: 'Conteúdo curto com link de descadastro (unsubscribe).' }] },
-    whatsappText: channels.includes('whatsapp') ? 'Oi! Posso te mandar uma novidade rápida?' : null,
+    whatsappText: channels.includes('whatsapp') ? 'Oi {{firstName}}! Posso te mandar uma novidade rápida?' : null,
   });
   return prisma.studioCampaign.rows[0];
 }
@@ -349,4 +349,34 @@ test('GET /reputation: painel com saldo por canal e eventos explicados (FR-20)',
   } finally {
     server.close();
   }
+});
+
+// ── 2026-10-13: {{firstName}} obrigatório na mensagem de WhatsApp ────────────
+// Caso real: a mensagem padrão foi salva com o nome do PRÓPRIO usuário
+// literal ("Olá, Jefferson, sou Jefferson Torres") e todo lead recebeu o
+// nome errado. Sem a variável, o pré-voo avisa.
+
+test('mensagem WhatsApp sem {{firstName}} → aviso no pré-voo (nome fixo vai igual para todos)', async () => {
+  const prisma = createFakePrisma();
+  const campaign = seedCampaign(prisma, {
+    channels: ['whatsapp'],
+    members: [{ prospectId: 'l1', included: true }],
+  });
+  prisma.studioContent.rows[0].whatsappText = 'Olá, Jefferson, sou Jefferson Torres. Posso te mostrar rapidinho?';
+  const verdict = await certificate.evaluate(prisma, campaign);
+  const item = verdict.items.find((i) => i.key === 'whatsapp_first_name');
+  assert.ok(item, 'item de aviso presente');
+  assert.equal(item.level, 'warning', 'aviso, não bloqueio');
+  assert.match(item.detail, /\{\{firstName\}\}/, 'explica a variável');
+});
+
+test('mensagem WhatsApp COM {{firstName}} não gera o aviso', async () => {
+  const prisma = createFakePrisma();
+  const campaign = seedCampaign(prisma, {
+    channels: ['whatsapp'],
+    members: [{ prospectId: 'l1', included: true }],
+  });
+  prisma.studioContent.rows[0].whatsappText = 'Olá {{firstName}}, tudo bem? Posso te mostrar rapidinho?';
+  const verdict = await certificate.evaluate(prisma, campaign);
+  assert.ok(!verdict.items.find((i) => i.key === 'whatsapp_first_name'), 'sem aviso quando a variável está lá');
 });
