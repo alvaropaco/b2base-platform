@@ -177,6 +177,21 @@ function digitsOnly(value) {
 }
 
 /**
+ * A página/resultado é SOBRE a empresa? (url+título com ≥2 tokens do nome, ou
+ * host+url/título com 1 cada — site próprio 'gustto.com.br'). Listamentos de
+ * diretório citam o lead no CONTEÚDO mas não na identidade — sem isso o
+ * número extraído era do restaurante ERRADO (caso Ninas × O Pensador).
+ */
+function identityOk({ host, url, title }, tokens) {
+  const identityHay = dpNormalize(`${url || ''} ${title || ''}`);
+  const identityTok = tokens.filter((t) => identityHay.includes(t)).length;
+  if (identityTok >= Math.min(2, tokens.length)) return true;
+  if (identityTok < 1) return false;
+  const hostTok = tokens.filter((t) => dpNormalize(host || '').includes(t)).length;
+  return hostTok >= 1;
+}
+
+/**
  * Canoniza para disparo BR: 10-11 dígitos ganham DDI 55; 12-13 só valgem se
  * JÁ começarem com 55. Número estrangeiro (ex.: +919560534592 — a Índia que o
  * crawler velho registrou como WhatsApp de "SABOR DO REINO DOS CEUS") NUNCA
@@ -190,10 +205,18 @@ function canonWhatsAppDigits(d) {
 }
 
 function extractWaLinks(text) {
+  return extractWaLinksRaw(text).map((r) => r.canon);
+}
+
+/** Igual a extractWaLinks, mas diz se o link JÁ trazia DDI 55 explícito —
+ *  em host estrangeiro, número sem 55 explícito é ambíguo (11 dígitos podem
+ *  ser de outro país; o caso el-alquimista.es virava "5534…" imaginário). */
+function extractWaLinksRaw(text) {
   const out = [];
   for (const m of text.matchAll(new RegExp(WA_LINK_GLOBAL_RE.source, 'gi'))) {
-    const canon = canonWhatsAppDigits(m[1]);
-    if (canon) out.push(canon);
+    const raw = String(m[1]).replace(/\D/g, '');
+    const canon = canonWhatsAppDigits(raw);
+    if (canon) out.push({ canon, explicitBr: raw.startsWith('55') });
   }
   return out;
 }
@@ -210,9 +233,13 @@ function extractCatalogMobiles(html) {
 }
 
 function dddMatchesState(phone55, state) {
-  if (!state) return true; // sem UF conhecida, não filtra
+  // DDD fora da tabela oficial = fragmento/lixo (o DDD 10 não existe; o
+  // linktr devolvia "5510-937621707" e passava porque 'desconhecido' não
+  // filtrava). BR tem exatamente os DDDs da tabela.
   const uf = DDD_UF[digitsOnly(phone55).slice(2, 4)];
-  return !uf || uf === String(state).toUpperCase().trim();
+  if (!uf) return false;
+  if (state && uf !== String(state).toUpperCase().trim()) return false;
+  return true;
 }
 
 async function fetchPageText(url, { signal, fetchImpl = fetch, timeoutMs = 12000 } = {}) {
@@ -302,8 +329,11 @@ async function discoverWhatsAppMultiSource({ companyName, tradeName, state, sign
       continue;
     }
     for (const r of results) {
+      let snipHost = '';
+      try { snipHost = new URL(r.url).hostname.replace(/^www\./, ''); } catch (_e) {}
+      const snipIdentity = identityOk({ host: snipHost, url: r.url, title: r.title }, tokens);
       for (const num of extractWaLinks(`${r.url || ''} ${r.title || ''} ${r.content || ''}`)) {
-        if (dddMatchesState(num, state)) pushStrong(num, r.url || 'snippet');
+        if (snipIdentity && dddMatchesState(num, state)) pushStrong(num, r.url || 'snippet');
       }
       if (strong.length > 0) return finish();
       let host = '';
@@ -315,6 +345,7 @@ async function discoverWhatsAppMultiSource({ companyName, tradeName, state, sign
       if (seenHosts.has(host) || JUNK_HOST_RE.test(host)) continue;
       const hay = dpNormalize(`${host} ${r.title || ''} ${r.content || ''}`);
       if (tokens.filter((t) => hay.includes(t)).length < needTokens) continue;
+      if (!identityOk({ host, url: r.url, title: r.title }, tokens)) continue;
       seenHosts.add(host);
       if (AGGREGATOR_HOST_RE.test(host)) {
         // agregador de links de MUITAS empresas: só vale se o slug é o nome
@@ -338,13 +369,33 @@ async function discoverWhatsAppMultiSource({ companyName, tradeName, state, sign
     if (!html) continue;
     const hay = dpNormalize(html);
     if (tokens.filter((t) => hay.includes(t)).length < needTokens) continue;
+    // A PÁGINA em si é sobre a empresa? O <title> (fallback og:title/h1) tem
+    // que citar o nome — a página "restaurantes próximos" do diretório tem o
+    // título do OUTRO restaurante e o número extraído era dele.
+    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || html.match(/property="og:title" content="([^"]*)"/i) || html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    const titleHay = dpNormalize(titleMatch ? titleMatch[1] : '');
+    if (tokens.filter((t) => titleHay.includes(t)).length < Math.min(2, tokens.length)) continue;
     // Número que a PLATAFORMA usa nela mesma (home do host) não é da empresa.
-    const blacklist = await platformWaBlacklist(url, { signal, logger });
-    for (const num of extractWaLinks(html)) {
-      if (!blacklist.has(num)) pushStrong(num, url);
+    // EXCEÇÃO — site da PRÓPRIA empresa: host contém o primeiro token do nome
+    // ('gustto.com.br' para D GUSTTO) e o wa.me da home É dela; a blacklist
+    // rejeitava o número certo do dono do site (falso negativo real).
+    const ownHost = (() => {
+      const first = tokens[0];
+      if (!first) return false;
+      try {
+        const host = new URL(url).hostname.replace(/^www\./, '');
+        if (JUNK_HOST_RE.test(host) || AGGREGATOR_HOST_RE.test(host) || CATALOG_HOST_RE.test(host)) return false;
+        return dpNormalize(host).includes(first);
+      } catch (_e) { return false; }
+    })();
+    const blacklist = ownHost ? new Set() : await platformWaBlacklist(url, { signal, logger });
+    const hostTldBr = /\.br(\.|:|\/|$)/.test(url.toLowerCase());
+    for (const { canon, explicitBr } of extractWaLinksRaw(html)) {
+      if (!hostTldBr && !explicitBr) continue; // estrangeiro ambíguo — fora
+      if (!blacklist.has(canon)) pushStrong(canon, url);
     }
     if (strong.length > 0) return finish();
-    if (CATALOG_HOST_RE.test(url) || AGGREGATOR_HOST_RE.test(url)) {
+    if ((CATALOG_HOST_RE.test(url) || AGGREGATOR_HOST_RE.test(url)) && !ownHost) {
       for (const num of extractCatalogMobiles(html)) {
         if (!blacklist.has(num)) pushWeak(num, url);
       }

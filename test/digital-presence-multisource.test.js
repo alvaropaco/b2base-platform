@@ -55,6 +55,8 @@ test('dddMatchesState: DDD 27 casa ES; DDD 11 não casa ES; sem UF não filtra',
   assert.equal(dp.dddMatchesState('5527999240650', 'ES'), true);
   assert.equal(dp.dddMatchesState('5511999998888', 'ES'), false);
   assert.equal(dp.dddMatchesState('5511999998888', null), true);
+  assert.equal(dp.dddMatchesState('5510937621707', 'ES'), false, 'DDD 10 NÃO EXISTE — fragmento/lixo (caso linktr)');
+  assert.equal(dp.dddMatchesState('5510937621707', null), false, 'DDD inválido rejeita mesmo sem UF');
 });
 
 test('isCompanyDomain: catálogo/agregador/rede social não são site da empresa', () => {
@@ -125,7 +127,7 @@ test('multi-fonte: página da empresa com wa.me PRÓPRIO (fora da home da plataf
     ],
     pages: {
       'https://diretorio.com.br': '<html><a href="https://wa.me/5519999997777">suporte do diretório</a></html>',
-      'https://diretorio.com.br/empresa/sushi-x': '<html>Sushi X delivery pedidos <a href="https://wa.me/5511988886666">WhatsApp da loja</a></html>',
+      'https://diretorio.com.br/empresa/sushi-x': '<html><title>Sushi X Delivery</title>Sushi X delivery pedidos <a href="https://wa.me/5511988886666">WhatsApp da loja</a></html>',
     },
   });
   try {
@@ -142,7 +144,7 @@ test('multi-fonte: celular de CATÁLOGO da loja (sem wa.me) é fonte média; DDD
       { url: 'https://cardapio.menu/xpto-acai', title: 'XPTO Açaí Delivery - Cariacica', content: 'cardápio xpto acai' },
     ],
     pages: {
-      'https://cardapio.menu/xpto-acai': '<html>XPTO acai delivery — ligue (27) 99924-0650</html>',
+      'https://cardapio.menu/xpto-acai': '<html><title>XPTO Açaí Delivery - Cariacica</title>XPTO acai delivery — ligue (27) 99924-0650</html>',
     },
   });
   try {
@@ -163,7 +165,7 @@ test('multi-fonte: agregador de links só vale se o SLUG é o nome da empresa', 
       { url: 'https://taplink.cc/sabornatura', title: 'Sabor Natura', content: 'sabor natura comida' },
     ],
     pages: {
-      'https://taplink.cc/sabornatura': '<html><a href="https://wa.me/5511973123978">whatsapp</a> sabor natura</html>',
+      'https://taplink.cc/sabornatura': '<html><title>Sabor Natura</title><a href="https://wa.me/5511973123978">whatsapp</a> sabor natura</html>',
     },
   });
   try {
