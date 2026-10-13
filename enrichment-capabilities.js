@@ -99,6 +99,33 @@ const CAPABILITIES = {
     expand: [],
   },
 
+  'company.social_presence': {
+    // Maigret (MIT, github.com/soxoj/maigret) — OSINT de perfis sociais da
+    // empresa por @handle (fantasia/razão social). Redes-chave (~200 sites
+    // top por rank, sem categorias insensíveis), deadline rígido no worker.
+    // Perfis aparecem no painel de enrichment do lead; página de perfil que
+    // expõe wa.me/telefone vira contact[type=whatsapp] e o applyCompleted
+    // promove para a frente do cnpjPhones (mesmo caminho do digital_presence).
+    // Modo "pessoa de contato" existe no worker, mas só liga com
+    // SOCIAL_OSINT_PERSON=true (LGPD — desligado por padrão).
+    family: 'company',
+    tier: 'basic',
+    enabled: true,
+    entityType: ['prospect', 'company'],
+    timeoutMs: 180000,
+    maxAttempts: 1,
+    priority: 3,
+    providers: ['maigret.cli'],
+    inputSchema: {
+      companyName: { type: 'string', required: false },
+      tradeName: { type: 'string', required: false },
+      contactName: { type: 'string', required: false },
+      city: { type: 'string', required: false },
+      state: { type: 'string', required: false },
+    },
+    expand: [],
+  },
+
   'search.news': {
     family: 'search',
     tier: 'basic',

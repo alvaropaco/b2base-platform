@@ -43,13 +43,19 @@ test('US1 planejamento: 1 task por entidade × capability elegível, publicadas 
   const prospect = await seedProspect(prisma);
   const { job, tasks } = await manager.createJob({ orgId: 'org-1', prospectId: prospect.id, trigger: 'manual' });
 
-  // Premium: 4 habilitadas (todas basic; nenhuma premium habilitada ainda).
-  assert.strictEqual(tasks.length, 4);
-  assert.deepStrictEqual(tasks.map((t) => t.status), ['QUEUED', 'QUEUED', 'QUEUED', 'QUEUED']);
+  // Premium: 5 habilitadas (todas basic; social_presence/maigret entrou em
+  // 2026-10-10; nenhuma premium habilitada ainda).
+  assert.strictEqual(tasks.length, 5);
+  assert.deepStrictEqual(tasks.map((t) => t.status), ['QUEUED', 'QUEUED', 'QUEUED', 'QUEUED', 'QUEUED']);
   assert.strictEqual(job.status, 'RUNNING');
 
   const taskMsgs = decoded(js, 'enrichment.task.');
-  assert.strictEqual(taskMsgs.length, 4);
+  assert.strictEqual(taskMsgs.length, 5);
+  // Input do maigret: fantasia/razão + contato + localidade (worker decide o
+  // que vira @handle; contato só com SOCIAL_OSINT_PERSON=true).
+  const social = taskMsgs.find((t) => t.capability === 'company.social_presence');
+  assert.ok(social, 'task do maigret planejada');
+  assert.strictEqual(social.input.tradeName || social.input.companyName, 'Marispan Ltda');
   // Ordem de publicação segue prioridade (0 primeiro — planejamento em lote).
   assert.deepStrictEqual(taskMsgs.map((t) => t.priority), [...taskMsgs.map((t) => t.priority)].sort((a, b) => a - b));
   // Headers de correlação obrigatórios.
@@ -154,23 +160,23 @@ test('US1 conclusão: todas COMPLETED → job COMPLETED + evento job.completed.v
   assert.strictEqual(completedEvents.length, 1);
   const payload = contracts.parsePayload(completedEvents[0].data);
   assert.strictEqual(payload.status, 'COMPLETED');
-  assert.strictEqual(payload.counts.completed, 4);
+  assert.strictEqual(payload.counts.completed, tasks.length, 'todas as tasks do catálogo vigente');
   assert.strictEqual(payload.completionPct, 100);
 });
 
 test('US1 conclusão: sucessos + falhas permanentes → job PARTIAL com percentual coerente', async () => {
   const deps = makeDeps();
   const { job, tasks } = await seedJob(deps);
-  await deps.manager.handleResult(mkResult(job, tasks[0], 'COMPLETED'));
-  await deps.manager.handleResult(mkResult(job, tasks[1], 'FAILED'));
-  await deps.manager.handleResult(mkResult(job, tasks[2], 'COMPLETED'));
-  if (tasks[3]) await deps.manager.handleResult(mkResult(job, tasks[3], 'COMPLETED'));
+  // 1 falha permanente, resto concluído — o job fecha PARTIAL com o pct coerente.
+  for (let i = 0; i < tasks.length; i++) {
+    await deps.manager.handleResult(mkResult(job, tasks[i], i === 1 ? 'FAILED' : 'COMPLETED'));
+  }
   const finalJob = await deps.prisma.enrichmentJob.findUnique({ where: { id: job.id } });
   assert.strictEqual(finalJob.status, 'PARTIAL');
   const evt = deps.js.published.find((m) => m.subject === contracts.JOB_COMPLETED_SUBJECT);
   const payload = contracts.parsePayload(evt.data);
   assert.strictEqual(payload.status, 'PARTIAL');
-  const pctEsperado = tasks.length === 4 ? 75 : 66.7; // 3/4 com digital_presence no catálogo
+  const pctEsperado = Math.round(((tasks.length - 1) / tasks.length) * 1000) / 10; // concluídas/total
   assert.strictEqual(payload.completionPct, pctEsperado);
 });
 

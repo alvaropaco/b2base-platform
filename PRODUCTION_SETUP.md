@@ -2,6 +2,28 @@
 
 ## 🚀 Status: PRODUCTION READY
 
+### Presença social (maigret, MIT) — requisito do worker `social-presence`
+
+O worker `company.social_presence` roda a biblioteca OSINT **maigret**
+(github.com/soxoj/maigret, licença MIT — uso comercial livre) via subprocesso
+Python para mapear perfis sociais da empresa e extrair contato público
+(wa.me) das páginas de perfil. Justificativa da dependência nova
+(AGENTS.md): única fonte aberta que enumera redes por @handle; complementa o
+worker `digital-presence` na busca de WhatsApp.
+
+No servidor:
+
+```bash
+python3 -m pip install maigret   # requer python3 >= 3.8 no PATH
+pnpm run worker:social-presence  # processo separado, como os demais workers
+```
+
+Sem o maigret instalado a task falha como `MAIGRET_UNAVAILABLE`
+(não-retentável) e o motor segue — o resto da plataforma não depende dele.
+Flags: `SOCIAL_PRESENCE_TIMEOUT_MS` (deadline do scan, default 150000),
+`SOCIAL_OSINT_PERSON` (OSINT de pessoa de contato — LGPD, default OFF).
+
+
 **Live at:** http://localhost:3001  
 **Database:** PostgreSQL 16 (Docker)  
 **Server:** Node.js + Express  

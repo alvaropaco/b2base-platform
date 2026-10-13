@@ -57,6 +57,19 @@ function buildCapabilityInput(capability, prospect) {
       return prospect.companyName
         ? { companyName: prospect.companyName, domain: domain || undefined }
         : null;
+    case 'company.social_presence':
+      // Maigret: candidatos de @handle vêm do fantasia/razão (worker também
+      // usa cidade para desambiguar); contactName só vira candidato com
+      // SOCIAL_OSINT_PERSON=true (LGPD — default OFF).
+      return prospect.companyName || prospect.tradeName
+        ? {
+            companyName: prospect.companyName || undefined,
+            tradeName: prospect.tradeName || undefined,
+            contactName: prospect.contactName || undefined,
+            city: prospect.city || undefined,
+            state: prospect.state || undefined,
+          }
+        : null;
     case 'search.news':
     case 'search.legal':
       return prospect.companyName ? { companyName: prospect.companyName } : null;
