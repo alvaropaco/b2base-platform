@@ -2132,6 +2132,7 @@ function registerChatRoutes(router, context) {
         const promoted = [];
         const notFound = [];
         const semNovo = [];
+        let buscaMorta = 0; // motores de busca responderam vazios para o lead
         // Descoberta multi-fonte (2026-10-09): a busca por empresa leva ~5-15s
         // (2-3 queries + até 3 páginas). Em paralelo (5 por vez) um lote de 40
         // roda em ~1-2 min; sequencial estouraria o pedido do chat.
@@ -2163,8 +2164,11 @@ function registerChatRoutes(router, context) {
             const dp = (outcome && outcome.data) || {};
             const wa = dp.digital_presence ? dp.digital_presence.whatsapp : null;
             const domain = dp.domain || null;
+            const searchMorta = Boolean(dp.digital_presence && dp.digital_presence.search_unavailable);
             if (!wa) {
-              (semTelefone(lead) ? notFound : semNovo).push(nome);
+              const alvo = semTelefone(lead) ? notFound : semNovo;
+              alvo.push(nome);
+              if (searchMorta) buscaMorta += 1;
               continue;
             }
             const digits = String(wa).replace(/\D/g, '');
@@ -2196,7 +2200,9 @@ function registerChatRoutes(router, context) {
             return `• **${f.companyName}** — ${f.whatsapp} ✓ WhatsApp cadastrado na frente do cadastro${trocou}`;
           }).join('\n'));
         }
-        if (notFound.length) {
+        if (notFound.length && buscaMorta >= notFound.length) {
+          lines.push(`⚠️ A BUSCA NA INTERNET respondeu vazia para todos os ${notFound.length} lead(s) nesta rodada (${notFound.slice(0, 5).join(', ')}${notFound.length > 5 ? '…' : ''}). Isso é instabilidade dos motores de busca, não prova de que não existe número — me peça para enriquecer de novo em alguns minutos.`);
+        } else if (notFound.length) {
           lines.push(`⚠️ ${notFound.length} lead(s) SEM WhatsApp público encontrado na internet (site, catálogo, redes): ${notFound.slice(0, 5).join(', ')}${notFound.length > 5 ? '…' : ''}`);
         }
         if (semNovo.length) {
@@ -2208,7 +2214,9 @@ function registerChatRoutes(router, context) {
         if (cadastrados.length) {
           lines.push('Pode disparar por WhatsApp: quem tem número no cadastro entra na fila na matrícula — e contato cancelado por no_phone volta sozinho no reforço de fila (o disparo re-lê o cadastro no envio). Lembrando: lead SEM consentimento WhatsApp registrado continua fora até você autorizar ("<nome> autorizou WhatsApp").');
         } else {
-          lines.push('Nada novo encontrado nesta rodada: sem número público na internet, o WhatsApp continua impossível para quem está sem telefone — me peça para atualizar os telefones manualmente ou capture leads novos.');
+          lines.push(buscaMorta > 0
+            ? 'A busca externa oscilou nesta rodada — repita o enriquecimento em alguns minutos antes de concluir que não existe número.'
+            : 'Nada novo encontrado nesta rodada: sem número público na internet, o WhatsApp continua impossível para quem está sem telefone — me peça para atualizar os telefones manualmente ou capture leads novos.');
         }
         return {
           type: 'enrichment_done',

@@ -315,6 +315,7 @@ async function discoverWhatsAppMultiSource({ companyName, tradeName, state, sign
   const catalogUrls = [];
   const generalUrls = [];
   const seenHosts = new Set();
+  let searchReturnedResults = false;
 
   const queries = [
     `${searchName} whatsapp`,
@@ -328,6 +329,7 @@ async function discoverWhatsAppMultiSource({ companyName, tradeName, state, sign
     } catch (_e) {
       continue;
     }
+    if (results.length > 0) searchReturnedResults = true;
     for (const r of results) {
       let snipHost = '';
       try { snipHost = new URL(r.url).hostname.replace(/^www\./, ''); } catch (_e) {}
@@ -404,7 +406,12 @@ async function discoverWhatsAppMultiSource({ companyName, tradeName, state, sign
 
   function finish() {
     const pick = strong[0] || weak[0] || null;
-    if (!pick) return null;
+    if (!pick) {
+      // Busca morta ≠ empresa sem WhatsApp: sinal para o chat dizer "repita
+      // em minutos" em vez de afirmar que não existe número na internet.
+      if (!searchReturnedResults) return { whatsapp: null, searchUnavailable: true };
+      return null;
+    }
     let domain = null;
     try { domain = new URL(pick.url).hostname.replace(/^www\./, ''); } catch (_e) { /* url de snippet */ }
     logger && logger.info && logger.info(`multi-source: WhatsApp ${pick.num} via ${pick.url}`);
