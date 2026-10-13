@@ -149,6 +149,17 @@ async function extractContactFromProfiles(profiles, { signal, fetchImpl = fetch,
   return null;
 }
 
+// Um scan de maigret POR VEZ neste processo: o pod do worker tem limite de
+// memória pequeno (384Mi) e scans paralelos (runtime com concorrência > 1)
+// estouraram o limite em produção — OOM derruba as tasks dos OUTROS canais
+// também (2026-10-13). A fila espera o scan anterior terminar.
+let scanChain = Promise.resolve();
+const serializeScan = (fn) => {
+  const next = scanChain.then(fn, fn);
+  scanChain = next.catch(() => {});
+  return next;
+};
+
 const executors = {
   async 'company.social_presence'(task, { signal, logger } = {}) {
     const companyName = String(task.input.companyName || '').trim();
@@ -170,7 +181,7 @@ const executors = {
     }
 
     logger && logger.info && logger.info(`social_presence: candidatos ${candidates.join(', ')}`);
-    const scan = await runDriverScan(candidates, { signal });
+    const scan = await serializeScan(() => runDriverScan(candidates, { signal }));
     if (scan.kind === 'unavailable') {
       logger && logger.warn && logger.warn(`social_presence: maigret indisponível (${scan.message})`);
       return { status: 'FAILED', error: { type: 'MAIGRET_UNAVAILABLE', message: String(scan.message || 'maigret ausente').slice(0, 200), retryable: false } };

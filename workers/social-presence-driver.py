@@ -20,10 +20,13 @@ import logging
 import re
 import sys
 
-TOP_SITES = 200
+# Pegada calibrada para o pod do worker (limite 384Mi, junto do Node):
+# 80 sites × 8 conexões estourar memória NUNCA — OOM do container derrubava
+# as outras tasks do worker junto (2026-10-13, 3× OOMKilled em produção).
+TOP_SITES = 80
 EXCLUDED_TAGS = ["dating", "nsfw", "cannabis"]
-PER_SITE_TIMEOUT = 15
-MAX_CONNECTIONS = 50
+PER_SITE_TIMEOUT = 8
+MAX_CONNECTIONS = 8
 
 
 def slugify(value: str) -> str:
