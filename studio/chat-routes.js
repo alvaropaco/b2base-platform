@@ -2083,18 +2083,19 @@ function registerChatRoutes(router, context) {
       case 'enrich_whatsapp': {
         // Enriquecimento PELO CHAT (pedido do dono, 2026-10-08; "atualize
         // TUDO", 2026-10-09): procura o WhatsApp das empresas NA INTERNET —
-        // o MESMO motor do worker company.digital_presence (descoberta de
-        // domínio via SearXNG + crawl do site + validação Twilio quando o
-        // registry existe) — e ATUALIZA o cadastro inteiro: quem está SEM
-        // número tem prioridade; quem JÁ TEM telefone recebe o WhatsApp do
-        // site na FRENTE do cnpjPhones (o disparo usa [0] e um fixo na frente
-        // matava o disparo mesmo com WhatsApp registrado atrás). O domínio
-        // descoberto é persistido quando falta (chave das próximas rodas).
-        const digitalPresence = require('../workers/digital-presence');
+        // o MESMO motor do worker company.digital_presence (site, catálogo
+        // digital da loja, agregadores de link, snippets) — e ATUALIZA o
+        // cadastro inteiro: quem está SEM número tem prioridade; quem JÁ TEM
+        // telefone recebe o WhatsApp do site na FRENTE do cnpjPhones (o
+        // disparo usa [0]).
+        //
+        // 2026-10-13: base INTEIRA não cabe na requisição HTTP — o ingress
+        // corta em ~60s e o usuário via "Falha ao enviar mensagem" com o
+        // motor ainda trabalhando. Acima de 8 leads (sem nomes citados) o
+        // trabalho vai para a FILA `studio:enrich` e o resultado aparece
+        // como mensagem da conversa quando terminar (enrich-worker.js).
+        // Lotes pequenos/nomes citados continuam síncronos.
         const limit = Math.min(100, Math.max(1, Number(action.limit) || 40));
-        // Mesma regra do disparo (whatsapp-utils.usablePhone): 10-13 dígitos
-        // com DDI 55 quando presente. O +91… (Índia) do crawler antigo conta
-        // como SEM telefone — o enriquecimento novo substitui o lixo.
         const { usablePhone } = require('../whatsapp-utils');
         const semTelefone = (p) => !usablePhone(p.cnpjPhones);
 
@@ -2120,116 +2121,62 @@ function registerChatRoutes(router, context) {
             ? await prisma.prospect.findMany({ where: { orgId, id: { in: ids } }, orderBy: { createdAt: 'desc' } })
             : await prisma.prospect.findMany({ where: { orgId }, orderBy: { createdAt: 'desc' }, take: 400 });
         }
-        // "Atualizar TUDO": sem número primeiro (destrava o disparo), quem já
-        // tem telefone entra na sequência para promoção do WhatsApp à frente.
         const semNumero = candidates.filter(semTelefone);
         const comNumero = candidates.filter((p) => !semTelefone(p));
-        const restantes = Math.max(0, candidates.length - limit);
-        const lote = [...semNumero, ...comNumero].slice(0, limit);
 
-        const logger = { info() {}, warn() {}, error() {}, child() { return this; } };
-        const found = [];
-        const promoted = [];
-        const notFound = [];
-        const semNovo = [];
-        let buscaMorta = 0; // motores de busca responderam vazios para o lead
-        // Descoberta multi-fonte (2026-10-09): a busca por empresa leva ~5-15s
-        // (2-3 queries + até 3 páginas). Em paralelo (5 por vez) um lote de 40
-        // roda em ~1-2 min; sequencial estouraria o pedido do chat.
-        const CHUNK = 5;
-        const { isCompanyDomain } = digitalPresence;
-        for (let i = 0; i < lote.length; i += CHUNK) {
-          const chunk = lote.slice(i, i + CHUNK);
-          const outcomes = await Promise.all(chunk.map(async (lead) => {
-            const nome = String(lead.companyName || lead.tradeName || lead.id);
-            try {
-              const outcome = await digitalPresence.executors['company.digital_presence'](
-                {
-                  input: {
-                    companyName: String(lead.companyName || lead.tradeName || ''),
-                    tradeName: lead.tradeName || undefined,
-                    state: lead.state || undefined,
-                    domain: lead.domain || null,
-                  },
-                  capability: 'company.digital_presence', timeoutMs: 30000,
-                },
-                { signal: AbortSignal.timeout(32000), logger }
-              );
-              return { lead, nome, outcome };
-            } catch (err) {
-              return { lead, nome, outcome: null };
+        const { enrichLeads, buildEnrichmentCard } = require('./enrich-base-service');
+
+        const baseInteira = candidates.length > 8 && !(Array.isArray(action.names) && action.names.length > 0);
+        if (baseInteira) {
+          let enfileirado = false;
+          const jobData = { orgId, campaignId: campaign.id, prospectIds: candidates.map((c) => c.id) };
+          try {
+            // Injetável para testes (sem Redis no harness).
+            const enqueue = overrides.enqueueEnrichBase;
+            if (typeof enqueue === 'function') {
+              await enqueue(jobData);
+              enfileirado = true;
+            } else {
+              const { createQueue } = require('../outreach-queues');
+              const queue = createQueue('studio:enrich');
+              // Redis ausente/lento NUNCA pendura o chat: race de 3s — sem
+              // fila, cai no modo síncrono de lotes (comportamento antigo).
+              await Promise.race([
+                queue.add('enrich', jobData, { attempts: 1, removeOnComplete: 100, removeOnFail: 100 }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('fila studio:enrich indisponível (3s)')), 3000)),
+              ]);
+              enfileirado = true;
             }
-          }));
-          for (const { lead, nome, outcome } of outcomes) {
-            const dp = (outcome && outcome.data) || {};
-            const wa = dp.digital_presence ? dp.digital_presence.whatsapp : null;
-            const domain = dp.domain || null;
-            const searchMorta = Boolean(dp.digital_presence && dp.digital_presence.search_unavailable);
-            if (!wa) {
-              const alvo = semTelefone(lead) ? notFound : semNovo;
-              alvo.push(nome);
-              if (searchMorta) buscaMorta += 1;
-              continue;
-            }
-            const digits = String(wa).replace(/\D/g, '');
-            const current = Array.isArray(lead.cnpjPhones) ? lead.cnpjPhones.filter(Boolean) : [];
-            const frontDigits = current.length ? String(current[0]).replace(/\D/g, '') : null;
-            if (frontDigits === digits) {
-              // Número já está na frente — cadastro em dia, nada a gravar.
-              found.push({ prospectId: lead.id, companyName: nome, whatsapp: wa });
-              continue;
-            }
-            const updates = { cnpjPhones: [wa, ...current.filter((p) => String(p).replace(/\D/g, '') !== digits)] };
-            // Domínio só vira lead.domain quando é site DA EMPRESA — catálogo
-            // digital (diggy.menu) e agregador (taplink/linktr) não são o site
-            // e poluiriam a chave de enriquecimento das próximas rodas.
-            if (domain && !lead.domain && isCompanyDomain(domain)) updates.domain = domain;
-            await prisma.prospect.update({ where: { id: lead.id }, data: updates });
-            (current.length ? promoted : found).push({ prospectId: lead.id, companyName: nome, whatsapp: wa, anterior: current[0] || null });
+          } catch (err) {
+            console.warn('[studio:chat] fila studio:enrich indisponível — cai no modo síncrono:', err.message);
+          }
+          if (enfileirado) {
+            return {
+              type: 'enrichment_started',
+              label: `Enriquecimento em andamento — ${candidates.length} lead(s)`,
+              detail: 'Rodei o motor no servidor em lotes paralelos: site, catálogo digital e redes de cada empresa, atualizando o cadastro de todos. Pode levar alguns minutos — o resultado aparece AQUI na conversa quando terminar (recarregue a página para acompanhar). Você já pode me pedir outras coisas enquanto isso.',
+              total: candidates.length,
+              campaignId: campaign.id,
+            };
           }
         }
 
-        const lines = [];
-        const cadastrados = [...found, ...promoted];
-        // Escopo EXPLÍCITO no card: a busca foi SÓ sobre a base do usuário —
-        // nenhum lead de outra organização entra aqui (isolamento por orgId).
-        lines.unshift(`🔎 Escopo: procurei na SUA base — ${candidates.length} lead(s) no raio desta campanha/org (${semNumero.length} sem telefone, ${comNumero.length} para atualizar), lote de ${lote.length}.`);
-        if (cadastrados.length) {
-          lines.push(cadastrados.map((f) => {
-            const trocou = f.anterior ? ` (substituiu ${f.anterior} na frente)` : '';
-            return `• **${f.companyName}** — ${f.whatsapp} ✓ WhatsApp cadastrado na frente do cadastro${trocou}`;
-          }).join('\n'));
-        }
-        if (notFound.length && buscaMorta >= notFound.length) {
-          lines.push(`⚠️ A BUSCA NA INTERNET respondeu vazia para todos os ${notFound.length} lead(s) nesta rodada (${notFound.slice(0, 5).join(', ')}${notFound.length > 5 ? '…' : ''}). Isso é instabilidade dos motores de busca, não prova de que não existe número — me peça para enriquecer de novo em alguns minutos.`);
-        } else if (notFound.length) {
-          lines.push(`⚠️ ${notFound.length} lead(s) SEM WhatsApp público encontrado na internet (site, catálogo, redes): ${notFound.slice(0, 5).join(', ')}${notFound.length > 5 ? '…' : ''}`);
-        }
-        if (semNovo.length) {
-          lines.push(`ℹ️ ${semNovo.length} lead(s) já tinham telefone e não achei WhatsApp novo na internet — cadastro mantido: ${semNovo.slice(0, 5).join(', ')}${semNovo.length > 5 ? '…' : ''}`);
-        }
-        if (restantes > 0) {
-          lines.push(`Ainda há ${restantes} lead(s) fora deste lote — me peça "continua o enriquecimento" para o próximo lote de ${limit}.`);
-        }
-        if (cadastrados.length) {
-          lines.push('Pode disparar por WhatsApp: quem tem número no cadastro entra na fila na matrícula — e contato cancelado por no_phone volta sozinho no reforço de fila (o disparo re-lê o cadastro no envio). Lembrando: lead SEM consentimento WhatsApp registrado continua fora até você autorizar ("<nome> autorizou WhatsApp").');
-        } else {
-          lines.push(buscaMorta > 0
-            ? 'A busca externa oscilou nesta rodada — repita o enriquecimento em alguns minutos antes de concluir que não existe número.'
-            : 'Nada novo encontrado nesta rodada: sem número público na internet, o WhatsApp continua impossível para quem está sem telefone — me peça para atualizar os telefones manualmente ou capture leads novos.');
-        }
-        return {
-          type: 'enrichment_done',
-          label: cadastrados.length
-            ? `Enriquecimento concluído — ${cadastrados.length} WhatsApp(s) cadastrado(s)`
-            : 'Enriquecimento concluído — nenhum WhatsApp novo encontrado',
-          detail: lines.join('\n'),
-          found: cadastrados.map((f) => f.companyName),
-          promoted: promoted.map((f) => f.companyName),
-          notFound,
-          semNovo,
+        // Modo síncrono (lotes pequenos, nomes citados, ou fila indisponível).
+        const lote = [...semNumero, ...comNumero].slice(0, Math.min(limit, candidates.length));
+        const res = await enrichLeads(prisma, { orgId, campaignId: campaign.id, leads: lote });
+        const restantes = Math.max(0, candidates.length - lote.length);
+        return buildEnrichmentCard({
+          found: res.found,
+          promoted: res.promoted,
+          notFound: res.notFound,
+          semNovo: res.semNovo,
+          buscaMorta: res.buscaMorta,
+          escopoTotal: candidates.length,
+          semNumeroCount: semNumero.length,
+          comNumeroCount: comNumero.length,
+          loteSize: lote.length,
           restantes,
-        };
+        });
       }
 
       case 'create_lead': {

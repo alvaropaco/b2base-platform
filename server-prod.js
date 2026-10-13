@@ -5704,6 +5704,16 @@ async function start() {
     try {
       require('./studio/scheduler-worker').registerStudioScheduler(prisma);
       require('./studio/analytics-service').registerStudioMetrics(prisma);
+      // Enriquecimento de base pelo chat em BACKGROUND (2026-10-13): base
+      // inteira na requisição HTTP estourava o timeout do ingress — o chat
+      // enfileira `studio:enrich` e este processador escreve o resultado
+      // como mensagem da conversa quando termina.
+      try {
+        require('./studio/enrich-worker').registerStudioEnrich(prisma);
+        console.log('[studio:enrich] ✓ worker de enriquecimento em background registrado');
+      } catch (enrichErr) {
+        console.error('[studio:enrich] registro indisponível (enriquecimento síncrono de lotes pequenos continua):', enrichErr.message);
+      }
       require('./studio/analytics-service').registerSnapshotPurge(prisma);
       // specs/011 (AD-8): revalidação DNS diária do domínio de envio —
       // falha → floor do saldo efetivo zero (o gate bloqueia com instrução).

@@ -2138,3 +2138,54 @@ test('QA: enriquecimento NÃO mistura bases — org-2 não vê nem grava lead da
 });
 
 function c_id(body) { return body.data.id; }
+
+// ── 2026-10-13: base INTEIRA não cabe na requisição HTTP (ingress corta
+// ~60s → "Falha ao enviar mensagem" com o motor ainda trabalhando). Acima de
+// 8 leads, o enriquecimento vai para a FILA e a IA responde na hora; o
+// resultado aparece como mensagem da conversa quando o worker terminar.
+
+test('QA: enriquecimento de base inteira vira job em background com card de andamento', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({ reply: 'Em andamento!', actions: [{ type: 'enrich_whatsapp' }] }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const jobs = [];
+  const { server, prisma, api } = await startServer({
+    llmImpl: impl,
+    overrides: { enqueueEnrichBase: async (job) => { jobs.push(job); } },
+  });
+  try {
+    // 10 leads na audiência (> 8 → background).
+    const leads = Array.from({ length: 10 }, (_, i) => ({
+      id: `lead-bg-${i}`, orgId: 'org-1', companyName: `Empresa BG ${i} LTDA`, domain: `bg${i}.com.br`,
+    }));
+    prisma.prospect.rows.push(...leads);
+    const { body: c } = await api('POST', '/campaigns', { name: 'Base BG', channels: ['whatsapp'] });
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-bg', orgId: 'org-1', campaignId: c.data.id,
+      criteriaVersion: {}, totalCount: 10, includedCount: 10, excludedCount: 0, status: 'active',
+    });
+    for (const l of leads) {
+      prisma.studioAudienceMember.rows.push({ id: `m-bg-${l.id}`, snapshotId: 'snap-bg', orgId: 'org-1', prospectId: l.id, included: true, excludeReason: null });
+    }
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'faca o enriquecimento da base focando no whatsapp' });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'enrichment_started');
+    assert.ok(card, 'card de andamento presente');
+    assert.match(card.label, /10 lead\(s\)/, 'total no card');
+    assert.match(card.detail, /quando terminar/, 'explica que o resultado volta na conversa');
+    assert.equal(jobs.length, 1, 'job enfileirado');
+    assert.equal(jobs[0].orgId, 'org-1');
+    assert.equal(jobs[0].prospectIds.length, 10, 'todos os leads no job');
+    assert.equal(jobs[0].campaignId, c.data.id);
+    // NADA foi enriquecido na hora (sem rede no turno do chat).
+    assert.ok(leads.every((l) => !l.cnpjPhones), 'nenhum lead tocado no turno — o worker faz isso');
+  } finally {
+    server.close();
+  }
+});
