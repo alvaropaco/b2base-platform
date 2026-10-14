@@ -94,6 +94,8 @@ const CAPABILITIES = {
       domain: { type: 'string', required: false },
       companyName: { type: 'string', required: false },
       tradeName: { type: 'string', required: false },
+      cnpj: { type: 'string', required: false },
+      city: { type: 'string', required: false },
       state: { type: 'string', required: false },
     },
     expand: [],

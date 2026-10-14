@@ -2170,6 +2170,7 @@ function registerChatRoutes(router, context) {
           promoted: res.promoted,
           notFound: res.notFound,
           semNovo: res.semNovo,
+          naoConfirmado: res.naoConfirmado,
           buscaMorta: res.buscaMorta,
           escopoTotal: candidates.length,
           semNumeroCount: semNumero.length,

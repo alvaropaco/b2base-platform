@@ -39,6 +39,7 @@
     "cookie": "^0.7.2",
     "express": "^5.2.1",
     "firebase-admin": "^14.2.0",
+    "google-libphonenumber": "^3.2.47",
     "googleapis": "^174.0.1",
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",

@@ -45,13 +45,14 @@ function buildCapabilityInput(capability, prospect) {
     case 'company.logo':
       return domain ? { domain } : null;
     case 'company.digital_presence':
-      // Sem domínio no cadastro, o worker DESCOBRE pelo nome (searxng) — e
-      // desde 2026-10-09 a descoberta multi-fonte usa fantasia + UF para
-      // buscar o WhatsApp de quem não tem site (catálogo digital, snippets).
+      // 2026-10-14 (refactor com FONTE e score): o CNPJ é o identificador
+      // mais forte (BrasilAPI confirma a identidade antes de buscar); cidade
+      // desambigua homônimos. Sem domínio no cadastro, o worker descobre por
+      // busca — marcado não-confirmado (nunca vira score 95).
       return domain
-        ? { domain, tradeName: prospect.tradeName || undefined, state: prospect.state || undefined }
+        ? { domain, cnpj: prospect.cnpj || undefined, tradeName: prospect.tradeName || undefined, city: prospect.city || undefined, state: prospect.state || undefined }
         : (prospect.companyName
-          ? { companyName: prospect.companyName, tradeName: prospect.tradeName || undefined, state: prospect.state || undefined }
+          ? { companyName: prospect.companyName, cnpj: prospect.cnpj || undefined, tradeName: prospect.tradeName || undefined, city: prospect.city || undefined, state: prospect.state || undefined }
           : null);
     case 'company.profile.deep':
       return prospect.companyName

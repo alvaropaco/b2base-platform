@@ -37,6 +37,7 @@ async function enrichLeads(prisma, { leads, chunkSize = CHUNK_SIZE, perLeadTimeo
   const promoted = [];
   const notFound = [];
   const semNovo = [];
+  const naoConfirmado = [];
   let buscaMorta = 0;
 
   for (let i = 0; i < leads.length; i += chunkSize) {
@@ -48,7 +49,9 @@ async function enrichLeads(prisma, { leads, chunkSize = CHUNK_SIZE, perLeadTimeo
           {
             input: {
               companyName: String(lead.companyName || lead.tradeName || ''),
+              cnpj: lead.cnpj || undefined,
               tradeName: lead.tradeName || undefined,
+              city: lead.city || undefined,
               state: lead.state || undefined,
               domain: lead.domain || null,
             },
@@ -62,12 +65,27 @@ async function enrichLeads(prisma, { leads, chunkSize = CHUNK_SIZE, perLeadTimeo
       }
     }));
     for (const { lead, nome, outcome } of outcomes) {
-      const dp = (outcome && outcome.data) || {};
-      const wa = dp.digital_presence ? dp.digital_presence.whatsapp : null;
-      const domain = dp.domain || null;
+      const dpInfo = (outcome && outcome.data && outcome.data.digital_presence) || {};
+      const wa = dpInfo.whatsapp || null; // SÓ existe quando status = 'confirmado'
+      const domain = (outcome && outcome.data && outcome.data.domain) || null;
+      const status = dpInfo.status || 'nao_encontrado';
+      const score = typeof dpInfo.score === 'number' ? dpInfo.score : null;
+      const fonteUrl = Array.isArray(dpInfo.fontes) && dpInfo.fontes[0] ? dpInfo.fontes[0].url : null;
+
+      // NÃO CONFIRMADO (score 40-69): NÃO entra no cadastro — fila de revisão
+      // manual (a IA mostra na conversa; o painel de enriquecimento detalha).
+      if (status === 'nao_confirmado' || (dpInfo.nao_confirmado && !wa)) {
+        naoConfirmado.push({
+          companyName: nome,
+          whatsapp: (dpInfo.nao_confirmado && dpInfo.nao_confirmado.whatsapp) || null,
+          score: (dpInfo.nao_confirmado && dpInfo.nao_confirmado.score) || score,
+          motivo: (dpInfo.nao_confirmado && dpInfo.nao_confirmado.motivo) || null,
+        });
+        continue;
+      }
       if (!wa) {
         (semTelefone(lead) ? notFound : semNovo).push(nome);
-        if (dp.digital_presence && dp.digital_presence.search_unavailable) buscaMorta += 1;
+        if (dpInfo.search_unavailable) buscaMorta += 1;
         continue;
       }
       const digits = String(wa).replace(/\D/g, '');
@@ -78,22 +96,29 @@ async function enrichLeads(prisma, { leads, chunkSize = CHUNK_SIZE, perLeadTimeo
         continue;
       }
       const updates = { cnpjPhones: [wa, ...current.filter((p) => String(p).replace(/\D/g, '') !== digits)] };
+      // E-mail corporativo achado na MESMA fonte (literal no HTML): preenche
+      // quando o lead não tem — destrava também o disparo por e-mail.
+      const email = dpInfo.corporate_email || null;
+      if (email && !lead.cnpjEmail) updates.cnpjEmail = email;
       // Domínio só vira lead.domain quando é site DA EMPRESA — catálogo
       // digital (diggy.menu) e agregador (taplink/linktr) não são o site.
       if (domain && !lead.domain && isCompanyDomain(domain)) updates.domain = domain;
       await prisma.prospect.update({ where: { id: lead.id }, data: updates });
-      (current.length ? promoted : found).push({ prospectId: lead.id, companyName: nome, whatsapp: wa, anterior: current[0] || null });
+      (current.length ? promoted : found).push({
+        prospectId: lead.id, companyName: nome, whatsapp: wa, anterior: current[0] || null,
+        status, score, fonteUrl,
+      });
     }
   }
 
-  return { found, promoted, notFound, semNovo, buscaMorta, semNumero, comNumero };
+  return { found, promoted, notFound, semNovo, naoConfirmado, buscaMorta, semNumero, comNumero };
 }
 
 /**
  * Monta o card `enrichment_done` (mesma copy do modo síncrono do chat).
  * `escopoTotal` = leads no raio da campanha/org; `loteSize` = processados.
  */
-function buildEnrichmentCard({ found, promoted, notFound, semNovo, buscaMorta, escopoTotal, semNumeroCount, comNumeroCount, loteSize, restantes }) {
+function buildEnrichmentCard({ found, promoted, notFound, semNovo, naoConfirmado = [], buscaMorta, escopoTotal, semNumeroCount, comNumeroCount, loteSize, restantes }) {
   const cadastrados = [...found, ...promoted];
   const lines = [];
   // Escopo EXPLÍCITO no card: a busca foi SÓ sobre a base do usuário —
@@ -102,8 +127,14 @@ function buildEnrichmentCard({ found, promoted, notFound, semNovo, buscaMorta, e
   if (cadastrados.length) {
     lines.push(cadastrados.map((f) => {
       const trocou = f.anterior ? ` (substituiu ${f.anterior} na frente)` : '';
-      return `• **${f.companyName}** — ${f.whatsapp} ✓ WhatsApp cadastrado na frente do cadastro${trocou}`;
+      const fonte = f.fonteUrl ? ` — fonte: ${f.fonteUrl}` : '';
+      const score = typeof f.score === 'number' ? ` (score ${f.score})` : '';
+      return `• **${f.companyName}** — ${f.whatsapp} ✓ WhatsApp CONFIRMADO${score}${trocou}${fonte}`;
     }).join('\n'));
+  }
+  if (naoConfirmado.length) {
+    lines.push(`⚠️ ${naoConfirmado.length} lead(s) com número NÃO CONFIRMADO (score 40-69) — NÃO entraram no cadastro, precisam de revisão manual:`);
+    lines.push(naoConfirmado.map((f) => `• **${f.companyName}** — ${f.whatsapp || '?'} (score ${f.score})${f.motivo ? ` — ${f.motivo}` : ''}`).join('\n'));
   }
   if (notFound.length && buscaMorta >= notFound.length) {
     lines.push(`⚠️ A BUSCA NA INTERNET respondeu vazia para todos os ${notFound.length} lead(s) nesta rodada (${notFound.slice(0, 5).join(', ')}${notFound.length > 5 ? '…' : ''}). Isso é instabilidade dos motores de busca, não prova de que não existe número — me peça para enriquecer de novo em alguns minutos.`);
@@ -124,8 +155,8 @@ function buildEnrichmentCard({ found, promoted, notFound, semNovo, buscaMorta, e
   return {
     type: 'enrichment_done',
     label: cadastrados.length
-      ? `Enriquecimento concluído — ${cadastrados.length} WhatsApp(s) cadastrado(s)`
-      : 'Enriquecimento concluído — nenhum WhatsApp novo encontrado',
+      ? `Enriquecimento concluído — ${cadastrados.length} WhatsApp(s) CONFIRMADO(S) e cadastrado(s)`
+      : 'Enriquecimento concluído — nenhum WhatsApp confirmado',
     detail: lines.join('\n'),
     found: cadastrados.map((f) => f.companyName),
     promoted: promoted.map((f) => f.companyName),

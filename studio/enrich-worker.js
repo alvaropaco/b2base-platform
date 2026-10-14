@@ -36,6 +36,7 @@ function registerStudioEnrich(prisma, { deps = {} } = {}) {
           promoted: res.promoted,
           notFound: res.notFound,
           semNovo: res.semNovo,
+          naoConfirmado: res.naoConfirmado,
           buscaMorta: res.buscaMorta,
           escopoTotal: prospects.length,
           semNumeroCount: res.semNumero.length,

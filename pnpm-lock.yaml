@@ -29,6 +29,9 @@ importers:
       firebase-admin:
         specifier: ^14.2.0
         version: 14.2.0(@firebase/app-compat@0.5.16)(@firebase/app@0.16.0)
+      google-libphonenumber:
+        specifier: ^3.2.47
+        version: 3.2.47
       googleapis:
         specifier: ^174.0.1
         version: 174.0.1
@@ -2294,6 +2297,10 @@ packages:
   google-gax@5.0.8:
     resolution: {integrity: sha512-M4vpZcXQIC1gqIVGQ7eaU3jXQA6zecStyTXu514TYfThlgSurYJOxHZo9fzU6hAgwPWvuEynAVHWyaIk80VeEA==}
     engines: {node: '>=18'}
+
+  google-libphonenumber@3.2.47:
+    resolution: {integrity: sha512-sPKNFCUB8ZQtdEiREx7DAeMbQGeLWW3dITLbprBqH+5P10yMTwCbvKWVzjPKzUK4xvAXWBgcZdAHULb2qbjK6A==}
+    engines: {node: '>=0.10'}
 
   google-logging-utils@0.0.2:
     resolution: {integrity: sha512-NEgUnEcBiP5HrPzufUkBzJOD/Sxsco3rLNo1F1TNf7ieU8ryUzBhqba8r756CjLX7rn3fHl6iLEwPYuqpoKgQQ==}
@@ -6518,6 +6525,8 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
     optional: true
+
+  google-libphonenumber@3.2.47: {}
 
   google-logging-utils@0.0.2:
     optional: true

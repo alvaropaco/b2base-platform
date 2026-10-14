@@ -1697,7 +1697,7 @@ test('QA: "enriquece minha base" procura o WhatsApp na internet e cadastra nos l
     assert.equal(res.status, 200);
     const card = body.data.cards.find((card) => card.type === 'enrichment_done');
     assert.ok(card, 'card de enriquecimento presente');
-    assert.match(card.label, /1 WhatsApp\(s\) cadastrado/, 'só o lead SEM telefone é enriquecido');
+    assert.match(card.label, /1 WhatsApp\(s\) CONFIRMADO/, 'só o lead SEM telefone é enriquecido');
     assert.ok(card.detail.includes('ACME Industria'), 'nome do lead no card');
     const lead = prisma.prospect.rows.find((r) => r.id === 'lead-e1');
     assert.equal(lead.cnpjPhones[0], '+5511987654321', 'WhatsApp cadastrado NA FRENTE do cadastro');
@@ -1999,7 +1999,7 @@ test('QA: enriquecimento PROMOVE o WhatsApp achado na internet para a frente de 
     assert.equal(res.status, 200);
     const card = body.data.cards.find((card) => card.type === 'enrichment_done');
     assert.ok(card, 'card de enriquecimento presente');
-    assert.match(card.label, /1 WhatsApp\(s\) cadastrado/, 'promoção conta como cadastro');
+    assert.match(card.label, /1 WhatsApp\(s\) CONFIRMADO/, 'promoção conta como cadastro');
     assert.ok(card.promoted.includes('Fixo Na Frente LTDA'), 'lead aparece como promovido');
     const lead = prisma.prospect.rows.find((r) => r.id === 'lead-p1');
     assert.equal(lead.cnpjPhones[0], '+5511987654321', 'WhatsApp do site na FRENTE do cadastro');
