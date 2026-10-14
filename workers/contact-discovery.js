@@ -242,7 +242,7 @@ async function collectFromSite(identidade, { fetchImpl = fetch, signal, logger }
       const ig = html.match(/instagram\.com\/([A-Za-z0-9_.]{2,40})/i);
       if (ig && !/\/p\//.test(ig[0])) out.instagramHandle = ig[1].replace(/\.$/, '');
     }
-    out.emails.push(...extractEmailsFromHtml(html, { hostDomain: dominio }));
+    out.emails.push(...extractEmailsFromHtml(html, { hostDomain: dominio }).map((e) => ({ email: e, url: `${base}/${path}` })));
 
     // wa.me / api.whatsapp / web.whatsapp → candidato tipo wa_link
     for (const m of html.matchAll(new RegExp(WA_LINKS_RE.source, 'gi'))) {
@@ -482,8 +482,13 @@ async function discoverLeadContact(prisma, prospect, deps = {}) {
     }
   }
 
-  // E-mail corporativo: literal na fonte (site oficial), mesma regra de ouro.
-  const email = (site.emails[0] || identidade.email_cnpj || null);
+  // E-mail corporativo: literal na fonte (site oficial / CNPJ), mesma regra
+  // de ouro — com a URL da fonte para exibição clicável.
+  const emailPick = site.emails[0] || (identidade.email_cnpj
+    ? { email: identidade.email_cnpj, url: identidade.cnpj ? `https://brasilapi.com.br/api/cnpj/v1/${identidade.cnpj}` : null }
+    : null);
+  const email = emailPick ? emailPick.email : null;
+  const email_fonte = emailPick ? emailPick.url : null;
 
   const status = melhor ? 'confirmado' : (naoConfirmado ? 'nao_confirmado' : 'nao_encontrado');
 
@@ -507,6 +512,7 @@ async function discoverLeadContact(prisma, prospect, deps = {}) {
       ? { whatsapp: naoConfirmado.e164, score: naoConfirmado.score, url: naoConfirmado.url, motivo: naoConfirmado.dddIncompativel ? 'DDD incompatível com a UF' : 'fonte única/weight insuficiente' }
       : null,
     email,
+    email_fonte,
     domain: identidade.dominio,
     dominio_confirmado: identidade.dominio_confirmado,
     search_unavailable: false,

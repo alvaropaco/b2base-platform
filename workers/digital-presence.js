@@ -152,6 +152,7 @@ const executors = {
       // REGRA DE OURO: whatsapp só existe quando status = 'confirmado'.
       whatsapp: r.whatsapp,
       corporate_email: r.email || null,
+      corporate_email_fonte: r.email_fonte || null,
       status: r.status,
       score: r.score,
       fontes: r.fontes,

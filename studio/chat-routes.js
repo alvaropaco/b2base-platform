@@ -1718,7 +1718,7 @@ function registerChatRoutes(router, context) {
             '**Jornada da campanha aberta** — objetivo, audiência por linguagem natural, ajuste fino de leads, captura de leads novos, conteúdo (gerar, editar e MOSTRAR aqui no chat) e agendamento.\n' +
             '**Aprovação e disparo** — aprovar a campanha pelo mesmo fluxo do Pré-voo, ENVIAR UMA MENSAGEM DE TESTE para o seu WhatsApp ou e-mail antes de valer, COLOCAR EM VOO na hora (disparo único, e-mail e WhatsApp — sem perguntas de agenda) e mostrar o que falta para poder disparar (saldo, certificado).\n' +
             '**Canais** — conectar a conta de e-mail de disparo (Resend com a sua API key ou SMTP com senha de app), DESCONECTAR a conta de envio (disconnect_email — sempre confirmo antes), mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
-            '**Campanhas em voo** — CANCELAR a campanha pelo chat (cancel_campaign — para os disparos, estorna o não enviado e cancela a fila; sempre confirmo antes) e ESCOLHER os canais de disparo a qualquer momento: e-mail + WhatsApp, só WhatsApp ou só e-mail (set_channels). **Leads** — consultar e editar dados de empresa/contato, CADASTRAR lead novo com os dados que você passar (create_lead), ENRIQUECER a base procurando o WhatsApp das empresas na internet (enrich_whatsapp) — atualiza TODOS os leads: cadastra em quem está sem número e põe o WhatsApp NA FRENTE do cadastro de quem já tem telefone — mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
+            '**Campanhas em voo** — CANCELAR a campanha pelo chat (cancel_campaign — para os disparos, estorna o não enviado e cancela a fila; sempre confirmo antes) e ESCOLHER os canais de disparo a qualquer momento: e-mail + WhatsApp, só WhatsApp ou só e-mail (set_channels). **Leads** — consultar e editar dados de empresa/contato, CADASTRAR lead novo com os dados que você passar (create_lead), ENRIQUECER a base pela internet (enrich_whatsapp para WhatsApp/telefone; enrich_email para E-MAIL corporativo) — atualiza TODOS os leads: cadastra em quem está sem o dado e põe o WhatsApp NA FRENTE do cadastro de quem já tem telefone; todo número/e-mail vem COM A FONTE (URL) e só entra quando confirmado — mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
             'Não faço ainda: publicar os registros DNS no provedor do domínio (eu mostro, você publica) e ler a caixa de entrada inteira fora das respostas classificadas.',
         };
 
@@ -2080,24 +2080,29 @@ function registerChatRoutes(router, context) {
         };
       }
 
-      case 'enrich_whatsapp': {
-        // Enriquecimento PELO CHAT (pedido do dono, 2026-10-08; "atualize
-        // TUDO", 2026-10-09): procura o WhatsApp das empresas NA INTERNET —
-        // o MESMO motor do worker company.digital_presence (site, catálogo
-        // digital da loja, agregadores de link, snippets) — e ATUALIZA o
-        // cadastro inteiro: quem está SEM número tem prioridade; quem JÁ TEM
-        // telefone recebe o WhatsApp do site na FRENTE do cnpjPhones (o
-        // disparo usa [0]).
-        //
-        // 2026-10-13: base INTEIRA não cabe na requisição HTTP — o ingress
-        // corta em ~60s e o usuário via "Falha ao enviar mensagem" com o
-        // motor ainda trabalhando. Acima de 8 leads (sem nomes citados) o
-        // trabalho vai para a FILA `studio:enrich` e o resultado aparece
-        // como mensagem da conversa quando terminar (enrich-worker.js).
-        // Lotes pequenos/nomes citados continuam síncronos.
-        const limit = Math.min(100, Math.max(1, Number(action.limit) || 40));
+      case 'enrich_whatsapp':
+      case 'enrich_email': {
+        // Enriquecimento PELO CHAT (pedido do dono, 2026-10-08; e-mail,
+        // 2026-10-14): procura WhatsApp E/OU E-MAIL corporativo das empresas
+        // NA INTERNET — o MESMO pipeline com FONTE e score do worker
+        // company.digital_presence (identidade confirmada, site oficial,
+        // Google Places, CNPJ, Instagram) — e ATUALIZA o cadastro:
+        //   enrich_whatsapp → alvo = leads sem telefone (cnpjPhones[0])
+        //   enrich_email    → alvo = leads sem e-mail (cnpjEmail)
+        // Número só entra quando status = 'confirmado'; e-mail precisa estar
+        // LITERAL na fonte. Base inteira (>8 leads) vai para a FILA
+        // `studio:enrich` (o ingress corta a requisição em ~60s) e o
+        // resultado aparece como mensagem da conversa (enrich-worker.js).
+        const channel = action.type === 'enrich_email' ? 'email' : 'whatsapp';
         const { usablePhone } = require('../whatsapp-utils');
-        const semTelefone = (p) => !usablePhone(p.cnpjPhones);
+        const querEmail = channel === 'email';
+        const ehAlvo = (p) => {
+          if (channel === 'email') return !p.cnpjEmail;
+          return !usablePhone(p.cnpjPhones);
+        };
+        const alvoNome = querEmail ? 'sem e-mail' : 'sem telefone';
+        const dadoNome = querEmail ? 'e-mail' : 'WhatsApp';
+        const limit = Math.min(100, Math.max(1, Number(action.limit) || 40));
 
         // Escopo: nomes citados → audiência da campanha aberta → base da org.
         let candidates = [];
@@ -2121,15 +2126,15 @@ function registerChatRoutes(router, context) {
             ? await prisma.prospect.findMany({ where: { orgId, id: { in: ids } }, orderBy: { createdAt: 'desc' } })
             : await prisma.prospect.findMany({ where: { orgId }, orderBy: { createdAt: 'desc' }, take: 400 });
         }
-        const semNumero = candidates.filter(semTelefone);
-        const comNumero = candidates.filter((p) => !semTelefone(p));
+        const alvos = candidates.filter(ehAlvo);
+        const fora = candidates.filter((p) => !ehAlvo(p));
 
         const { enrichLeads, buildEnrichmentCard } = require('./enrich-base-service');
 
         const baseInteira = candidates.length > 8 && !(Array.isArray(action.names) && action.names.length > 0);
         if (baseInteira) {
           let enfileirado = false;
-          const jobData = { orgId, campaignId: campaign.id, prospectIds: candidates.map((c) => c.id) };
+          const jobData = { orgId, campaignId: campaign.id, channel, prospectIds: candidates.map((c) => c.id) };
           try {
             // Injetável para testes (sem Redis no harness).
             const enqueue = overrides.enqueueEnrichBase;
@@ -2153,28 +2158,31 @@ function registerChatRoutes(router, context) {
           if (enfileirado) {
             return {
               type: 'enrichment_started',
-              label: `Enriquecimento em andamento — ${candidates.length} lead(s)`,
-              detail: 'Rodei o motor no servidor em lotes paralelos: site, catálogo digital e redes de cada empresa, atualizando o cadastro de todos. Pode levar alguns minutos — o resultado aparece AQUI na conversa quando terminar (recarregue a página para acompanhar). Você já pode me pedir outras coisas enquanto isso.',
+              label: `Enriquecimento em andamento — ${candidates.length} lead(s) (${dadoNome})`,
+              detail: 'Rodei o motor no servidor em lotes paralelos: identidade da empresa, site oficial e fontes públicas, atualizando o cadastro de todos. Pode levar alguns minutos — o resultado aparece AQUI na conversa quando terminar (recarregue a página para acompanhar). Você já pode me pedir outras coisas enquanto isso.',
               total: candidates.length,
+              channel,
               campaignId: campaign.id,
             };
           }
         }
 
         // Modo síncrono (lotes pequenos, nomes citados, ou fila indisponível).
-        const lote = [...semNumero, ...comNumero].slice(0, Math.min(limit, candidates.length));
-        const res = await enrichLeads(prisma, { orgId, campaignId: campaign.id, leads: lote });
+        const lote = [...alvos, ...fora].slice(0, Math.min(limit, candidates.length));
+        const res = await enrichLeads(prisma, { orgId, campaignId: campaign.id, channel, leads: lote });
         const restantes = Math.max(0, candidates.length - lote.length);
         return buildEnrichmentCard({
+          channel,
           found: res.found,
           promoted: res.promoted,
+          emailsFound: res.emailsFound,
           notFound: res.notFound,
           semNovo: res.semNovo,
           naoConfirmado: res.naoConfirmado,
           buscaMorta: res.buscaMorta,
           escopoTotal: candidates.length,
-          semNumeroCount: semNumero.length,
-          comNumeroCount: comNumero.length,
+          semNumeroCount: alvos.length,
+          comNumeroCount: fora.length,
           loteSize: lote.length,
           restantes,
         });
@@ -2232,6 +2240,7 @@ function registerChatRoutes(router, context) {
             searchText: buildSearchText({ industry: action.industry || null, companyName: name, tradeName: action.tradeName || null }),
           },
         });
+
         // Consentimento WhatsApp automático (mesma diretriz da captura: o
         // dono cadastrou o lead — ele atesta a relação; trilha auditável).
         if (phone) {

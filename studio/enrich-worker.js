@@ -17,7 +17,7 @@ function registerStudioEnrich(prisma, { deps = {} } = {}) {
   const queue = createQueue('studio:enrich');
   queue.process('enrich', 1, async (job) => {
     const { enrichLeads, buildEnrichmentCard } = require('./enrich-base-service');
-    const { orgId, campaignId, prospectIds } = job.data || {};
+    const { orgId, campaignId, prospectIds, channel = 'whatsapp' } = job.data || {};
     let text;
     let cards;
     try {
@@ -28,7 +28,7 @@ function registerStudioEnrich(prisma, { deps = {} } = {}) {
         where: { orgId, id: { in: prospectIds } },
         orderBy: { createdAt: 'desc' },
       });
-      const res = await enrichLeads(prisma, { orgId, campaignId, leads: prospects });
+      const res = await enrichLeads(prisma, { orgId, campaignId, channel, leads: prospects });
       const cadastrados = [...res.found, ...res.promoted];
       cards = [
         buildEnrichmentCard({
@@ -38,6 +38,7 @@ function registerStudioEnrich(prisma, { deps = {} } = {}) {
           semNovo: res.semNovo,
           naoConfirmado: res.naoConfirmado,
           buscaMorta: res.buscaMorta,
+          channel,
           escopoTotal: prospects.length,
           semNumeroCount: res.semNumero.length,
           comNumeroCount: res.comNumero.length,
@@ -45,9 +46,10 @@ function registerStudioEnrich(prisma, { deps = {} } = {}) {
           restantes: 0,
         }),
       ];
-      text = cadastrados.length
-        ? `Pronto — enriquecimento da base concluído: ${cadastrados.length} WhatsApp(s) cadastrado(s) em ${prospects.length} lead(s). Os detalhes estão no card abaixo.`
-        : `Pronto — enriquecimento da base concluído: nenhum WhatsApp novo encontrado em ${prospects.length} lead(s). Os detalhes estão no card abaixo.`;
+      const emailsN = (res.emailsFound || []).length;
+      text = (cadastrados.length || emailsN)
+        ? `Pronto — enriquecimento da base concluído: ${cadastrados.length} WhatsApp(s) e ${emailsN} e-mail(s) cadastrado(s) em ${prospects.length} lead(s). Os detalhes estão no card abaixo.`
+        : `Pronto — enriquecimento da base concluído: nada novo encontrado em ${prospects.length} lead(s). Os detalhes estão no card abaixo.`;
     } catch (err) {
       console.error('[studio:enrich] falhou:', err.stack || err.message);
       text = 'O enriquecimento em background falhou no meio — pode me pedir para rodar de novo que eu refaço.';

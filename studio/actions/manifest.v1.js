@@ -108,6 +108,11 @@ const ACTIONS_V1 = {
   // idempotency 'none': rodar de novo é INTENCIONAL (base cresceu, site ganhou
   // WhatsApp) — a busca reprocessa toda a audiência/base.
   enrich_whatsapp: { version: 1, idempotency: 'none', description: 'Procura o WhatsApp das empresas na internet e ATUALIZA o cadastro de TODOS os leads (cadastra em quem está sem telefone e põe o WhatsApp na frente de quem já tem número) — destrava o disparo por WhatsApp' },
+  // Enriquecimento por E-MAIL pelo chat (pedido do dono, 2026-10-14):
+  // procura o E-MAIL corporativo das empresas NA INTERNET (site oficial,
+  // CNPJ, Instagram — sempre literal na fonte) e cadastra nos leads sem
+  // e-mail (cnpjEmail), destravando o disparo por e-mail. Idempotency 'none'.
+  enrich_email: { version: 1, idempotency: 'none', description: 'Procura o E-MAIL corporativo das empresas na internet (site oficial, CNPJ, Instagram — sempre com a fonte) e cadastra nos leads que estão sem e-mail — destrava o disparo por e-mail' },
   // Cadastro manual pelo chat (reclamação do dono, 2026-10-08: a IA dizia
   // "não consigo cadastrar lead pelo chat" — falso: faltava a action).
   // Idempotency 'params': o MESMO payload 2× devolve o mesmo card (e o

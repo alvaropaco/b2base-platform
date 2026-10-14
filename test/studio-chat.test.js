@@ -2189,3 +2189,57 @@ test('QA: enriquecimento de base inteira vira job em background com card de anda
     server.close();
   }
 });
+
+// ── 2026-10-14: enriquecimento por E-MAIL — acha o e-mail corporativo na
+// internet (fonte-literal) e cadastra nos leads sem e-mail (cnpjEmail).
+
+test('QA: "enriquecimento com email" acha o e-mail corporativo no site e cadastra (enrich_email)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({ reply: 'Vou procurar os e-mails!', actions: [{ type: 'enrich_email' }] }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  const mock = (() => {
+    const orig = global.fetch;
+    const html = '<html><title>Acme</title><a href="mailto:contato@acme.com.br">fale conosco</a><span>noreply@acme.com.br</span></html>';
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('127.0.0.1')) return orig(url, opts);
+      return { ok: true, status: 200, text: async () => html, json: async () => ({}) };
+    };
+    return { restore() { global.fetch = orig; } };
+  })();
+  try {
+    prisma.prospect.rows.push(
+      { id: 'lead-em1', orgId: 'org-1', companyName: 'ACME Industria', domain: 'acme.com.br' },
+      { id: 'lead-em2', orgId: 'org-1', companyName: 'Já Tem Email LTDA', domain: 'tememail.com.br', cnpjEmail: 'ja@tememail.com' }
+    );
+    const { body: c } = await api('POST', '/campaigns', { name: 'Email Enrich', channels: ['email'] });
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-em', orgId: 'org-1', campaignId: c.data.id,
+      criteriaVersion: {}, totalCount: 2, includedCount: 2, excludedCount: 0, status: 'active',
+    });
+    prisma.studioAudienceMember.rows.push(
+      { id: 'mem1', snapshotId: 'snap-em', orgId: 'org-1', prospectId: 'lead-em1', included: true, excludeReason: null },
+      { id: 'mem2', snapshotId: 'snap-em', orgId: 'org-1', prospectId: 'lead-em2', included: true, excludeReason: null }
+    );
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'faca o enriquecimento da base com email' });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'enrichment_done');
+    assert.ok(card, 'card de enriquecimento presente');
+    console.log('DEBUG CARD:', JSON.stringify(card).slice(0, 600));
+    console.log('DEBUG CARDS:', JSON.stringify(body.data.cards.map((c) => c.type)));
+    assert.match(card.label, /1 e-mail\(s\) cadastrado/, 'um e-mail cadastrado');
+    const lead = prisma.prospect.rows.find((r) => r.id === 'lead-em1');
+    assert.equal(lead.cnpjEmail, 'contato@acme.com.br', 'e-mail corporativo cadastrado');
+    const intact = prisma.prospect.rows.find((r) => r.id === 'lead-em2');
+    assert.equal(intact.cnpjEmail, 'ja@tememail.com', 'quem já tem e-mail não é tocado');
+  } finally {
+    mock.restore();
+    server.close();
+  }
+});
