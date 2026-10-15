@@ -34,6 +34,19 @@ const DDD_UF = {
 };
 
 const SITE_CONTACT_PATHS = ['', 'contato', 'fale-conosco'];
+// ── Crawl interno (2026-10-15 — "entrar no site de verdade") ────────────────
+// Home + /contato não bastam: muito site esconde o WhatsApp em /atendimento,
+// /orcamento, páginas de unidade/filial. Quando os caminhos fixos NÃO
+// renderam um wa.me, seguimos links internos de contato com orçamento
+// fechado (5 páginas, 15s, 8s por página) — o timeout da capability (60s)
+// cobre o resto do pipeline (Places/CNPJ/Instagram/Twilio).
+const CRAWL_EXTRA_PATHS = ['atendimento', 'orcamento', 'sac', 'unidades', 'contate'];
+const CRAWL_MAX_EXTRA_PAGES = 5;
+const CRAWL_BUDGET_MS = 15000;
+const CRAWL_PAGE_TIMEOUT_MS = 8000;
+const CRAWL_LINK_RE = /<a\s[^>]*href\s*=\s*["']([^"'\s#]+)["'][^>]*>([\s\S]{0,300}?)<\/a>/gi;
+const CRAWL_PRIO_RE = /(contat|fale|whats|w\.me|zap|sac|atendiment|orcament|unidade|filial|loja|quem-?somos|sobre-nos|a-?empresa|equipe|converse|falan)/i;
+const CRAWL_SKIP_RE = /\.(pdf|jpe?g|png|gif|webp|svg|css|js|mjs|zip|rar|mp[34]|xml|rss|ico|woff2?)($|\?)|(wp-admin|wp-login|xmlrpc\.php|\/feed)($|\/|\?)|\b(facebook\.com|instagram\.com|linkedin\.com|twitter\.com|x\.com|youtube\.com|wa\.me|api\.whatsapp\.com|web\.whatsapp\.com)\b/i;
 const WA_LINKS_RE = /(?:wa\.me\/|api\.whatsapp\.com\/send\?[^"' >]*?phone=|web\.whatsapp\.com\/send\?[^"' >]*?phone=|whatsapp:\/\/send\?phone=)\+?([0-9]{10,13})/gi;
 const BR_PHONE_RE = /\(?\d{2}\)?[\s.-]?\d{4}[-.\s]?\d{4}/g;
 const WHATS_KEYWORD_RE = /whats[a-zç]*|w\.me|\bzap\b/gi;
@@ -200,12 +213,57 @@ async function resolveIdentity(prisma, prospect, { fetchImpl = fetch, signal, lo
   return identidade;
 }
 
+/** URL normalizada p/ dedupe de crawl: sem hash e sem barra final. Null = inválida. */
+function normUrl(u) {
+  try {
+    const x = new URL(u);
+    x.hash = '';
+    return x.href.replace(/\/$/, '');
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Links internos promissores de uma página (crawl de contato): mesmo host
+ * (subdomínio do domínio vale — o gate "oficial" já usa includes), fora
+ * assets/anexos/redes sociais, priorizados por palavra de contato na URL
+ * ou no texto do anchor.
+ */
+function extractInternalLinks(html, pageUrl, dominio) {
+  const out = new Map();
+  const dom = String(dominio || '').replace(/^www\./, '');
+  const hostOk = (h) => {
+    const clean = String(h || '').replace(/^www\./, '');
+    return dom && (clean === dom || clean.endsWith(`.${dom}`));
+  };
+  for (const m of html.matchAll(CRAWL_LINK_RE)) {
+    const rawHref = m[1];
+    const text = dpNormalize(String(m[2] || '').replace(/<[^>]+>/g, ' '));
+    if (/^(mailto:|tel:|javascript:|data:)/i.test(rawHref)) continue;
+    let u;
+    try { u = new URL(rawHref, pageUrl); } catch (_e) { continue; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') continue;
+    if (!hostOk(u.hostname)) continue;
+    const norm = normUrl(u.href);
+    if (!norm || norm.length > 200) continue;
+    if (CRAWL_SKIP_RE.test(norm)) continue;
+    if (out.has(norm)) continue;
+    const pathLower = u.pathname.toLowerCase();
+    const prio = (CRAWL_PRIO_RE.test(pathLower) ? 1 : 0) + (text && CRAWL_PRIO_RE.test(text) ? 1 : 0);
+    out.set(norm, { url: norm, prio });
+  }
+  return [...out.values()];
+}
+
 // ── ETAPA 2 — Coleta de candidatos (fontes determinísticas) ─────────────────
 /**
- * a) Site oficial: home + /contato + /fale-conosco. Extração via REGEX
- *    (wa.me/api.whatsapp/web.whatsapp + números perto de "whats|zap").
- *    Cada candidato carrega URL + TRECHO literal. Coleta também e-mails e
- *    o link do Instagram (para a fonte 2d).
+ * a) Site oficial: home + /contato + /fale-conosco e, se NADA render wa.me,
+ *    CRAWL INTERNO com orçamento seguindo links internos de contato
+ *    (atendimento, orçamento, unidades, âncoras "fale conosco"…).
+ *    Extração via REGEX (wa.me/api.whatsapp/web.whatsapp + números perto de
+ *    "whats|zap"). Cada candidato carrega URL + TRECHO literal. Coleta também
+ *    e-mails e o link do Instagram (para a fonte 2d).
  */
 async function collectFromSite(identidade, { fetchImpl = fetch, signal, logger } = {}) {
   const out = { candidates: [], pages: [], instagramHandle: null, emails: [] };
@@ -233,17 +291,9 @@ async function collectFromSite(identidade, { fetchImpl = fetch, signal, logger }
   if (!dominio) return out;
 
   const base = `https://${dominio}`;
-  for (const path of SITE_CONTACT_PATHS) {
-    const url = `${base}/${path}`;
-    const html = await fetchPageText(url, { fetchImpl, signal });
-    if (!html) continue;
-    out.pages.push({ url, html });
-    if (!out.instagramHandle) {
-      const ig = html.match(/instagram\.com\/([A-Za-z0-9_.]{2,40})/i);
-      if (ig && !/\/p\//.test(ig[0])) out.instagramHandle = ig[1].replace(/\.$/, '');
-    }
-    out.emails.push(...extractEmailsFromHtml(html, { hostDomain: dominio }).map((e) => ({ email: e, url: `${base}/${path}` })));
 
+  /** Extração por página (wa_link + wa_contexto) — compartilhada fixos × crawl. */
+  const harvest = (html, url) => {
     // wa.me / api.whatsapp / web.whatsapp → candidato tipo wa_link
     for (const m of html.matchAll(new RegExp(WA_LINKS_RE.source, 'gi'))) {
       const raw = digitsOnly(m[1]);
@@ -261,7 +311,63 @@ async function collectFromSite(identidade, { fetchImpl = fetch, signal, logger }
         out.candidates.push({ raw, tipo: 'wa_contexto', url, trecho, host: dominio });
       }
     }
+  };
+  const captureMeta = (html, url) => {
+    if (!out.instagramHandle) {
+      const ig = html.match(/instagram\.com\/([A-Za-z0-9_.]{2,40})/i);
+      if (ig && !/\/p\//.test(ig[0])) out.instagramHandle = ig[1].replace(/\.$/, '');
+    }
+    out.emails.push(...extractEmailsFromHtml(html, { hostDomain: dominio }).map((e) => ({ email: e, url })));
+  };
+
+  for (const path of SITE_CONTACT_PATHS) {
+    const url = `${base}/${path}`;
+    const html = await fetchPageText(url, { fetchImpl, signal });
+    if (!html) continue;
+    out.pages.push({ url, html });
+    captureMeta(html, url);
+    harvest(html, url);
   }
+
+  // ── Crawl interno: só quando os caminhos fixos NÃO renderam wa.me ─────────
+  if (!out.candidates.some((c) => c.tipo === 'wa_link') && out.pages.length) {
+    const visited = new Set(out.pages.map((p) => normUrl(p.url)).filter(Boolean));
+    const discovered = [];
+    for (const p of out.pages) discovered.push(...extractInternalLinks(p.html, p.url, dominio));
+    discovered.sort((a, b) => b.prio - a.prio);
+    const queue = [];
+    const seen = new Set(visited);
+    for (const l of discovered) {
+      if (seen.has(l.url)) continue;
+      seen.add(l.url);
+      queue.push(l.url);
+    }
+    // Caminhos brasileiros comuns que nem sempre estão no menu.
+    for (const extra of CRAWL_EXTRA_PATHS) {
+      const url = normUrl(`${base}/${extra}`);
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        queue.push(url);
+      }
+    }
+    const crawlStartedAt = Date.now();
+    let crawled = 0;
+    for (const url of queue.slice(0, CRAWL_MAX_EXTRA_PAGES)) {
+      if (signal && signal.aborted) break;
+      if (Date.now() - crawlStartedAt > CRAWL_BUDGET_MS) break;
+      const html = await fetchPageText(url, { fetchImpl, signal, timeoutMs: CRAWL_PAGE_TIMEOUT_MS });
+      crawled += 1;
+      if (!html) continue;
+      out.pages.push({ url, html });
+      captureMeta(html, url);
+      harvest(html, url);
+      // wa.me encontrado numa página profunda encerra o crawl (o restante do
+      // orçamento fica para Places/CNPJ/Instagram/Twilio).
+      if (out.candidates.some((c) => c.tipo === 'wa_link')) break;
+    }
+    logger && logger.info && logger.info(`crawl interno ${dominio}: ${crawled} página(s) extra(s)`);
+  }
+
   logger && logger.info && logger.info(`site ${dominio}: ${out.candidates.length} candidato(s) em ${out.pages.length} página(s)`);
   return out;
 }
@@ -529,6 +635,8 @@ module.exports = {
   normalizeAndValidate,
   scoreCandidates,
   extractEmailsFromHtml,
+  extractInternalLinks,
+  normUrl,
   searchableName,
   nameTokens,
   dddMatchesState,

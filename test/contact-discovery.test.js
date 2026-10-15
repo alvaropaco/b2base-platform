@@ -143,3 +143,84 @@ test('7) e-mail corporativo do site é coletado (fonte-literal) e noreply é fil
     assert.equal(r.email, 'contato@acme.com.br', 'melhor e-mail: prefixo de contato, noreply filtrado');
   } finally { world.restore(); }
 });
+
+// ── Crawl interno (2026-10-15): entrar no site para achar o WhatsApp ────────
+
+test('8) WhatsApp SÓ na página profunda (/atendimento linkada da home) → confirmado 95 com a fonte certa', async () => {
+  const world = stubFetch({
+    brasilapi: BRASILAPI,
+    // ORDEM IMPORTA: prefixo mais específico primeiro (o stub casa por startsWith).
+    'https://acme.com.br/atendimento': '<html><title>Atendimento</title><a href="https://wa.me/5511977776666">Chama no WhatsApp</a></html>',
+    'https://acme.com.br': '<html><title>Acme</title><nav><a href="/atendimento">Atendimento</a><a href="/sobre">Sobre</a></nav><p>Home sem número.</p></html>',
+  });
+  try {
+    const r = await discovery.discoverLeadContact(null, makeProspect(), { signal: null, logger });
+    assert.equal(r.status, 'confirmado', 'crawl interno achou o wa.me da página profunda');
+    assert.equal(r.whatsapp, '+5511977776666');
+    assert.ok(r.score >= 95, `score ${r.score} ≥ 95 (site oficial confirmado)`);
+    assert.ok(r.fontes[0].url.includes('/atendimento'), `fonte é a página profunda, veio: ${r.fontes[0].url}`);
+    assert.ok(r.fontes[0].trecho.includes('wa.me'), 'trecho literal da fonte');
+  } finally { world.restore(); }
+});
+
+test('9) home já tem wa.me → crawl interno NEM RODA (orçamento fica para o resto do pipeline)', async () => {
+  const fetched = [];
+  const orig = global.fetch;
+  global.fetch = async (url) => {
+    fetched.push(String(url));
+    if (String(url).startsWith('https://brasilapi.com.br/')) {
+      return { ok: true, status: 200, json: async () => BRASILAPI, text: async () => JSON.stringify(BRASILAPI) };
+    }
+    return { ok: true, status: 200, text: async () => '<html><a href="https://wa.me/5511987654321">WhatsApp</a><a href="/atendimento">Atendimento</a></html>' };
+  };
+  try {
+    const r = await discovery.discoverLeadContact(null, makeProspect(), { signal: null, logger });
+    assert.equal(r.status, 'confirmado');
+    assert.ok(!fetched.some((u) => u.includes('/atendimento')), 'crawler não precisa entrar em mais nada: wa.me já estava na home');
+    assert.ok(!fetched.some((u) => u.includes('brasilapi') && u.includes('atendimento')), 'sanidade');
+  } finally { global.fetch = orig; }
+});
+
+test('10) crawl ignora lixo (facebook, /wp-admin, .pdf) e segue só links de contato do MESMO domínio', async () => {
+  const fetched = [];
+  const orig = global.fetch;
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (u.startsWith('https://brasilapi.com.br/')) {
+      return { ok: true, status: 200, json: async () => BRASILAPI, text: async () => JSON.stringify(BRASILAPI) };
+    }
+    fetched.push(u);
+    const html = u.includes('/fale-conosco-completo')
+      ? '<html><a href="https://wa.me/5511966665555">WhatsApp comercial</a></html>'
+      : '<html><a href="https://facebook.com/acme">FB</a><a href="/wp-admin">admin</a><a href="/catalogo.pdf">catálogo</a><a href="https://outradono.com.br/contato">outro dono</a><a href="/fale-conosco-completo">Fale conosco</a></html>';
+    return { ok: true, status: 200, text: async () => html };
+  };
+  try {
+    const r = await discovery.discoverLeadContact(null, makeProspect(), { signal: null, logger });
+    assert.equal(r.whatsapp, '+5511966665555', 'wa.me da página profunda encontrada');
+    assert.ok(!fetched.some((u) => /facebook|wp-admin|catalogo\.pdf|outradono/.test(u)), `lixo não é visitado: ${fetched.join(', ')}`);
+    assert.ok(fetched.some((u) => u.includes('/fale-conosco-completo')), 'link de contato do MESMO domínio é seguido');
+  } finally { global.fetch = orig; }
+});
+
+test('11) extractInternalLinks: prioriza contato na URL/texto e ignora assets/externos', () => {
+  const html = [
+    '<a href="/sobre-nos">Sobre nós</a>',
+    '<a href="https://acme.com.br/fale-conosco">Fale conosco</a>',
+    '<a href="https://wa.me/5511999998888">zap direto</a>',
+    '<a href="/banner.png">imagem</a>',
+    '<a href="mailto:contato@acme.com.br">email</a>',
+    '<a href="https://parceiro.com/contato">parceiro</a>',
+    '<a href="#contato">âncora</a>',
+  ].join('');
+  const links = discovery.extractInternalLinks(html, 'https://acme.com.br/', 'acme.com.br');
+  const urls = links.map((l) => l.url);
+  assert.ok(urls.some((u) => u.includes('/fale-conosco')), 'link de contato interno presente');
+  assert.ok(urls.some((u) => u.includes('/sobre-nos')), 'link interno comum presente');
+  assert.ok(!urls.some((u) => u.includes('wa.me')), 'link EXTERNO (wa.me) não é crawled');
+  assert.ok(!urls.some((u) => u.includes('parceiro.com')), 'domínio de fora não é seguido');
+  assert.ok(!urls.some((u) => u.includes('.png')), 'asset não é seguido');
+  const fale = links.find((l) => l.url.includes('/fale-conosco'));
+  const sobre = links.find((l) => l.url.includes('/sobre-nos'));
+  assert.ok(fale.prio > sobre.prio, `prioridade de contato (${fale.prio}) > comum (${sobre.prio})`);
+});
