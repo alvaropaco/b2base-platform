@@ -52,6 +52,9 @@ export interface ChatCard {
   attachmentId?: string;
   fileName?: string;
   premiumRequired?: boolean;
+  /** leads_export: colunas do PDF e total de leads exportados. */
+  columns?: string[];
+  total?: number;
 }
 
 /** Chip-ação derivada do card de 0-match (FR6): aplicar o filtro sugerido. */
