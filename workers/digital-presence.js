@@ -148,9 +148,28 @@ const executors = {
       return { status: 'FAILED', error: { type: 'DISCOVERY_ERROR', message: String(err.message || err).slice(0, 200), retryable: true } };
     }
 
+    // Gate Twilio Lookup (spec gate-twilio-lookup-whatsapp-site): wa.me raspado
+    // pode ser fixo/0800/voicemail/inválido — número confirmadamente ruim NÃO
+    // é promovido (o lead mantém o fixo da Receita). Indisponibilidade do
+    // Twilio é fail-open (sem credenciais, sem registry, circuito aberto):
+    // protege contra dado ruim CONFIRMADO, nunca contra falta de dado.
+    // WIRING REFEITO em 2026-10-15: o refactor de 14/10 havia deixado o gate
+    // órfão (o executor delega ao contact-discovery e não chamava mais).
+    let whatsapp = r.whatsapp;
+    if (whatsapp && deps.twilioLookup) {
+      try {
+        const gate = await gateWhatsApp(whatsapp, { deps, signal, logger });
+        if (gate.decision === 'BLOCK') {
+          logger && logger.warn && logger.warn(`digital_presence: Twilio bloqueou ${whatsapp} (${gate.reason})`);
+          r.motivo_descarte = [...(r.motivo_descarte || []), `twilio: ${whatsapp} rejeitado (${gate.reason})`];
+          whatsapp = null;
+        }
+      } catch (_e) { /* gate NUNCA derruba a descoberta */ }
+    }
+
     const dp = {
       // REGRA DE OURO: whatsapp só existe quando status = 'confirmado'.
-      whatsapp: r.whatsapp,
+      whatsapp,
       corporate_email: r.email || null,
       corporate_email_fonte: r.email_fonte || null,
       status: r.status,
@@ -163,21 +182,21 @@ const executors = {
       dominio_confirmado: r.dominio_confirmado,
       search_unavailable: Boolean(r.search_unavailable),
     };
-    logger && logger.info && logger.info(`digital_presence: status=${r.status} score=${r.score} whatsapp=${r.whatsapp || 'null'} email=${r.email || 'null'}`);
+    logger && logger.info && logger.info(`digital_presence: status=${r.status} score=${r.score} whatsapp=${whatsapp || 'null'} email=${r.email || 'null'}`);
 
     return {
       status: 'COMPLETED',
       provider: 'contact.discovery',
       data: {
         digital_presence: dp,
-        contacts: r.whatsapp
-          ? [{ type: 'whatsapp', value: r.whatsapp, classification: 'CONFIRMED', confidence: Math.min(1, Math.max(0, r.score / 100)) }]
+        contacts: whatsapp
+          ? [{ type: 'whatsapp', value: whatsapp, classification: 'CONFIRMED', confidence: Math.min(1, Math.max(0, r.score / 100)) }]
           : [],
       },
-      facts: r.whatsapp
+      facts: whatsapp
         ? r.fontes.map((f) => ({
             attribute: 'contact.whatsapp',
-            value: r.whatsapp,
+            value: whatsapp,
             confidence: Math.min(1, Math.max(0, r.score / 100)),
             evidence: { sourceType: f.tipo, url: f.url || null, trecho: (f.trecho || '').slice(0, 200), retrievedAt: new Date().toISOString() },
           }))

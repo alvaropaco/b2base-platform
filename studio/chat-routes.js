@@ -2107,7 +2107,6 @@ function registerChatRoutes(router, context) {
           return !usablePhone(p.cnpjPhones);
         };
         const alvoNome = querEmail ? 'sem e-mail' : 'sem telefone';
-        const dadoNome = querEmail ? 'e-mail' : 'WhatsApp';
         const limit = Math.min(100, Math.max(1, Number(action.limit) || 40));
 
         // Escopo: nomes citados → audiência da campanha aberta → base da org.
@@ -2139,8 +2138,23 @@ function registerChatRoutes(router, context) {
 
         const baseInteira = candidates.length > 8 && !(Array.isArray(action.names) && action.names.length > 0);
         if (baseInteira) {
+          // UMA varredura cobre os DOIS canais: o executor devolve WhatsApp E
+          // e-mail corporativo na mesma passada. Pedido de whatsapp+email no
+          // MESMO turno (o caso do dono: "sem telefone e sem e-mail") vira UM
+          // job — a action irmã vira card informativo SEM re-varrer 88 leads
+          // 2× (era o dobro da espera pelo mesmo resultado).
+          if (cards.some((c) => c && c.type === 'enrichment_started')) {
+            return {
+              type: 'enrichment_started',
+              label: 'Já está em andamento — a varredura cobre WhatsApp E e-mail',
+              detail: 'A varredura da base que acabou de começar cadastra os DOIS canais de uma vez. O resultado aparece AQUI na conversa quando terminar (recarregue a página para acompanhar).',
+              total: candidates.length,
+              channel: 'both',
+              campaignId: campaign.id,
+            };
+          }
           let enfileirado = false;
-          const jobData = { orgId, campaignId: campaign.id, channel, prospectIds: candidates.map((c) => c.id) };
+          const jobData = { orgId, campaignId: campaign.id, channel: 'both', prospectIds: candidates.map((c) => c.id) };
           try {
             // Injetável para testes (sem Redis no harness).
             const enqueue = overrides.enqueueEnrichBase;
@@ -2164,10 +2178,10 @@ function registerChatRoutes(router, context) {
           if (enfileirado) {
             return {
               type: 'enrichment_started',
-              label: `Enriquecimento em andamento — ${candidates.length} lead(s) (${dadoNome})`,
-              detail: 'Rodei o motor no servidor em lotes paralelos: identidade da empresa, site oficial e fontes públicas, atualizando o cadastro de todos. Pode levar alguns minutos — o resultado aparece AQUI na conversa quando terminar (recarregue a página para acompanhar). Você já pode me pedir outras coisas enquanto isso.',
+              label: `Enriquecimento em andamento — ${candidates.length} lead(s)`,
+              detail: 'Rodei o motor no servidor em lotes paralelos: identidade da empresa, site oficial (com crawl das páginas de contato) e fontes públicas, atualizando o cadastro de todos — A MESMA varredura cadastra WhatsApp E e-mail corporativo. Pode levar alguns minutos — o resultado aparece AQUI na conversa quando terminar (recarregue a página para acompanhar). Você já pode me pedir outras coisas enquanto isso.',
               total: candidates.length,
-              channel,
+              channel: 'both',
               campaignId: campaign.id,
             };
           }

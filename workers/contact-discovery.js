@@ -44,6 +44,10 @@ const CRAWL_EXTRA_PATHS = ['atendimento', 'orcamento', 'sac', 'unidades', 'conta
 const CRAWL_MAX_EXTRA_PAGES = 5;
 const CRAWL_BUDGET_MS = 15000;
 const CRAWL_PAGE_TIMEOUT_MS = 8000;
+// Orçamento do ESTÁGIO site inteiro (caminhos fixos + crawl) quando o caller
+// informa o início do lead — deixa o restante do timeout de 30s para as
+// fontes que vêm depois (Places, Instagram) e o gate Twilio.
+const SITE_STAGE_BUDGET_MS = 16000;
 const CRAWL_LINK_RE = /<a\s[^>]*href\s*=\s*["']([^"'\s#]+)["'][^>]*>([\s\S]{0,300}?)<\/a>/gi;
 const CRAWL_PRIO_RE = /(contat|fale|whats|w\.me|zap|sac|atendiment|orcament|unidade|filial|loja|quem-?somos|sobre-nos|a-?empresa|equipe|converse|falan)/i;
 const CRAWL_SKIP_RE = /\.(pdf|jpe?g|png|gif|webp|svg|css|js|mjs|zip|rar|mp[34]|xml|rss|ico|woff2?)($|\?)|(wp-admin|wp-login|xmlrpc\.php|\/feed)($|\/|\?)|\b(facebook\.com|instagram\.com|linkedin\.com|twitter\.com|x\.com|youtube\.com|wa\.me|api\.whatsapp\.com|web\.whatsapp\.com)\b/i;
@@ -265,7 +269,7 @@ function extractInternalLinks(html, pageUrl, dominio) {
  *    "whats|zap"). Cada candidato carrega URL + TRECHO literal. Coleta também
  *    e-mails e o link do Instagram (para a fonte 2d).
  */
-async function collectFromSite(identidade, { fetchImpl = fetch, signal, logger } = {}) {
+async function collectFromSite(identidade, { fetchImpl = fetch, signal, logger, startedAt = null } = {}) {
   const out = { candidates: [], pages: [], instagramHandle: null, emails: [] };
   let dominio = identidade.dominio;
 
@@ -351,10 +355,16 @@ async function collectFromSite(identidade, { fetchImpl = fetch, signal, logger }
       }
     }
     const crawlStartedAt = Date.now();
+    // Orçamento do ESTÁGIO site relativo ao INÍCIO do lead (quando o caller
+    // informa startedAt): o crawl não pode comer o tempo de Places/CNPJ/
+    // Instagram/Twilio — leads que demoram na home ficavam sem nenhuma
+    // outra fonte (abort de 30s do enrich-base matava o lead no meio).
+    const stageStartedAt = Number.isFinite(startedAt) ? startedAt : crawlStartedAt;
+    const stageDeadline = stageStartedAt + (Number.isFinite(startedAt) ? SITE_STAGE_BUDGET_MS : CRAWL_BUDGET_MS);
     let crawled = 0;
     for (const url of queue.slice(0, CRAWL_MAX_EXTRA_PAGES)) {
       if (signal && signal.aborted) break;
-      if (Date.now() - crawlStartedAt > CRAWL_BUDGET_MS) break;
+      if (Date.now() > stageDeadline) break;
       const html = await fetchPageText(url, { fetchImpl, signal, timeoutMs: CRAWL_PAGE_TIMEOUT_MS });
       crawled += 1;
       if (!html) continue;
@@ -559,8 +569,9 @@ function scoreCandidates(normalized, identidade) {
  */
 async function discoverLeadContact(prisma, prospect, deps = {}) {
   const { fetchImpl = fetch, signal, logger } = deps;
+  const leadStartedAt = Date.now(); // orçamento compartilhado entre as etapas
   const identidade = await resolveIdentity(prisma, prospect, { fetchImpl, signal, logger });
-  const site = await collectFromSite(identidade, { fetchImpl, signal, logger });
+  const site = await collectFromSite(identidade, { fetchImpl, signal, logger, startedAt: leadStartedAt });
   const places = await collectFromGooglePlaces(identidade, { fetchImpl, signal, logger });
   const cnpjSource = collectFromCnpj(identidade);
   const instagram = await collectFromInstagram(identidade, site, { fetchImpl, signal, logger });

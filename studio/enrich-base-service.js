@@ -60,7 +60,17 @@ async function enrichLeads(prisma, { channel = 'whatsapp', leads, chunkSize = CH
             },
             capability: 'company.digital_presence', timeoutMs: perLeadTimeoutMs,
           },
-          { signal: AbortSignal.timeout(perLeadTimeoutMs + 2000), logger: log }
+          {
+            signal: AbortSignal.timeout(perLeadTimeoutMs + 2000),
+            logger: log,
+            // Gate Twilio no caminho do CHAT também (o worker company-deep já
+            // injeta): wa.me fixo/voicemail/inválido não é promovido. Sem
+            // Redis/credenciais o gate fail-open — nunca bloqueia a busca.
+            deps: {
+              twilioLookup: require('../twilio-lookup'),
+              registry: (() => { try { return require('../enrichment-provider-registry').getWorkerRegistry(); } catch (_e) { return null; } })(),
+            },
+          }
         );
         return { lead, nome, outcome };
       } catch (err) {

@@ -2190,6 +2190,54 @@ test('QA: enriquecimento de base inteira vira job em background com card de anda
   }
 });
 
+// ── 2026-10-15: pedido de WhatsApp + e-mail no MESMO turno = UMA varredura.
+// Antes: dois jobs completos (88 leads varridos 2× — o dobro da espera) e o
+// usuário ficava ~20 min sem resultado.
+
+test('QA: enriquecimento de whatsapp+email no mesmo turno vira UM job "both" (a action irmã é informativa)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Vou varrer!',
+          actions: [{ type: 'enrich_whatsapp' }, { type: 'enrich_email' }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const jobs = [];
+  const { server, prisma, api } = await startServer({
+    llmImpl: impl,
+    overrides: { enqueueEnrichBase: async (job) => { jobs.push(job); } },
+  });
+  try {
+    const leads = Array.from({ length: 10 }, (_, i) => ({
+      id: `lead-dup-${i}`, orgId: 'org-1', companyName: `Empresa DUP ${i} LTDA`,
+    }));
+    prisma.prospect.rows.push(...leads);
+    const { body: c } = await api('POST', '/campaigns', { name: 'Base DUP', channels: ['email'] });
+    prisma.studioAudienceSnapshot.rows.push({
+      id: 'snap-dup', orgId: 'org-1', campaignId: c.data.id,
+      criteriaVersion: {}, totalCount: 10, includedCount: 10, excludedCount: 0, status: 'active',
+    });
+    for (const l of leads) {
+      prisma.studioAudienceMember.rows.push({ id: `m-dup-${l.id}`, snapshotId: 'snap-dup', orgId: 'org-1', prospectId: l.id, included: true, excludeReason: null });
+    }
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'enriquece o whatsapp e o email da base' });
+    assert.equal(res.status, 200);
+    assert.equal(jobs.length, 1, 'UMA varredura só — não dois jobs completos');
+    assert.equal(jobs[0].channel, 'both', 'o job cobre os DOIS canais de uma vez');
+    assert.equal(jobs[0].prospectIds.length, 10);
+    const started = body.data.cards.filter((card) => card.type === 'enrichment_started');
+    assert.equal(started.length, 2, 'card do job + card informativo da action irmã');
+    assert.match(started[1].label, /Já está em andamento/i, 'irmã explica que a varredura já cobre');
+  } finally {
+    server.close();
+  }
+});
+
 // ── 2026-10-14: enriquecimento por E-MAIL — acha o e-mail corporativo na
 // internet (fonte-literal) e cadastra nos leads sem e-mail (cnpjEmail).
 
