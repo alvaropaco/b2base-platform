@@ -17,6 +17,7 @@ const { createFakePrisma } = require('./helpers/fake-prisma');
 const { createStudioRouter } = require('../studio/router');
 const { buildLeadsPdf } = require('../studio/leads-pdf');
 const { normalizeExportColumns, canonicalColumn } = require('../studio/lead-export-columns');
+const { exportLeadsHint } = require('../studio/ai/chat-agent');
 
 process.env.STUDIO_STORAGE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-leads-export-'));
 
@@ -95,6 +96,27 @@ function seedLeads(prisma) {
     }
   );
 }
+
+// ── roteador determinístico anti-negação (exportLeadsHint) ──────────────────
+
+test('exportLeadsHint: a frase do dono injeta a instrução; material/campanha não', () => {
+  // As duas frases REAIS do dono que receberam "não faço planilha nem PDF".
+  for (const frase of [
+    'faça uma planilha pdf com o nome, whatsapp e email dos leads',
+    'Faça uma planilha pdf com as informações solicitadas dos leads',
+    'exporta os leads da base',
+    'monta uma planilha dos contatos',
+  ]) {
+    const hint = exportLeadsHint(frase);
+    assert.ok(hint, `hint para: "${frase}"`);
+    assert.ok(hint.includes('export_leads'), 'hint cita a action');
+    assert.ok(hint.includes('NUNCA'), 'hint veda a negação');
+  }
+  // NÃO é exportação: material PDF e assuntos fora de leads.
+  assert.equal(exportLeadsHint('anexe o pdf do material da campanha'), null);
+  assert.equal(exportLeadsHint('quero uma planilha de custos do projeto'), null);
+  assert.equal(exportLeadsHint('dispara a campanha'), null);
+});
 
 // ── catálogo de colunas ──────────────────────────────────────────────────────
 

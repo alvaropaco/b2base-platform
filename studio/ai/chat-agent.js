@@ -704,6 +704,41 @@ function emailConnectHint(userMessage) {
   ].join('\n');
 }
 
+/**
+ * Roteador de EXPORTAÇÃO DE LEADS (2026-10-15: o dono pediu "faça uma
+ * planilha pdf com o nome, whatsapp e email dos leads" e o modelo NEGOU —
+ * "não faço planilha nem PDF" — mesmo com a action no catálogo; mesmo padrão
+ * do campaignManagementHint: negação vira impossível no momento que importa).
+ * Retorna o bloco de instrução ou null (pedido comum).
+ */
+const EXPORT_LEADS_RE = new RegExp(
+  [
+    '\\bplanilhas?\\b[^.?!]{0,64}\\b(leads?|contatos?|clientes?|base|empresas?)\\b',
+    '\\b(leads?|contatos?|clientes?|base|empresas?)\\b[^.?!]{0,64}\\bplanilhas?\\b',
+    '\\bexporta\\w*\\b[^.?!]{0,32}\\b(leads?|contatos?|base)\\b',
+    '\\b(leads?|contatos?|base)\\b[^.?!]{0,32}\\bexporta\\w*\\b',
+    '\\bpdf\\b[^.?!]{0,64}\\b(leads?|contatos?|planilhas?)\\b',
+    '\\bplanilhas?\\b[^.?!]{0,64}\\bpdf\\b[^.?!]{0,64}\\b(leads?|contatos?|nome|whatsapp|e-?mail)\\b',
+  ].join('|'),
+  'i'
+);
+
+function exportLeadsHint(userMessage) {
+  const msg = String(userMessage || '');
+  if (!EXPORT_LEADS_RE.test(msg)) return null;
+  return [
+    'PLANILHA/EXPORTAÇÃO DE LEADS DETECTADA — a action export_leads EXISTE e executa pelo chat:',
+    '{"type":"export_leads","columns":["nome","whatsapp","email"]}',
+    'columns é opcional (sem ele: nome, WhatsApp e e-mail); opções: nome, contato, whatsapp, email,',
+    'cnpj, cidade, estado, setor, porte, score. scope opcional: "audience" (default) ou "base".',
+    'O SERVIDOR gera o PDF lendo o CADASTRO dos leads direto do banco — os contatos NÃO precisam',
+    '"chegar até você" pelo estado; o handler lê o cadastro real da organização. O card do resultado',
+    'traz o botão de download. EMITA a action NESTA resposta. NUNCA diga que não gera planilha nem',
+    'PDF, NUNCA peça para ir ao painel, NUNCA diga que falta o dado — ele vem do cadastro. Só NÃO',
+    'emita se o usuário quis planilha de algo que NÃO seja leads/contatos.',
+  ].join('\n');
+}
+
 function createChatAgent({ callLlm, callLlmStream } = {}) {
   const llm = callLlm || require('../../llm-client').callLlm;
   // Streaming real quando disponível (prod); nos testes (só callLlm injetado)
@@ -801,7 +836,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
       buildOrgBlock(extras),
       buildHistoryBlock(history),
       skills.selectFor(userMessage),
-      hintOverride || campaignManagementHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage) || consentBatchHint(userMessage) || selectVariantHint(userMessage) || launchLimitHint(userMessage),
+      hintOverride || campaignManagementHint(userMessage) || exportLeadsHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage) || consentBatchHint(userMessage) || selectVariantHint(userMessage) || launchLimitHint(userMessage),
       `NOVA MENSAGEM DO USUÁRIO: ${userMessage}`,
       'Decida as ações e escreva a resposta para o usuário.',
     ]
@@ -947,6 +982,8 @@ module.exports = {
   SYSTEM_PROMPT,
   extractReplySoFar,
   campaignManagementHint,
+  exportLeadsHint,
+  EXPORT_LEADS_RE,
   emailConnectHint,
   extractChannelIntent,
   testMessageIntent,
