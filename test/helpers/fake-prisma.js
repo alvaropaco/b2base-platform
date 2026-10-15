@@ -107,6 +107,13 @@ function makeModel(name, uniqueFields = [], compositeUniques = []) {
     rows,
     async create({ data }) {
       assertUniques(data);
+      // PK (@id) é única no Prisma real — duplicata → P2002 (exigido pelos
+      // testes de claim de execução no runtime do worker).
+      if (data.id != null && rows.some((r) => r.id === data.id)) {
+        const err = new Error(`fake-prisma: ${name}.id único violado (${data.id})`);
+        err.code = 'P2002';
+        throw err;
+      }
       const row = { id: data.id || makeId(name.slice(0, 3)) };
       rows.push(row);
       // Defaults do Prisma real: createdAt/updatedAt existem em toda linha.

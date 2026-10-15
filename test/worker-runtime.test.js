@@ -525,3 +525,101 @@ test('US2 erro PERMANENTE lançado pelo executor (NOT_FOUND) → retryable false
   assert.strictEqual(published[0].error.retryable, false); // sem desperdício de retry
   assert.deepStrictEqual(trace, ['persist', 'publish', 'ack']);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// Claim de execução única (2026-10-15): durables com subject sobreposto
+// (company.> × company.digital_presence.>) entregam a MESMA task a dois
+// workers — sem claim, o enriquecimento de WhatsApp executava 2× (crawl +
+// lookup Twilio pagos em dobro) e corria "primeiro-resultado-vence".
+// ════════════════════════════════════════════════════════════════════════════
+
+function makeRuntimeOn(prisma, { executorCalls } = {}) {
+  const trace = [];
+  const runtime = createWorkerRuntime({
+    name: 'identity',
+    capabilities,
+    workerVersion: WORKER_VERSION,
+    deps: {
+      prisma,
+      js: { publish: async () => ({ seq: 1 }) },
+      publisher: async () => {},
+      logger: { info() {}, warn() {}, error() {}, child() { return this; } },
+    },
+  });
+  runtime.setRegistryForTest(makeRegistryStub());
+  runtime.registerExecutorsForTest({
+    'identity.domain.verify': async () => {
+      if (executorCalls) executorCalls.calls += 1;
+      return OK_EXECUTOR();
+    },
+  });
+  return { runtime, trace };
+}
+
+function seedTaskRow(prisma, over = {}) {
+  return prisma.enrichmentTask.create({
+    data: {
+      id: 't-1', orgId: 'org-1', jobId: 'job-1', prospectId: 'p-1', taskKey: 'key-1',
+      entityKey: 'prospect:p-1', entityType: 'prospect', capability: 'identity.domain.verify',
+      input: { domain: 'exemplo.com.br' }, inputHash: '', status: 'RUNNING',
+      attempt: 1, maxAttempts: 3, timeoutMs: 500, startedAt: new Date(),
+      ...over,
+    },
+  });
+}
+
+test('claim: row RUNNING FRESCA (outro worker executando agora) → ack SEM executar e SEM publish', async () => {
+  const calls = { calls: 0 };
+  const prisma = createFakePrisma();
+  const { runtime, trace } = makeRuntimeOn(prisma, { executorCalls: calls });
+  await seedTaskRow(prisma, { startedAt: new Date() }); // claim fresca de outrem
+  const out = await runtime.processMessage(createFakeMessage(makeTask(), { trace }));
+  assert.strictEqual(calls.calls, 0, 'o executor NUNCA roda com claim fresca de outrem');
+  assert.strictEqual(out.status, 'CLAIMED_ELSEWHERE');
+  assert.deepStrictEqual(trace, ['ack'], 'ack silencioso — o result do dono resolve a task');
+});
+
+test('claim: row RUNNING VENCIDA (dono sumiu) → roubo atômico da claim e execução normal', async () => {
+  const calls = { calls: 0 };
+  const prisma = createFakePrisma();
+  const { runtime, trace } = makeRuntimeOn(prisma, { executorCalls: calls });
+  // timeoutMs 500 + folga 60s: claim vence após ~60.5s — startedAt há 120s.
+  await seedTaskRow(prisma, { startedAt: new Date(Date.now() - 120 * 1000) });
+  await runtime.processMessage(createFakeMessage(makeTask(), { trace }));
+  assert.strictEqual(calls.calls, 1, 'claim vencida é roubada e a task executa');
+  assert.ok(trace.includes('ack'), 'entrega encerra em ack');
+  assert.ok(!trace.some((t) => Array.isArray(t) && t[0] === 'nak'), 'roubo não gera nak');
+  const row = await prisma.enrichmentTask.findUnique({ where: { id: 't-1' } });
+  assert.strictEqual(row.status, 'RUNNING');
+  assert.ok(new Date(row.startedAt) > new Date(Date.now() - 30 * 1000), 'startedAt renovado pelo ladrão');
+});
+
+test('claim: task QUEUED do manager (re-publicada pelo resync) → retoma e executa', async () => {
+  const calls = { calls: 0 };
+  const prisma = createFakePrisma();
+  const { runtime } = makeRuntimeOn(prisma, { executorCalls: calls });
+  await seedTaskRow(prisma, { status: 'QUEUED', startedAt: new Date(Date.now() - 120 * 1000) });
+  await runtime.processMessage(createFakeMessage(makeTask({ attempt: 2 })));
+  assert.strictEqual(calls.calls, 1);
+  const row = await prisma.enrichmentTask.findUnique({ where: { id: 't-1' } });
+  assert.strictEqual(row.status, 'RUNNING');
+  assert.strictEqual(row.attempt, 2, 'claim atualiza o attempt da retomada');
+});
+
+test('consumo duplo (company-deep × digital-presence): a MESMA task em dois runtimes executa 1× só', async () => {
+  const calls = { calls: 0 };
+  // Dois runtimes = dois durables; o prisma COMPARTILHADO é o que torna a
+  // claim visível para ambos (mesmo Postgres em produção).
+  const shared = createFakePrisma();
+  const w1 = makeRuntimeOn(shared, { executorCalls: calls });
+  const w2 = makeRuntimeOn(shared, { executorCalls: calls });
+
+  await Promise.all([
+    w1.runtime.processMessage(createFakeMessage(makeTask(), { trace: w1.trace })),
+    w2.runtime.processMessage(createFakeMessage(makeTask(), { trace: w2.trace })),
+  ]);
+
+  assert.strictEqual(calls.calls, 1, 'dois durables, UMA execução — a claim decide o vencedor');
+  const acked = [w1, w2].filter((w) => w.trace.includes('ack')).length;
+  assert.strictEqual(acked, 2, 'ambas as entregas terminam em ack (vencedor após publicar)');
+});

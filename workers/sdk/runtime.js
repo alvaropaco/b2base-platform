@@ -14,6 +14,72 @@
 const contracts = require('../../enrichment-contracts');
 const defaultConfig = require('../../enrichment-config');
 
+// Janela de frescor da claim de execução: startedAt mais velho que
+// timeoutMs + folga = dono morto/travado → a claim pode ser roubada. A folga
+// cobre o tempo de persist+publish do resultado após o executor terminar.
+const CLAIM_STALE_MARGIN_MS = 60_000;
+
+/**
+ * Claim de execução ÚNICA por task (workers/sdk, spec gate-twilio deferred):
+ * durables com subject sobreposto (`enrichment.task.company.>` e
+ * `enrichment.task.company.digital_presence.>`) entregam a MESMA task a dois
+ * workers — sem claim, execução dobrada (crawl + lookup Twilio pagos 2×) e
+ * corrida "primeiro-resultado-vence" no manager. A transição ATÔMICA da linha
+ * EnrichmentTask para RUNNING vale a execução:
+ *   - row inexistente (1ª entrega) → cria RUNNING = claim;
+ *   - row RUNNING com startedAt fresco → outro processo está executando AGORA
+ *     → caller acka sem executar (o result do dono resolve a task);
+ *   - row RUNNING vencida → roubo atômico (updateMany com startedAt <= cutoff);
+ *   - row não-RUNNING (QUEUED/RETRY/… do manager) → retoma.
+ * Crash do dono com claim fresco: o ack_wait do broker reentrega (ainda
+ * fresca → ack) e o resync do manager (006) re-publica com attempt+1 —
+ * a task nunca morre; no pior caso atrasa até o ciclo do resync.
+ */
+async function claimExecution(prisma, task, { now, log }) {
+  const staleCutoff = new Date(now().getTime() - (task.timeoutMs + CLAIM_STALE_MARGIN_MS));
+  try {
+    await prisma.enrichmentTask.create({
+      data: {
+        id: task.taskId,
+        orgId: task.orgId,
+        jobId: task.jobId,
+        prospectId: task.prospectId,
+        taskKey: task.taskKey,
+        entityKey: task.entityKey,
+        entityType: task.entityType,
+        capability: task.capability,
+        input: task.input,
+        inputHash: '',
+        status: 'RUNNING',
+        attempt: task.attempt,
+        maxAttempts: task.maxAttempts,
+        timeoutMs: task.timeoutMs,
+        startedAt: now(),
+      },
+    });
+    return true;
+  } catch (err) {
+    if (err.code !== 'P2002') {
+      // Falha de claim (DB instável) NUNCA bloqueia a execução — comportamento
+      // antigo (o manager deduplica results e o resync cobre órfãs).
+      log.warn(`runtime: claim da task ${task.taskId} falhou (${err.message}) — executando sem claim`);
+      return true;
+    }
+  }
+  const row = await prisma.enrichmentTask.findUnique({ where: { id: task.taskId } });
+  if (row && row.status === 'RUNNING' && new Date(row.startedAt) > staleCutoff) {
+    return false; // claim fresco de OUTRO processo — não é o meu turno
+  }
+  const guard = row && row.status === 'RUNNING'
+    ? { startedAt: { lte: staleCutoff } } // roubo de claim vencida (dono sumiu)
+    : { status: { not: 'RUNNING' } }; // retoma de QUEUED/RETRY/TIMEOUT/PARKED…
+  const upd = await prisma.enrichmentTask.updateMany({
+    where: { id: task.taskId, ...guard },
+    data: { status: 'RUNNING', startedAt: now(), attempt: task.attempt },
+  });
+  return upd.count === 1;
+}
+
 function createWorkerRuntime({
   name,
   filterSubject = null,
@@ -310,32 +376,14 @@ function createWorkerRuntime({
       orgId: task.orgId, jobId: task.jobId, taskId: task.taskId, capability: task.capability,
     }) : baseLogger;
 
-    // Marca início da execução (observabilidade de RUNNING). Write não-crítico:
-    // falha aqui não pode derrubar a execução da task.
-    try {
-      await prisma.enrichmentTask.upsert({
-        where: { id: task.taskId },
-        create: {
-          id: task.taskId,
-          orgId: task.orgId,
-          jobId: task.jobId,
-          prospectId: task.prospectId,
-          taskKey: task.taskKey,
-          entityKey: task.entityKey,
-          entityType: task.entityType,
-          capability: task.capability,
-          input: task.input,
-          inputHash: '',
-          status: 'RUNNING',
-          attempt: task.attempt,
-          maxAttempts: task.maxAttempts,
-          timeoutMs: task.timeoutMs,
-          startedAt: now(),
-        },
-        update: { status: 'RUNNING', startedAt: now(), attempt: task.attempt },
-      });
-    } catch (err) {
-      log.warn(`runtime: falha ao marcar RUNNING da task ${task.taskId}: ${err.message}`);
+    // Marca início da execução COM claim de exclusividade (consumo redundante
+    // de durables): quem não conquista a claim ACKA sem executar — o result
+    // do dono resolve a task. Write não-crítico: falha aqui não pode derrubar
+    // a execução da task.
+    const claimed = await claimExecution(prisma, task, { now, log });
+    if (!claimed) {
+      await msg.ack();
+      return { status: 'CLAIMED_ELSEWHERE' };
     }
 
     // ── Proteção de provider (US4/T065): acquire ANTES de executar, com

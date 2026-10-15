@@ -16,6 +16,15 @@ deferred:
     location: >-
       workers/company-deep.js:150; workers/digital-presence.js:219-221
     severity: medium
+    resolution: >-
+      Resolvido em 2026-10-15 (claim de execução única no workers/sdk/runtime.js):
+      a transição ATÔMICA da linha EnrichmentTask para RUNNING vale a execução —
+      a entrega redundante (outro durable) encontra claim fresca (startedAt <
+      timeoutMs+60s) e acka SEM executar; claim vencida é roubada atomicamente
+      (updateMany com startedAt <= cutoff); crash do dono → resync do manager
+      (006) re-publica com attempt+1 e a claim velha invalida sozinha. Sem
+      mudança de topologia/deployment; vale para QUALQUER par de durables
+      sobrepostos.
 ---
 
 <intent-contract>
