@@ -48,6 +48,10 @@ export interface ChatCard {
   campaigns?: Array<{ id: string; name: string; status: string; audienceCount?: number | null; current?: boolean }>;
   campaignId?: string;
   campaignName?: string;
+  /** Planilha de leads em PDF (export_leads): anexo da campanha para download. */
+  attachmentId?: string;
+  fileName?: string;
+  premiumRequired?: boolean;
 }
 
 /** Chip-ação derivada do card de 0-match (FR6): aplicar o filtro sugerido. */
@@ -127,6 +131,30 @@ export function ambiguousMaterialChips(card: ChatCard): RecoveryChip[] {
       label: c.label,
       action: { type: 'confirm_material', params: { materialId: c.id } },
     }));
+}
+
+/**
+ * Planilha de leads em PDF (export_leads): rota autenticada do anexo —
+ * a sessão vai por cookie, então o download é fetch + object URL (mesmo
+ * padrão do CSV do painel), nunca <a href> cru.
+ */
+export function exportDownloadHref(card: ChatCard): string | null {
+  if (card.type !== 'leads_export' || !card.attachmentId || !card.campaignId) return null;
+  return `/api/studio/campaigns/${encodeURIComponent(card.campaignId)}/attachments/${encodeURIComponent(card.attachmentId)}/file`;
+}
+
+export async function downloadExportPdf(href: string, fileName: string): Promise<void> {
+  const res = await fetch(href);
+  if (!res.ok) throw new Error('download indisponível');
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName || 'leads.pdf';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 interface ChatMessage {
@@ -226,6 +254,9 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
   const [leadsOpen, setLeadsOpen] = useState(false);
   /** Resumo pós-lançamento (fix 5): nasce do estado recarregado após o voo. */
   const [launchSummary, setLaunchSummary] = useState<CampaignState | null>(null);
+  // Download da planilha de leads (export_leads): anexo em curso + erro.
+  const [exportBusyId, setExportBusyId] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
@@ -453,6 +484,21 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
   // libera). O que impede o disparo segue no gate, na hora do envio (AD-4).
   const hasPendencies = certificate ? certificate.items.some((i) => i.level !== 'ok') : false;
 
+  /** Download autenticado da planilha de leads (export_leads). */
+  const handleExportDownload = async (card: ChatCard) => {
+    const href = exportDownloadHref(card);
+    if (!href || !card.attachmentId) return;
+    setExportError(null);
+    setExportBusyId(card.attachmentId);
+    try {
+      await downloadExportPdf(href, card.fileName || 'leads.pdf');
+    } catch {
+      setExportError('Não consegui baixar a planilha agora — tenta de novo em instantes.');
+    } finally {
+      setExportBusyId(null);
+    }
+  };
+
   /** Card do thread: glass padrão; QR do WhatsApp e saldo têm cor própria. */
   const renderCard = (card: ChatCard, i: number) => {
     if (card.type === 'whatsapp_qr') {
@@ -528,6 +574,20 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
                 </button>
               ))}
           </div>
+        )}
+        {/* Planilha de leads (export_leads): download autenticado do PDF. */}
+        {exportDownloadHref(card) && (
+          <button
+            type="button"
+            disabled={exportBusyId === card.attachmentId}
+            onClick={() => void handleExportDownload(card)}
+            className="mt-2 rounded-full bg-[#160211] px-3 py-1.5 text-[11px] font-medium text-white shadow-md transition-transform hover:brightness-110 disabled:opacity-60"
+          >
+            {exportBusyId === card.attachmentId ? 'Baixando…' : 'Baixar planilha (PDF)'}
+          </button>
+        )}
+        {card.type === 'leads_export' && exportError && exportDownloadHref(card) && (
+          <p className="mt-1.5 text-rose-600">{exportError}</p>
         )}
         {/* Epic 1 (FR6): diagnóstico do 0-match em linguagem simples. */}
         {card.diagnosis && <p className="mt-1.5 leading-relaxed text-muted-foreground">{card.diagnosis}</p>}

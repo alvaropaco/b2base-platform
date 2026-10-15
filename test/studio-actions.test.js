@@ -97,7 +97,7 @@ test('actionKey: escopada em org+campanha; actionId do cliente vence; hash deter
   assert.equal(manifest.actionKey({ orgId: 'org-1', campaignId: 'c1', action: 'set_objective', params: {} }), null, 'idempotência none não gera chave');
 });
 
-test('manifest v1: contrato fechado com as 37 actions do orquestrador', () => {
+test('manifest v1: contrato fechado com as 38 actions do orquestrador', () => {
   // Evolução ADITIVA (AD-6): show_balance/start_whatsapp_pairing (2026-09-27);
   // attach_files/edit_content (2026-09-29); capture_leads (Epic 2, 2026-09-30);
   // show_content (QA 2026-10-02) e a onda "IA com a plataforma inteira"
@@ -109,18 +109,20 @@ test('manifest v1: contrato fechado com as 37 actions do orquestrador', () => {
   // dizia "não consigo pelo chat"); enrich_whatsapp (2026-10-08, pedido do dono: acha WhatsApp na internet e
   // set_channels (2026-10-09, escolha de canais por campanha — pedido do
   // dono); create_lead (2026-10-08, o dono manda os dados e a IA cadastra — a IA
-  // dizia "não consigo pelo chat"); enrich_whatsapp (2026-10-08, pedido do dono: acha WhatsApp na internet e
+  // dizia "não consigo pelo chat"); enrich_whatsapp (2026-10-08, acha WhatsApp na internet e
   // cadastra nos leads); show/add/remove_suppression + disconnect_email (2026-10-08, paridade com o
-  // painel Outreach) — sem alterar forma, idempotência ou chaves das
-  // anteriores; consumidores existentes não quebram.
+  // painel Outreach); export_leads (2026-10-15, planilha PDF dos leads com
+  // download no chat — o dono pediu e a IA negava) — sem alterar forma,
+  // idempotência ou chaves das anteriores; consumidores existentes não quebram.
   assert.deepEqual(Object.keys(manifest.ACTIONS_V1).sort(), [
     'add_suppression', 'approve_campaign', 'attach_files', 'attach_url', 'cancel_campaign', 'capture_leads', 'confirm_material',
     'connect_email', 'create_campaign', 'create_lead', 'delete_campaign', 'disconnect_email', 'duplicate_campaign', 'edit_content',
-    'enrich_email', 'enrich_whatsapp', 'generate_content', 'grant_whatsapp_consent', 'grant_whatsapp_consent_batch', 'launch_campaign', 'list_campaigns', 'remove_suppression', 'rename_campaign', 'select_content_variant', 'select_leads', 'send_test_message', 'set_audience',
+    'enrich_email', 'enrich_whatsapp', 'export_leads', 'generate_content', 'grant_whatsapp_consent', 'grant_whatsapp_consent_batch', 'launch_campaign', 'list_campaigns', 'remove_suppression', 'rename_campaign', 'select_content_variant', 'select_leads', 'send_test_message', 'set_audience',
     'set_channels', 'set_objective', 'set_schedule', 'show_balance', 'show_capabilities', 'show_content',
     'show_dns_records', 'show_replies', 'show_suppression', 'start_whatsapp_pairing', 'update_lead',
   ]);
   assert.equal(manifest.ACTIONS_V1.add_suppression.idempotency, 'params', 'opt-out é idempotente por params');
+  assert.equal(manifest.ACTIONS_V1.export_leads.idempotency, 'params', 'mesmo pedido de planilha = replay do MESMO link');
   for (const t of ['show_suppression', 'remove_suppression', 'disconnect_email']) {
     assert.equal(manifest.ACTIONS_V1[t].idempotency, 'none', `${t}: repetir é um pedido NOVO`);
   }

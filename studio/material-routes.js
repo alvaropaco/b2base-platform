@@ -385,6 +385,38 @@ function registerMaterialRoutes(router, context) {
     }
   });
 
+  // GET /campaigns/:id/attachments/:attachmentId/file — download do ARQUIVO
+  // do anexo (planilha de leads gerada pelo chat, PDFs e afins). Escopo
+  // duplo: anexo da org E desta campanha — o de outra org/campanha é 404
+  // (NFR2; o arquivo só sai com sessão autenticada).
+  router.get('/campaigns/:id/attachments/:attachmentId/file', async (req, res, next) => {
+    try {
+      const { orgId } = req.studio;
+      const campaign = await loadOrgCampaignLocal(orgId, req.params.id);
+      const attachment = await attachmentService.loadAttachment(orgId, req.params.attachmentId);
+      if (!attachment || attachment.campaignId !== campaign.id) {
+        throw httpError('NOT_FOUND', 404, 'Anexo não encontrado nesta campanha');
+      }
+      const storage = require('./storage');
+      if (!storage.fileExists(attachment.fileName)) {
+        throw httpError('NOT_FOUND', 404, 'Arquivo do anexo indisponível no storage');
+      }
+      const buffer = storage.readBuffer(attachment.fileName);
+      const asciiName = String(attachment.originalName || 'arquivo')
+        .replace(/[^\x20-\x7e]/g, '_')
+        .replace(/"/g, '');
+      res.setHeader('Content-Type', attachment.mimeType || 'application/octet-stream');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(attachment.originalName || 'arquivo')}`
+      );
+      res.setHeader('Content-Length', buffer.length);
+      res.send(buffer);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // GET /campaigns/:id/materials — aba Materiais (Story 2.4/FR7/PS1/D7):
   // materiais da campanha, anexos prontos e, à parte, os materiais da org
   // (sem campanha) rotulados. Falha de extração NUNCA some (motivo + caminho).

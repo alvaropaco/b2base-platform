@@ -127,6 +127,11 @@ const ACTIONS_V1 = {
   // WhatsApp, só WhatsApp ou só e-mail. idempotency 'none': voltar atrás é
   // intencional. Em voo/agendada passa pelo gate de confirmação.
   set_channels: { version: 1, idempotency: 'none', description: 'Define os canais de disparo da campanha (email e whatsapp, só whatsapp ou só email)' },
+  // Planilha em PDF dos leads pelo chat (pedido do dono, 2026-10-15: "faça
+  // uma planilha pdf com o nome, whatsapp e email dos leads"). Idempotency
+  // 'params': repetir o MESMO pedido devolve o MESMO card com o MESMO link —
+  // o PDF é determinístico e o storage dedupa por SHA-256.
+  export_leads: { version: 1, idempotency: 'params', description: 'Gera uma planilha em PDF dos leads (nome, WhatsApp, e-mail e mais — colunas à escolha) com botão de download aqui no chat' },
 };
 
 /**
@@ -404,6 +409,41 @@ function validate(action, params = {}) {
         throw err;
       }
       return true;
+    case 'export_leads': {
+      // columns/scope OPCIONAIS (default: nome, WhatsApp, e-mail — o ask do
+      // dono); coluna fora do catálogo recusa COM a lista do que existe.
+      if (params.scope && !['audience', 'base'].includes(params.scope)) {
+        const err = new Error('export_leads: scope deve ser "audience" (audiência da campanha) ou "base" (toda a base).');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      if (params.columns != null) {
+        if (!Array.isArray(params.columns) || params.columns.length === 0) {
+          const err = new Error('export_leads: columns deve ser uma lista não vazia (ex.: ["nome","whatsapp","email"]).');
+          err.code = 'INVALID_ACTION_PARAMS';
+          err.status = 400;
+          throw err;
+        }
+        const { canonicalColumn, LEAD_EXPORT_COLUMNS } = require('../lead-export-columns');
+        const unknown = params.columns.map((c) => String(c || '').trim()).filter((c) => c && !canonicalColumn(c));
+        if (unknown.length) {
+          const err = new Error(
+            `export_leads: coluna(s) desconhecida(s): ${unknown.join(', ')} — use: ${Object.keys(LEAD_EXPORT_COLUMNS).join(', ')}.`
+          );
+          err.code = 'INVALID_ACTION_PARAMS';
+          err.status = 400;
+          throw err;
+        }
+      }
+      if (params.names != null && (!Array.isArray(params.names) || params.names.some((n) => !String(n || '').trim()))) {
+        const err = new Error('export_leads: names deve ser uma lista de nomes de empresa (ex.: ["Acme"]).');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
     default:
       return true;
   }

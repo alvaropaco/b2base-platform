@@ -79,6 +79,12 @@ function actionParams(action) {
       return {}; // idempotency none; campaignId entra no handler via fallback da campanha aberta
     case 'set_channels':
       return { channels: Array.isArray(action.channels) ? action.channels.map(String) : null };
+    case 'export_leads':
+      return {
+        columns: Array.isArray(action.columns) ? action.columns.map(String) : null,
+        scope: typeof action.scope === 'string' ? action.scope : null,
+        names: Array.isArray(action.names) ? action.names.map(String).slice(0, 200) : null,
+      };
     case 'create_lead':
       return {
         companyName: action.companyName || null,
@@ -1718,7 +1724,7 @@ function registerChatRoutes(router, context) {
             '**Jornada da campanha aberta** — objetivo, audiência por linguagem natural, ajuste fino de leads, captura de leads novos, conteúdo (gerar, editar e MOSTRAR aqui no chat) e agendamento.\n' +
             '**Aprovação e disparo** — aprovar a campanha pelo mesmo fluxo do Pré-voo, ENVIAR UMA MENSAGEM DE TESTE para o seu WhatsApp ou e-mail antes de valer, COLOCAR EM VOO na hora (disparo único, e-mail e WhatsApp — sem perguntas de agenda) e mostrar o que falta para poder disparar (saldo, certificado).\n' +
             '**Canais** — conectar a conta de e-mail de disparo (Resend com a sua API key ou SMTP com senha de app), DESCONECTAR a conta de envio (disconnect_email — sempre confirmo antes), mostrar os registros DNS (SPF/DKIM/DMARC) do seu domínio e parear o WhatsApp por QR.\n' +
-            '**Campanhas em voo** — CANCELAR a campanha pelo chat (cancel_campaign — para os disparos, estorna o não enviado e cancela a fila; sempre confirmo antes) e ESCOLHER os canais de disparo a qualquer momento: e-mail + WhatsApp, só WhatsApp ou só e-mail (set_channels). **Leads** — consultar e editar dados de empresa/contato, CADASTRAR lead novo com os dados que você passar (create_lead), ENRIQUECER a base pela internet (enrich_whatsapp para WhatsApp/telefone; enrich_email para E-MAIL corporativo) — atualiza TODOS os leads: cadastra em quem está sem o dado e põe o WhatsApp NA FRENTE do cadastro de quem já tem telefone; todo número/e-mail vem COM A FONTE (URL) e só entra quando confirmado — mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
+            '**Campanhas em voo** — CANCELAR a campanha pelo chat (cancel_campaign — para os disparos, estorna o não enviado e cancela a fila; sempre confirmo antes) e ESCOLHER os canais de disparo a qualquer momento: e-mail + WhatsApp, só WhatsApp ou só e-mail (set_channels). **Leads** — consultar e editar dados de empresa/contato, CADASTRAR lead novo com os dados que você passar (create_lead), ENRIQUECER a base pela internet (enrich_whatsapp para WhatsApp/telefone; enrich_email para E-MAIL corporativo) — atualiza TODOS os leads: cadastra em quem está sem o dado e põe o WhatsApp NA FRENTE do cadastro de quem já tem telefone; todo número/e-mail vem COM A FONTE (URL) e só entra quando confirmado — EXPORTAR os leads em PLANILHA PDF com as colunas que você quiser (export_leads — nome, WhatsApp, e-mail…; o botão de download aparece aqui no chat); mostrar as respostas dos leads (interessados, reuniões, opt-outs) e gerenciar a lista de supressão: ver quem está bloqueado (show_suppression), bloquear um e-mail que não deve mais receber disparo (add_suppression) e reabilitar um contato (remove_suppression — sempre confirmo antes).\n\n' +
             'Não faço ainda: publicar os registros DNS no provedor do domínio (eu mostro, você publica) e ler a caixa de entrada inteira fora das respostas classificadas.',
         };
 
@@ -2186,6 +2192,148 @@ function registerChatRoutes(router, context) {
           loteSize: lote.length,
           restantes,
         });
+      }
+
+      case 'export_leads': {
+        // Planilha em PDF dos leads PELO CHAT (pedido do dono, 2026-10-15:
+        // "faça uma planilha pdf com o nome, whatsapp e email dos leads").
+        // Somente leitura + arquivo da PRÓPRIA org no storage do Studio, com
+        // download autenticado pela rota de anexos da campanha.
+        const { normalizeExportColumns, columnLabels } = require('./lead-export-columns');
+        const { buildLeadsPdf } = require('./leads-pdf');
+        const columns = normalizeExportColumns(action.columns);
+        const MAX_EXPORT_ROWS = 1000;
+
+        // Mesmo gate do CSV do painel (GET /api/prospects/export — plan.js):
+        // exportação de dados de contato é Premium; trial recebe card honesto
+        // com o caminho, nunca falha seca.
+        const { getOrgPlan } = require('../plan');
+        if ((await getOrgPlan(prisma, orgId)) !== 'premium') {
+          return {
+            type: 'leads_export',
+            label: 'A planilha em PDF é do plano Premium',
+            detail:
+              'No plano de teste a exportação de dados fica no painel de leads quando você assinar o Premium — ' +
+              'enquanto isso você pode ver e editar cada lead aqui pelo chat (me pergunte por um lead específico).',
+            premiumRequired: true,
+          };
+        }
+
+        // Escopo: nomes citados → audiência da campanha aberta → base da org
+        // (mesma precedência do enriquecimento).
+        let leads = [];
+        if (Array.isArray(action.names) && action.names.length > 0) {
+          for (const term of action.names.slice(0, 100)) {
+            const t = String(term).trim();
+            if (t.length < 2) continue;
+            const lead = await prisma.prospect.findFirst({
+              where: { orgId, OR: [{ companyName: { contains: t } }, { tradeName: { contains: t } }] },
+            });
+            if (lead && !leads.some((l) => l.id === lead.id)) leads.push(lead);
+          }
+        } else {
+          let ids = null;
+          const snap = (await prisma.studioAudienceSnapshot.findMany({ where: { campaignId: campaign.id, status: 'active' } }))[0];
+          if (snap && action.scope !== 'base') {
+            // Pedido foi a AUDIÊNCIA (default): audiência vazia é audiência
+            // vazia — NUNCA exporta a base inteira no lugar (traição de
+            // escopo; o card honesto de 0 leads orienta o próximo passo).
+            const members = await prisma.studioAudienceMember.findMany({ where: { snapshotId: snap.id, included: true } });
+            ids = members.map((m) => m.prospectId);
+          }
+          leads = ids
+            ? ids.length
+              ? await prisma.prospect.findMany({ where: { orgId, id: { in: ids } }, orderBy: { createdAt: 'desc' } })
+              : []
+            : await prisma.prospect.findMany({ where: { orgId }, orderBy: { createdAt: 'desc' }, take: MAX_EXPORT_ROWS });
+        }
+        if (leads.length === 0) {
+          return {
+            type: 'leads_export',
+            label: 'Nenhum lead para exportar',
+            detail:
+              'A audiência da campanha está vazia e não encontrei leads na base — me peça para "capturar leads de <setor>" ' +
+              'que eu trago empresas novas antes de gerar a planilha.',
+            total: 0,
+          };
+        }
+
+        // Valor de cada coluna DIRETO do cadastro (o modelo nunca vê nem
+        // inventa telefone/e-mail — o PDF nasce do banco, escopo da org).
+        const { usablePhone } = require('../whatsapp-utils');
+        const phonesOf = (p) => {
+          let list = p.cnpjPhones;
+          if (typeof list === 'string') {
+            try { list = JSON.parse(list); } catch { list = []; }
+          }
+          return Array.isArray(list) ? list : [];
+        };
+        const formatBr = (digits) => {
+          // 55 + DDD (2) + 8/9 — formata legível; fora do padrão, devolve cru.
+          if (digits.startsWith('55') && digits.length >= 12 && digits.length <= 13) {
+            const d = digits.slice(2);
+            return `+55 (${d.slice(0, 2)}) ${d.length === 11 ? `${d.slice(2, 7)}-${d.slice(7)}` : `${d.slice(2, 6)}-${d.slice(6)}`}`;
+          }
+          return `+${digits}`;
+        };
+        const cellOf = (p, key) => {
+          switch (key) {
+            case 'nome': return p.companyName || p.tradeName || '';
+            case 'contato': return p.contactName || '';
+            case 'whatsapp': {
+              const digits = usablePhone(phonesOf(p));
+              return digits ? formatBr(digits) : '';
+            }
+            case 'email': return p.cnpjEmail || '';
+            case 'cnpj': return p.cnpj || '';
+            case 'cidade': return p.city || '';
+            case 'estado': return p.state || '';
+            case 'setor': return p.industry || '';
+            case 'porte': return p.employees != null ? String(p.employees) : '';
+            case 'score': return p.opportunityScore != null ? String(p.opportunityScore) : '';
+            default: return '';
+          }
+        };
+        const omitted = Math.max(0, leads.length - MAX_EXPORT_ROWS);
+        const exportRows = leads.slice(0, MAX_EXPORT_ROWS).map((p) => columns.map((c) => cellOf(p, c)));
+
+        const generatedAt = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+        const pdf = buildLeadsPdf({
+          title: `Leads — ${campaign.name || 'Campanha'}`,
+          subtitle: `Gerado em ${generatedAt} · ${leads.length} lead(s) · ${columnLabels(columns).join(', ')}`,
+          columns: columnLabels(columns).map((label) => ({ label })),
+          rows: exportRows,
+        });
+        const storage = require('./storage');
+        const saved = storage.saveBuffer(pdf, 'pdf');
+        const slug = String(campaign.name || 'leads')
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'leads';
+        const dateStamp = new Date().toISOString().slice(0, 10);
+        const attachment = await prisma.studioAttachment.create({
+          data: {
+            orgId,
+            campaignId: campaign.id,
+            fileName: saved.fileName,
+            originalName: `leads-${slug}-${dateStamp}.pdf`,
+            mimeType: 'application/pdf',
+            sizeBytes: pdf.length,
+            channels: 'both',
+            uploadedById: userId || null,
+          },
+        });
+        return {
+          type: 'leads_export',
+          label: `Planilha pronta — ${leads.length} lead(s)`,
+          detail:
+            `PDF com ${columnLabels(columns).join(', ')}${omitted > 0 ? ` (primeiros ${MAX_EXPORT_ROWS}; a base tem ${leads.length} — me peça um filtro para o resto)` : ''}. ` +
+            'Baixe pelo botão abaixo — o arquivo fica salvo nos anexos da campanha.',
+          columns: columnLabels(columns),
+          total: leads.length,
+          attachmentId: attachment.id,
+          campaignId: campaign.id,
+          fileName: attachment.originalName,
+        };
       }
 
       case 'create_lead': {
@@ -2825,6 +2973,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     create_lead: 'Cadastrando o lead na sua base…',
     cancel_campaign: 'Cancelando a campanha…',
     set_channels: 'Ajustando os canais de disparo…',
+    export_leads: 'Gerando a planilha em PDF…',
     show_capabilities: 'Organizando o que eu sei fazer…',
   };
 
