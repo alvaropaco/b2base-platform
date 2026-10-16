@@ -48,6 +48,25 @@ const CRAWL_PAGE_TIMEOUT_MS = 8000;
 // informa o início do lead — deixa o restante do timeout de 30s para as
 // fontes que vêm depois (Places, Instagram) e o gate Twilio.
 const SITE_STAGE_BUDGET_MS = 16000;
+
+// ── Busca web multi-fonte (2026-10-15 — "ampliar a área de busca") ──────────
+// Porta do estágio caso MB (2026-10-09, derrubado pelo refactor de 14/10):
+// varre SNIPPETS de busca (SearXNG+DuckDuckGo) por wa.me e crawleia os
+// melhores resultados — catálogo digital da loja (diggy.menu, instadelivery
+// etc.) e agregador de links (taplink/linktr com slug do nome). Regras:
+//   - link wa.me explícito (snippet ou página) com identidade ok = FORTE;
+//   - celular formatado SÓ em catálogo/agregador da própria loja = MÉDIO;
+//   - NUNCA número solto de página genérica/diretório (falso positivo pior
+//     que nada — caso Ninas × O Pensador);
+//   - WhatsApp da PLATAFORMA na home do host é blacklisted (caso GuiaPJ);
+//   - DDD tem que bater com a UF quando conhecida.
+const WEBSEARCH_QUERIES_EXTRA = ['cardapio delivery'];
+const WEBSEARCH_CRAWL_MAX = 3;
+const WEBSEARCH_STAGE_BUDGET_MS = 12000;
+const WEBSEARCH_PAGE_TIMEOUT_MS = 8000;
+const AGGREGATOR_HOST_RE = /(taplink\.cc|linktr\.ee|beacons\.ai|campsite\.bio|msha\.ke|liinks\.co|bio\.link)/i;
+const CATALOG_HOST_RE = /(diggy\.menu|instadelivery\.com\.?br?|cardapioweb\.com|cardapio\.br\.com|pede\.ai|oatapp\.|sugerencia|pedidosite|cardapioonline|pedidoweb|quickd|wcardapio|garcomcdl|cardapio\.|menu\.|delivery\.)/i;
+const BR_MOBILE_RE = /(?:\+?55[\s.-]?)?\(?\d{2}\)?[\s.-]?9\d{4}[\s.-]?\d{4}/g;
 const CRAWL_LINK_RE = /<a\s[^>]*href\s*=\s*["']([^"'\s#]+)["'][^>]*>([\s\S]{0,300}?)<\/a>/gi;
 const CRAWL_PRIO_RE = /(contat|fale|whats|w\.me|zap|sac|atendiment|orcament|unidade|filial|loja|quem-?somos|sobre-nos|a-?empresa|equipe|converse|falan)/i;
 const CRAWL_SKIP_RE = /\.(pdf|jpe?g|png|gif|webp|svg|css|js|mjs|zip|rar|mp[34]|xml|rss|ico|woff2?)($|\?)|(wp-admin|wp-login|xmlrpc\.php|\/feed)($|\/|\?)|\b(facebook\.com|instagram\.com|linkedin\.com|twitter\.com|x\.com|youtube\.com|wa\.me|api\.whatsapp\.com|web\.whatsapp\.com)\b/i;
@@ -462,6 +481,193 @@ async function collectFromInstagram(identidade, site, { fetchImpl = fetch, signa
   return out;
 }
 
+// ── Fonte: busca web multi-fonte (snippets, catálogos, agregadores) ─────────
+
+/** Canoniza para disparo BR: 10-11 dígitos ganham 55; 12-13 só se já 55. */
+function canonWhatsAppDigits(v) {
+  const digits = digitsOnly(v);
+  if (digits.length < 10 || digits.length > 13) return null;
+  if (digits.length > 11 && !digits.startsWith('55')) return null;
+  return digits.startsWith('55') ? digits : `55${digits}`;
+}
+
+/**
+ * O resultado/página é SOBRE a empresa? (url+título com ≥2 tokens do nome, ou
+ * 1 no hay + 1 no host). Listamentos de diretório citam o lead no CONTEÚDO
+ * mas não na identidade — sem esse gate o número extraído era do restaurante
+ * ERRADO (caso Ninas × O Pensador).
+ */
+function identityOk({ host, url, title }, tokens) {
+  const identityHay = dpNormalize(`${url || ''} ${title || ''}`);
+  const identityTok = tokens.filter((t) => identityHay.includes(t)).length;
+  if (identityTok >= Math.min(2, tokens.length)) return true;
+  if (identityTok < 1) return false;
+  const hostTok = tokens.filter((t) => dpNormalize(host || '').includes(t)).length;
+  return hostTok >= 1;
+}
+
+/** Celular BR formatado (DDD + 9 + 8) COM o trecho literal (anti-alucinação). */
+function extractCatalogMobiles(html) {
+  const out = [];
+  for (const m of html.matchAll(new RegExp(BR_MOBILE_RE.source, 'g'))) {
+    const d = digitsOnly(m[0]);
+    const dd = d.startsWith('55') && d.length === 13 ? d.slice(2) : d;
+    if (dd.length === 11 && dd[2] === '9') out.push({ num: `55${dd}`, trecho: m[0] });
+  }
+  return out;
+}
+
+/**
+ * WhatsApp que aparece na HOME do host é CONTATO DA PLATAFORMA, não da
+ * empresa — diretórios embutem o próprio suporte no header (caso GuiaPJ:
+ * o número do GUIA virou WhatsApp do sushi). Memoizado por origin.
+ */
+const platformWaCache = new Map();
+async function platformWaBlacklist(url, { signal, logger } = {}) {
+  let origin = '';
+  try { origin = new URL(url).origin; } catch (_e) { return new Set(); }
+  if (platformWaCache.has(origin)) return platformWaCache.get(origin);
+  const promise = (async () => {
+    const html = await fetchPageText(`${origin}/`, { signal, timeoutMs: 8000 });
+    const set = new Set();
+    if (html) {
+      for (const m of html.matchAll(new RegExp(WA_LINKS_RE.source, 'gi'))) {
+        const canon = canonWhatsAppDigits(m[1]);
+        if (canon) set.add(canon);
+      }
+    }
+    if (set.size > 0) logger && logger.info && logger.info(`platformWaBlacklist ${origin}: ${[...set].join(', ')}`);
+    return set;
+  })();
+  platformWaCache.set(origin, promise);
+  try {
+    return await promise;
+  } catch (_e) {
+    platformWaCache.delete(origin);
+    return new Set();
+  }
+}
+
+/**
+ * AMPLIAÇÃO DA ÁREA DE BUSCA: snippets de busca + catálogos/agregadores.
+ * Devolve candidatos { raw, tipo: 'wa_link'|'catalogo', url, trecho, host } —
+ * mesmos gates do pipeline (anti-alucinação via trecho literal, DDD×UF no
+ * score, identidade pelo nome). Roda SÓ quando o site oficial não rendeu
+ * wa.me (o caller decide) e com orçamento de estágio próprio.
+ */
+async function collectFromWebSearch(identidade, { fetchImpl = fetch, signal, logger, startedAt = null } = {}) {
+  const out = { candidates: [], searchReturnedResults: false };
+  const searchName = identidade.nome_busca;
+  if (!searchName || String(searchName).length < 3) return out;
+  const tokens = nameTokens({ companyName: identidade.razao_social || searchName });
+  if (!tokens.length) return out;
+  const needTokens = Math.min(2, tokens.length);
+  const slugJoined = tokens.join('');
+  const stageDeadline = (Number.isFinite(startedAt) ? startedAt : Date.now()) + WEBSEARCH_STAGE_BUDGET_MS;
+
+  const strong = [];
+  const weak = [];
+  const pushStrong = (num, url, trecho, host) => {
+    if (num && !strong.some((s) => s.num === num)) strong.push({ num, url: url || null, trecho: trecho || '', host: host || null });
+  };
+  const pushWeak = (num, url, trecho, host) => {
+    if (num && !weak.some((s) => s.num === num) && dddMatchesState(num, identidade.uf)) weak.push({ num, url: url || null, trecho: trecho || '', host: host || null });
+  };
+
+  const catalogUrls = [];
+  const generalUrls = [];
+  const seenHosts = new Set();
+  const queries = [`${searchName} whatsapp`, ...WEBSEARCH_QUERIES_EXTRA.map((q) => `${searchName} ${q}`), `"${searchName}"`];
+  for (const query of queries) {
+    if (signal && signal.aborted) break;
+    if (Date.now() > stageDeadline) break;
+    let results = [];
+    try {
+      results = await searxng.searxSearch(query, { signal, limit: 8 });
+    } catch (_e) {
+      continue;
+    }
+    if (results.length > 0) out.searchReturnedResults = true;
+    for (const r of results) {
+      let snipHost = '';
+      try { snipHost = new URL(r.url).hostname.replace(/^www\./, ''); } catch (_e) { /* url de snippet */ }
+      const snipIdentity = identityOk({ host: snipHost, url: r.url, title: r.title }, tokens);
+      const snippet = `${r.title || ''} ${r.content || ''}`.replace(/\s+/g, ' ').trim().slice(0, 200);
+      for (const m of `${r.url || ''} ${r.title || ''} ${r.content || ''}`.matchAll(new RegExp(WA_LINKS_RE.source, 'gi'))) {
+        const num = canonWhatsAppDigits(m[1]);
+        if (snipIdentity && dddMatchesState(num, identidade.uf)) pushStrong(num, r.url, `wa.me ${snippet}`, snipHost);
+      }
+      if (strong.length > 0) break;
+      if (!r.url || seenHosts.has(snipHost) || JUNK_HOST_RE.test(snipHost)) continue;
+      const hay = dpNormalize(`${snipHost} ${r.title || ''} ${r.content || ''}`);
+      if (tokens.filter((t) => hay.includes(t)).length < needTokens) continue;
+      if (!identityOk({ host: snipHost, url: r.url, title: r.title }, tokens)) continue;
+      seenHosts.add(snipHost);
+      if (AGGREGATOR_HOST_RE.test(snipHost)) {
+        // agregador de MUITAS empresas: só vale se o slug é o nome da loja
+        const slug = dpNormalize((r.url.split(/\/+/)[2] || ''));
+        if (slugJoined.length >= 5 && (slug.includes(slugJoined) || tokens.filter((t) => slug.includes(t)).length >= needTokens)) {
+          catalogUrls.push(r.url);
+        }
+      } else if (CATALOG_HOST_RE.test(snipHost)) {
+        catalogUrls.push(r.url);
+      } else {
+        generalUrls.push(r.url);
+      }
+    }
+    if (strong.length > 0) break;
+  }
+
+  // Crawleia os melhores resultados: catálogo da loja/agregador com slug certo.
+  const crawlOrder = [...catalogUrls, ...generalUrls].slice(0, WEBSEARCH_CRAWL_MAX);
+  for (const url of crawlOrder) {
+    if (signal && signal.aborted) break;
+    if (Date.now() > stageDeadline) break;
+    const html = await fetchPageText(url, { fetchImpl, signal, timeoutMs: WEBSEARCH_PAGE_TIMEOUT_MS });
+    if (!html) continue;
+    const hay = dpNormalize(html);
+    if (tokens.filter((t) => hay.includes(t)).length < needTokens) continue;
+    // A PÁGINA em si é sobre a empresa? O <title> (fallback og:title/h1) tem
+    // que citar o nome — a página "restaurantes próximos" do diretório tem o
+    // título do OUTRO restaurante e o número extraído era dele.
+    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || html.match(/property="og:title" content="([^"]*)"/i) || html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    const titleHay = dpNormalize(titleMatch ? titleMatch[1] : '');
+    if (tokens.filter((t) => titleHay.includes(t)).length < Math.min(2, tokens.length)) continue;
+    let host = '';
+    try { host = new URL(url).hostname.replace(/^www\./, ''); } catch (_e) { /* url externa */ }
+    // Número que a PLATAFORMA usa nela mesma (home do host) não é da empresa.
+    // EXCEÇÃO — site da PRÓPRIA empresa: host contém o primeiro token do nome
+    // ('gustto.com.br' para D GUSTTO) e o wa.me da home É dela.
+    const ownHost = (() => {
+      const first = tokens[0];
+      if (!first) return false;
+      if (JUNK_HOST_RE.test(host) || AGGREGATOR_HOST_RE.test(host) || CATALOG_HOST_RE.test(host)) return false;
+      return dpNormalize(host).includes(first);
+    })();
+    const blacklist = ownHost ? new Set() : await platformWaBlacklist(url, { signal, logger });
+    const hostTldBr = /\.br(\.|:|\/|$)/.test(url.toLowerCase());
+    for (const m of html.matchAll(new RegExp(WA_LINKS_RE.source, 'gi'))) {
+      const raw = digitsOnly(m[1]);
+      const canon = canonWhatsAppDigits(raw);
+      if (!canon) continue;
+      if (!hostTldBr && !raw.startsWith('55')) continue; // estrangeiro ambíguo — fora
+      if (blacklist.has(canon)) continue;
+      const trecho = html.slice(Math.max(0, m.index - 60), m.index + m[0].length + 60).replace(/\s+/g, ' ').trim();
+      pushStrong(canon, url, trecho, host);
+    }
+    if ((CATALOG_HOST_RE.test(url) || AGGREGATOR_HOST_RE.test(url)) && !ownHost) {
+      for (const { num, trecho } of extractCatalogMobiles(html)) {
+        if (!blacklist.has(num)) pushWeak(num, url, `catálogo: ${trecho}`, host);
+      }
+    }
+  }
+
+  for (const s of strong) out.candidates.push({ raw: s.num, tipo: 'wa_link', url: s.url, trecho: s.trecho, host: s.host });
+  for (const w of weak) out.candidates.push({ raw: w.num, tipo: 'catalogo', url: w.url, trecho: w.trecho, host: w.host });
+  if (out.candidates.length) logger && logger.info && logger.info(`busca web: ${out.candidates.length} candidato(s) (${strong.length} forte/ ${weak.length} catálogo)`);
+  return out;
+}
+
 // ── ETAPA 3 — Normalização e validação (libphonenumber + anti-alucinação) ───
 function normalizeAndValidate(candidates, identidade, { logger } = {}) {
   const out = [];
@@ -529,6 +735,7 @@ const SCORE_BASE = {
   cnpj: 40,                    // só telefone do CNPJ
   wa_link_nao_confirmado: 70,  // site não confirmado (descoberto por busca)
   wa_contexto_nao_confirmado: 60,
+  catalogo: 70,                // celular na PRÓPRIA loja digital/agregador com slug certo (caso MB)
 };
 const SCORE_MIN_CONFIRMADO = 70;
 const SCORE_MIN_NAO_CONFIRMADO = 40;
@@ -543,6 +750,7 @@ function scoreCandidates(normalized, identidade) {
     else if (c.tipo === 'wa_contexto') score = oficial ? SCORE_BASE.wa_contexto_confirmado : SCORE_BASE.wa_contexto_nao_confirmado;
     else if (c.tipo === 'google_places') score = SCORE_BASE.google_places;
     else if (c.tipo === 'instagram') score = SCORE_BASE.instagram;
+    else if (c.tipo === 'catalogo') score = oficial ? SCORE_BASE.wa_contexto_confirmado : SCORE_BASE.catalogo;
     else if (c.tipo === 'cnpj') score = SCORE_BASE.cnpj;
     else score = 0;
     if (c.corroborado) score += CORROBORACAO_BONUS;
@@ -575,9 +783,16 @@ async function discoverLeadContact(prisma, prospect, deps = {}) {
   const places = await collectFromGooglePlaces(identidade, { fetchImpl, signal, logger });
   const cnpjSource = collectFromCnpj(identidade);
   const instagram = await collectFromInstagram(identidade, site, { fetchImpl, signal, logger });
+  // AMPLIAÇÃO DA ÁREA DE BUSCA: site não rendeu wa.me? Vai além do próprio
+  // site — snippets de busca, catálogo digital da loja e agregadores de link
+  // (caso MB), com os gates de identidade do pipeline.
+  const webSearch = site.candidates.some((c) => c.tipo === 'wa_link')
+    ? { candidates: [], searchReturnedResults: true }
+    : await collectFromWebSearch(identidade, { fetchImpl, signal, logger, startedAt: leadStartedAt });
 
   const allCandidates = [
     ...site.candidates,
+    ...webSearch.candidates,
     ...places.candidates,
     ...cnpjSource.candidates,
     ...instagram.candidates,
@@ -632,7 +847,10 @@ async function discoverLeadContact(prisma, prospect, deps = {}) {
     email_fonte,
     domain: identidade.dominio,
     dominio_confirmado: identidade.dominio_confirmado,
-    search_unavailable: false,
+    // Busca morta honesta: nada encontrado E os motores de busca não
+    // devolveram NADA (instabilidade) — o chat diz "repita em minutos"
+    // em vez de afirmar que não existe contato na internet.
+    search_unavailable: !melhor && !naoConfirmado && !site.candidates.length && !webSearch.searchReturnedResults,
   };
 }
 
@@ -643,11 +861,14 @@ module.exports = {
   collectFromGooglePlaces,
   collectFromCnpj,
   collectFromInstagram,
+  collectFromWebSearch,
   normalizeAndValidate,
   scoreCandidates,
   extractEmailsFromHtml,
   extractInternalLinks,
   normUrl,
+  identityOk,
+  platformWaBlacklist,
   searchableName,
   nameTokens,
   dddMatchesState,

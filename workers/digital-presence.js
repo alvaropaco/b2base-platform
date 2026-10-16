@@ -95,27 +95,10 @@ async function gateWhatsApp(phoneE164, { deps = {}, fetchImpl = fetch, signal, l
 /**
  * WhatsApp que aparece na HOME do host é CONTATO DA PLATAFORMA, não da
  * empresa — diretórios embutem o próprio suporte em todas as páginas.
- * Memoizado por origin. Usado pelo worker social-presence (maigret).
+ * Implementação canônica vive em contact-discovery (usada também pela
+ * busca web multi-fonte); aqui é só re-export.
  */
-const hostBlacklistCache = new Map();
-async function platformWaBlacklist(url, { signal, logger } = {}) {
-  let origin = '';
-  try { origin = new URL(url).origin; } catch (_e) { return new Set(); }
-  if (hostBlacklistCache.has(origin)) return hostBlacklistCache.get(origin);
-  const promise = (async () => {
-    const html = await fetchPage(`${origin}/`, { signal });
-    const set = new Set(html ? extractWaLinks(html) : []);
-    if (set.size > 0) logger && logger.info && logger.info(`platformWaBlacklist ${origin}: ${[...set].join(', ')}`);
-    return set;
-  })();
-  hostBlacklistCache.set(origin, promise);
-  try {
-    return await promise;
-  } catch (_e) {
-    hostBlacklistCache.delete(origin);
-    return new Set();
-  }
-}
+const platformWaBlacklist = contactDiscovery.platformWaBlacklist;
 
 /** Domínio "da empresa" (não plataforma/redirecionador) — usado pelo chat. */
 function isCompanyDomain(host) {
