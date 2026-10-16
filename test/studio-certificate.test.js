@@ -343,7 +343,9 @@ test('GET /reputation: painel com saldo por canal e eventos explicados (FR-20)',
     prisma.studioReputationEvent.rows.push({ id: 'ev-1', orgId: 'org-1', channel: 'email', type: 'debit', amount: 10, balanceAfter: 90, refType: 'batch', refId: 'batch-1', reason: 'lote da campanha X' });
     const { res, body } = await api('GET', '/reputation');
     assert.equal(res.status, 200);
-    assert.equal(body.data.balances[0].available, 80, 'disponível = saldo − floor');
+    // Piso legado (10) é normalizado para 0 na leitura (2026-10-16): o dono
+    // vê e gasta o saldo cheio — disponível = bruto.
+    assert.equal(body.data.balances[0].available, 90, 'disponível = saldo cheio (piso legado normalizado)');
     assert.equal(body.data.events.length, 1);
     assert.ok(body.data.events[0].reason, 'variação atribuível a evento explicado');
   } finally {

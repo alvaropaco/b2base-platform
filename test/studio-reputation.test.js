@@ -139,7 +139,10 @@ test('DNS deixa de ser matemática de saldo: conta unverified debita o pool (o G
   const result = await reputation.debit(prisma, { orgId: 'org-1', channel: 'email', amount: 5, refId: 'b-1' });
   assert.equal(result.ok, true, 'o writer não trava por domínio — quem bloqueia é o gate (com instrução)');
   const wallet = await reputation.getWallet(prisma, 'org-1');
-  assert.equal(wallet.available, 85, 'saldo efetivo independe do DNS agora (95 − piso 10)');
+  // Piso legado (10) é normalizado para 0 na leitura: o dono vê e gasta o
+  // saldo CHEIO (2026-10-16 — "o valor ainda não está correto").
+  assert.equal(wallet.available, 95, 'disponível = saldo cheio (piso legado normalizado)');
+  assert.equal(wallet.floor, 0);
 });
 
 test('estorno de envio: credit idempotente por messageId (AD-13) — credita o pool', async () => {
@@ -274,11 +277,11 @@ test('recordDomainAuth com history responde o piso do POOL: penalizado mínimo, 
   await reputation.recordDomainAuth(prisma, 'org-1', { status: 'unverified', history: 'pre-aquecido' });
   assert.equal(
     prisma.studioReputationAccount.rows[0].floor,
-    reputation.WALLET_POLICY.floor * 4,
-    'pré-aquecido → piso elevado (override sob responsabilidade do cliente)'
+    reputation.WALLET_POLICY.prewarmFloor,
+    'pré-aquecido → reserva explícita de reputação (40; override sob responsabilidade do cliente)'
   );
   await reputation.recordDomainAuth(prisma, 'org-1', { status: 'unverified', history: 'novo' });
-  assert.equal(prisma.studioReputationAccount.rows[0].floor, reputation.WALLET_POLICY.floor);
+  assert.equal(prisma.studioReputationAccount.rows[0].floor, reputation.WALLET_POLICY.floor, 'novo → sem reserva oculta (0)');
 });
 
 test('getWallet: sinal de saldo baixo = ≤ 25% do teto (pop-up do dono, 2026-10-08)', async () => {

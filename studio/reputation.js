@@ -38,11 +38,15 @@ const SEND_CHANNELS = ['email', 'whatsapp'];
 const UNIFIED_CHANNEL = 'unified';
 
 // Rampa única da CARTEIRA (teto de reposição diária — env-tunable via
-// STUDIO_REP_*). Piso: reserva mínima do pool (não drena o fatiamento
-// "saldo 30, lote 100 → 30 enfileiradas").
+// STUDIO_REP_*). Piso: RESERVA explícita do pool — 0 por padrão (2026-10-16:
+// o piso oculto de 10 retinha envios e fazia /admin "não condizer" com o
+// Studio; o dono vê e gasta o saldo CHEIO). Operador pode reativar via
+// STUDIO_REP_FLOOR; domínio 'pre-aquecido' reserva explicitamente
+// (STUDIO_REP_PREWARM_FLOOR, default 40 — FR-17/FR-28).
 const WALLET_POLICY = {
   startBalance: Number(process.env.STUDIO_REP_START || process.env.STUDIO_REP_EMAIL_START || 100),
-  floor: Number(process.env.STUDIO_REP_FLOOR || 10),
+  floor: Number(process.env.STUDIO_REP_FLOOR || 0),
+  prewarmFloor: Number(process.env.STUDIO_REP_PREWARM_FLOOR || 40),
   rampStages: [100, 200, 400, 800],
 };
 
@@ -174,13 +178,28 @@ async function getAccount(prisma, orgId, _channel = null) {
 async function getWallet(prisma, orgId, now = new Date()) {
   const account = await getAccount(prisma, orgId);
   if (!account) return null;
-  const { stage, ceiling } = nextRampStage(account);
+  // Normalização LAZY do piso legado (default antigo 10): contas SEM domínio
+  // pré-aquecido passam a reservar o piso da política atual (0 por padrão) —
+  // o dono vê e gasta o saldo CHEIO na primeira leitura pós-deploy. Escrita
+  // idempotente (só dispara enquanto o floor divergir) e o 'prewarmed' mantém
+  // a reserva explícita de reputação (FR-17/FR-28).
+  let effective = account;
+  if ((account.floor || 0) !== WALLET_POLICY.floor && account.domainAuthStatus !== 'prewarmed') {
+    try {
+      await prisma.studioReputationAccount.updateMany({
+        where: { orgId, channel: UNIFIED_CHANNEL },
+        data: { floor: WALLET_POLICY.floor },
+      });
+      effective = { ...account, floor: WALLET_POLICY.floor };
+    } catch (_e) { /* leitura segue com o piso persistido */ }
+  }
+  const { stage, ceiling } = nextRampStage(effective);
   const threshold = Math.ceil((LOW_BALANCE_PCT / 100) * ceiling);
   return {
     channel: UNIFIED_CHANNEL,
-    balance: account.balance,
-    available: effectiveBalance(account),
-    floor: account.floor || 0,
+    balance: effective.balance,
+    available: effectiveBalance(effective),
+    floor: effective.floor || 0,
     ceiling,
     rampStage: stage,
     caps: {
@@ -188,14 +207,14 @@ async function getWallet(prisma, orgId, now = new Date()) {
       whatsapp: capFor('whatsapp', stage),
     },
     usedToday: {
-      email: usedToday(account, 'email', now),
-      whatsapp: usedToday(account, 'whatsapp', now),
+      email: usedToday(effective, 'email', now),
+      whatsapp: usedToday(effective, 'whatsapp', now),
     },
-    domainAuthStatus: account.domainAuthStatus,
-    domainAuthCheckedAt: account.domainAuthCheckedAt,
-    lowBalance: account.balance <= threshold,
+    domainAuthStatus: effective.domainAuthStatus,
+    domainAuthCheckedAt: effective.domainAuthCheckedAt,
+    lowBalance: effective.balance <= threshold,
     threshold,
-    updatedAt: account.updatedAt,
+    updatedAt: effective.updatedAt,
   };
 }
 
@@ -514,8 +533,8 @@ async function recordDomainAuth(prisma, orgId, { status, detail, checkedAt, hist
   };
   if (history) {
     if (history === 'penalizado') data.floor = 0; // piso mínimo + orientação
-    else if (history === 'pre-aquecido') data.floor = policy.floor * 4; // FR-17 override
-    else data.floor = policy.floor; // novo: piso padrão conservador
+    else if (history === 'pre-aquecido') data.floor = policy.prewarmFloor; // FR-17 override
+    else data.floor = policy.floor; // novo: sem reserva oculta
   }
   await ensureAccount(prisma, orgId);
   return prisma.studioReputationAccount.updateMany({
