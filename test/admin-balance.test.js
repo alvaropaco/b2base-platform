@@ -84,7 +84,9 @@ test('admin: POST /orgs/:id/balance credita na carteira única com evento no led
     assert.equal(res.status, 200);
     const { WALLET_POLICY } = require('../studio/reputation');
     assert.equal(body.data.credited, 250);
-    assert.equal(body.data.balance, WALLET_POLICY.startBalance + 250);
+    // O saldo exibido é o DISPONÍVEL (bruto − piso) — o mesmo número do Studio.
+    assert.equal(body.data.balance, WALLET_POLICY.startBalance + 250 - WALLET_POLICY.floor);
+    assert.equal(body.data.rawBalance, WALLET_POLICY.startBalance + 250, 'bruto do ledger para auditoria');
     const acc = prisma.db.studioReputationAccount[0];
     assert.equal(acc.balance, WALLET_POLICY.startBalance + 250);
     assert.equal(acc.channel, 'unified');
@@ -103,7 +105,7 @@ test('admin: segundo crédito SOMA (cada clique é um crédito novo, refId únic
     await api('POST', '/orgs/org-2/balance', { amount: 100 });
     const { body } = await api('POST', '/orgs/org-2/balance', { amount: 50 });
     assert.equal(body.data.credited, 50);
-    assert.equal(body.data.balance, WALLET_POLICY.startBalance + 100 + 50, 'start + 100 + 50');
+    assert.equal(body.data.balance, WALLET_POLICY.startBalance + 100 + 50 - WALLET_POLICY.floor, 'disponível: start + 100 + 50 − piso');
     const evts = prisma.db.studioReputationEvent.filter((e) => e.type === 'credit');
     assert.equal(evts.length, 2, 'dois eventos no ledger — refId único por chamada');
   } finally { server(); }
@@ -135,7 +137,7 @@ test('admin: GET /orgs/:id/balance devolve saldo e eventos recentes', async () =
   } finally { server(); }
 });
 
-test('admin: listagem de orgs traz o saldo da carteira', async () => {
+test('admin: listagem de orgs traz o saldo DISPONÍVEL (o mesmo número do Studio)', async () => {
   const { prisma, api, server } = await makeApp();
   prisma.db.organizations.push({ id: 'org-5', name: 'Cliente V', plan: 'trial' });
   try {
@@ -143,9 +145,11 @@ test('admin: listagem de orgs traz o saldo da carteira', async () => {
     const { body } = await api('GET', '/orgs');
     assert.equal(res_ok(body), true);
     const org = body.data.find((o) => o.id === 'org-5');
-    // startBalance da política + 42 do crédito manual
+    // Disponível = bruto da carteira (start + 42) − piso de reputação.
+    // 2026-10-16: o admin exibia o BRUTO (134) enquanto o Studio mostrava o
+    // disponível (124) — o piso fica reservado e não é disparável.
     const { WALLET_POLICY } = require('../studio/reputation');
-    assert.equal(org.balance, WALLET_POLICY.startBalance + 42, 'saldo aparece na listagem');
+    assert.equal(org.balance, WALLET_POLICY.startBalance + 42 - WALLET_POLICY.floor, 'listagem mostra o mesmo número do Studio');
   } finally { server(); }
 });
 

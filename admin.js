@@ -467,14 +467,19 @@ function createAdminRouter(prisma) {
       const data = await attachStripeSnapshots(prisma, items);
 
       // Saldo de disparo (carteira única de reputação) por org — o painel
-      // mostra e o admin usa para creditar manualmente.
+      // mostra e o admin usa para creditar manualmente. Mostra o SALDO
+      // DISPONÍVEL (balance − piso de reputação), o MESMO número do Studio
+      // (2026-10-16: o admin exibia o bruto 134 enquanto o Studio mostrava
+      // 124 — o piso fica reservado e não é disparável).
       try {
         const reputation = require('./studio/reputation');
         const accounts = await prisma.studioReputationAccount.findMany({
           where: { orgId: { in: items.map((o) => o.id) }, channel: reputation.UNIFIED_CHANNEL },
-          select: { orgId: true, balance: true },
+          select: { orgId: true, balance: true, floor: true },
         });
-        const balanceByOrg = new Map(accounts.map((a) => [a.orgId, a.balance]));
+        const balanceByOrg = new Map(
+          accounts.map((a) => [a.orgId, Math.max(0, (a.balance || 0) - (a.floor || 0))])
+        );
         for (const org of data) org.balance = balanceByOrg.get(org.id) || 0;
       } catch (_e) {
         // saldo é cosmético na listagem — falha não derruba a rota
@@ -622,8 +627,12 @@ function createAdminRouter(prisma) {
       if (!result.ok) {
         return res.status(409).json({ success: false, error: `Não foi possível creditar (${result.code || 'erro'}).` });
       }
-      console.log(`[admin] Org ${orgId} (${org.name}): +${result.credited} de saldo (novo saldo ${result.balance}) por ${req.admin.username}`);
-      return res.json({ success: true, data: { credited: result.credited, balance: result.balance } });
+      // O número que o admin vê (e o Studio mostra) é o DISPONÍVEL — o bruto
+      // do ledger fica como rawBalance para auditoria.
+      const account = await reputation.getAccount(prisma, orgId);
+      const available = account ? reputation.effectiveBalance(account) : result.balance;
+      console.log(`[admin] Org ${orgId} (${org.name}): +${result.credited} de saldo (novo saldo ${result.balance}, disponível ${available}) por ${req.admin.username}`);
+      return res.json({ success: true, data: { credited: result.credited, balance: available, rawBalance: result.balance } });
     } catch (error) {
       return res.status(500).json({ success: false, error: error.message });
     }
