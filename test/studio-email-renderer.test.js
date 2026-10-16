@@ -144,3 +144,25 @@ test('checks: conteúdo limpo → ok, sem itens', async () => {
   assert.equal(result.spamScore, 0);
   assert.equal(result.level, 'ok');
 });
+
+// ── Imagem por LINK no e-mail (2026-10-16): banner com src/alt e href
+// opcional (banner clicável, UTM aplicada ao clique — FR-037).
+
+test('renderEmail: bloco image por link → <img> com src/alt (banner full-width)', () => {
+  const { html } = renderEmail({
+    blocks: [{ type: 'image', src: 'https://cdn.exemplo.com/banner-dobradeira.jpg', alt: 'Dobradeira industrial' }],
+  }, LEAD);
+  assert.ok(html.includes('src="https://cdn.exemplo.com/banner-dobradeira.jpg"'), 'src do link no HTML');
+  assert.ok(html.includes('alt="Dobradeira industrial"'), 'alt presente');
+  assert.ok(!html.includes('<a href'), 'sem href não vira link');
+});
+
+test('renderEmail: image com href → banner CLICÁVEL com UTM da campanha', () => {
+  const { html } = renderEmail({
+    blocks: [{ type: 'image', src: 'https://cdn.exemplo.com/banner.jpg', alt: 'Banner', href: 'https://exemplo.com/cta' }],
+  }, LEAD, { utmTemplate: { utmSource: 'email', utmCampaign: 'dobradeiras' } });
+  const anchor = html.match(/<a href="([^"]+)"[^>]*><img/);
+  assert.ok(anchor, 'img embrulhada em <a>');
+  assert.ok(anchor[1].startsWith('https://exemplo.com/cta?'), 'href do clique');
+  assert.ok(anchor[1].includes('utm_campaign=dobradeiras'), 'UTM aplicada ao clique (FR-037)');
+});

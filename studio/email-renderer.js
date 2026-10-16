@@ -79,8 +79,18 @@ function blockToHtml(block, lead, utmTemplate, fallbacks) {
         renderTemplate(block.label || 'Saiba mais', lead)
       )}</a>`;
     }
-    case 'image':
-      return `<img src="${escapeHtml(block.src || '')}" alt="${escapeHtml(block.alt || '')}" style="max-width:100%;height:auto;border-radius:6px;" />`;
+    case 'image': {
+      // Banner por link: src obrigatório, href opcional (banner clicável,
+      // UTM aplicada como em qualquer link — FR-037).
+      const src = escapeHtml(block.src || '');
+      const alt = escapeHtml(block.alt || '');
+      const img = `<img src="${src}" alt="${alt}" style="width:100%;max-width:100%;height:auto;display:block;border-radius:6px;" />`;
+      if (block.href) {
+        const url = applyUtm(renderTemplate(block.href, lead), utmTemplate);
+        return `<a href="${escapeHtml(url)}" target="_blank" style="text-decoration:none;">${img}</a>`;
+      }
+      return img;
+    }
     case 'divider':
       return '<hr style="border:none;border-top:1px solid #e2e8f0;margin:16px 0;" />';
     case 'columns':

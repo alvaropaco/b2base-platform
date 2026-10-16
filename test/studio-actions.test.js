@@ -397,3 +397,95 @@ test('show_capabilities cita supressão e desconexão (a resposta canônica de "
     server.close();
   }
 });
+
+// ── IMAGEM POR LINK NO E-MAIL (2026-10-16): edit_content {imageUrl} insere
+// o banner NO TOPO do emailDoc (href opcional = banner clicável). Pedido do
+// dono com o exemplo MB Máquinas (banner de produto + CTA).
+
+test('edit_content com imageUrl: banner NO TOPO do emailDoc (todas as variantes de e-mail)', async () => {
+  const { server, prisma, api } = await startServer();
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Banner MB', channels: ['email'] });
+    const campaignId = c.data.id;
+    // Conteúdo de e-mail base (A) criado pela mesma porta da UI.
+    const created = await api('POST', `/campaigns/${campaignId}/contents`, {
+      channel: 'email',
+      subject: 'Qual dobradeira sua produção precisa?',
+      emailDoc: { blocks: [{ type: 'text', text: 'Olá {{firstName}}, tudo bem?' }] },
+    });
+    assert.equal(created.res.status, 201);
+
+    // 1ª chamada SEM confirmação → gate de edição (confirm_change), nada muda.
+    const gate = await api('POST', `/campaigns/${campaignId}/actions`, {
+      type: 'edit_content',
+      params: { channel: 'email', imageUrl: 'https://cdn.mb.com.br/banner-dobradeira.jpg', imageHref: 'https://mbinovacao.com.br/cta', imageAlt: 'Dobradeira industrial' },
+    });
+    assert.equal(gate.res.status, 200);
+    assert.equal(gate.body.data.card.type, 'confirm_change', 'edição pede confirmação do dono');
+    const rowBefore = prisma.studioContent.rows.find((r) => r.id === created.body.data.id);
+    assert.equal(rowBefore.emailDoc.blocks.length, 1, 'gate não alterou o conteúdo');
+
+    // Confirmada → banner entra no TOPO, com href clicável.
+    const done = await api('POST', `/campaigns/${campaignId}/actions`, {
+      type: 'edit_content',
+      params: { channel: 'email', imageUrl: 'https://cdn.mb.com.br/banner-dobradeira.jpg', imageHref: 'https://mbinovacao.com.br/cta', imageAlt: 'Dobradeira industrial', confirmed: true },
+    });
+    assert.equal(done.res.status, 200);
+    const row = prisma.studioContent.rows.find((r) => r.id === created.body.data.id);
+    const blocks = row.emailDoc.blocks;
+    assert.equal(blocks[0].type, 'image');
+    assert.equal(blocks[0].src, 'https://cdn.mb.com.br/banner-dobradeira.jpg');
+    assert.equal(blocks[0].href, 'https://mbinovacao.com.br/cta');
+    assert.equal(blocks[0].alt, 'Dobradeira industrial');
+    assert.equal(blocks.length, 2, 'conteúdo original preservado abaixo do banner');
+    assert.equal(blocks[1].type, 'text', 'bloco original continua');
+  } finally {
+    server.close();
+  }
+});
+
+test('edit_content com imageUrl: validações (esquema, canal errado) e preview renderiza a imagem', async () => {
+  const { server, prisma, api } = await startServer();
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Banner inválido', channels: ['email'] });
+    await api('POST', `/campaigns/${c.data.id}/contents`, {
+      channel: 'email',
+      emailDoc: { blocks: [{ type: 'text', text: 'Olá!' }] },
+    });
+
+    const badScheme = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'edit_content',
+      params: { channel: 'email', imageUrl: 'javascript:alert(1)', confirmed: true },
+    });
+    assert.equal(badScheme.res.status, 400);
+    assert.equal(badScheme.body.error, 'INVALID_ACTION_PARAMS');
+
+    const wrongChannel = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'edit_content',
+      params: { channel: 'whatsapp', imageUrl: 'https://cdn.mb.com.br/banner.jpg', confirmed: true },
+    });
+    assert.equal(wrongChannel.res.status, 400);
+    assert.match(wrongChannel.body.message, /E-MAIL/);
+
+    // Válida → o PREVIEW (mesmo render do envio) traz o <img> do link.
+    const ok = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'edit_content',
+      params: { channel: 'email', imageUrl: 'https://cdn.mb.com.br/banner.jpg', confirmed: true },
+    });
+    assert.equal(ok.res.status, 200);
+    const contentId = prisma.studioContent.rows.find((r) => r.campaignId === c.data.id).id;
+    const preview = await api('GET', `/campaigns/${c.data.id}/contents/${contentId}/preview`);
+    assert.equal(preview.res.status, 200);
+    assert.ok(String(preview.body.data?.html || preview.body.data).includes('src="https://cdn.mb.com.br/banner.jpg"'), 'banner no HTML do e-mail');
+  } finally {
+    server.close();
+  }
+});
+
+test('hint determinístico: "anexa essa imagem no email" injeta o contrato com imageUrl', () => {
+  const hint = require('../studio/ai/chat-agent').editContentHint('anexa essa imagem no email https://cdn.mb.com.br/banner.jpg');
+  assert.ok(hint, 'hint presente para pedido de imagem');
+  assert.ok(hint.includes('imageUrl'), 'hint cita imageUrl');
+  const naoImagem = require('../studio/ai/chat-agent').editContentHint('troca a mensagem para um oi direto');
+  assert.ok(naoImagem && !naoImagem.includes('imageUrl'), 'troca de texto continua no contrato antigo');
+});

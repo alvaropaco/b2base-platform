@@ -385,14 +385,38 @@ function validate(action, params = {}) {
       // QA 2026-10-06: "troca a mensagem por <texto>" — o modelo NÃO tem o id
       // do conteúdo no estado; canal + texto basta (o handler resolve o
       // conteúdo base da campanha server-side).
+      // 2026-10-16: IMAGEM POR LINK no e-mail — {channel:'email', imageUrl}
+      // insere o banner no TOPO do emailDoc (pedido do dono: e-mail com
+      // imagem de produto + CTA).
       const hasContents = Array.isArray(params.contents) &&
         params.contents.length > 0 &&
         params.contents.every((c) => c && typeof c.id === 'string' && c.id);
       const hasChannelText = Boolean(
         params.channel && (params.whatsappText != null || params.text != null)
       );
-      if (!hasContents && !hasChannelText) {
-        const err = new Error('edit_content exige `contents` (lista com ids) OU `channel` + texto (whatsappText/text).');
+      const hasImage = Boolean(params.imageUrl);
+      if (hasImage) {
+        if (!/^https?:\/\//i.test(String(params.imageUrl))) {
+          const err = new Error('edit_content: imageUrl deve ser um link http(s) da imagem.');
+          err.code = 'INVALID_ACTION_PARAMS';
+          err.status = 400;
+          throw err;
+        }
+        if (params.channel && params.channel !== 'email') {
+          const err = new Error('edit_content: imagem por link vale para o canal E-MAIL — use channel "email".');
+          err.code = 'INVALID_ACTION_PARAMS';
+          err.status = 400;
+          throw err;
+        }
+        if (params.imageHref && !/^https?:\/\//i.test(String(params.imageHref))) {
+          const err = new Error('edit_content: imageHref deve ser um link http(s) (para onde o clique da imagem leva).');
+          err.code = 'INVALID_ACTION_PARAMS';
+          err.status = 400;
+          throw err;
+        }
+      }
+      if (!hasContents && !hasChannelText && !hasImage) {
+        const err = new Error('edit_content exige `contents` (lista com ids), `channel` + texto (whatsappText/text) ou `imageUrl` (imagem por link no e-mail).');
         err.code = 'INVALID_ACTION_PARAMS';
         err.status = 400;
         throw err;

@@ -129,7 +129,9 @@ export function EmailEditor({ campaign }: EmailEditorProps) {
     const block: EmailBlock =
       type === 'button'
         ? { type: 'button', label: 'Agendar conversa', url: 'https://exemplo.com' }
-        : { type: 'text', text: 'Novo texto — use {{firstName}} ou {{companyName}}.' };
+        : type === 'image'
+          ? { type: 'image', src: '', alt: '' }
+          : { type: 'text', text: 'Novo texto — use {{firstName}} ou {{companyName}}.' };
     const next = [...blocks, block];
     setBlocks(next);
     void handleSave(next);
@@ -312,6 +314,37 @@ function SortableBlock({
             placeholder="https://…"
             className="h-8 flex-1 rounded border border-input bg-transparent px-2 text-sm"
           />
+        </div>
+      )}
+      {block.type === 'image' && (
+        <div className="mt-1 space-y-1">
+          {block.src ? (
+            <img src={block.src} alt={block.alt || ''} className="max-h-32 w-full rounded object-cover" />
+          ) : (
+            <p className="rounded border border-dashed border-border px-2 py-3 text-center text-xs text-muted-foreground">
+              Cole o LINK da imagem (banner) abaixo — ela entra no e-mail por URL.
+            </p>
+          )}
+          <input
+            value={block.src || ''}
+            onChange={(e) => onChange({ src: e.target.value })}
+            placeholder="Link da imagem https://…"
+            className="h-8 w-full rounded border border-input bg-transparent px-2 text-sm"
+          />
+          <div className="flex gap-2">
+            <input
+              value={block.alt || ''}
+              onChange={(e) => onChange({ alt: e.target.value })}
+              placeholder="Descrição (alt)"
+              className="h-8 flex-1 rounded border border-input bg-transparent px-2 text-sm"
+            />
+            <input
+              value={block.href || ''}
+              onChange={(e) => onChange({ href: e.target.value })}
+              placeholder="Link ao clicar (opcional)"
+              className="h-8 flex-1 rounded border border-input bg-transparent px-2 text-sm"
+            />
+          </div>
         </div>
       )}
     </li>

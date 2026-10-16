@@ -211,6 +211,9 @@ function actionParams(action) {
       if (action.whatsappText != null) params.whatsappText = String(action.whatsappText);
       if (action.text != null) params.text = String(action.text);
       if (action.subject != null) params.subject = String(action.subject);
+      if (action.imageUrl != null) params.imageUrl = String(action.imageUrl);
+      if (action.imageHref != null) params.imageHref = String(action.imageHref);
+      if (action.imageAlt != null) params.imageAlt = String(action.imageAlt);
       return params;
     }
     default:
@@ -1918,8 +1921,30 @@ function registerChatRoutes(router, context) {
         // Story 3.3/D9: a edição pelo chat REUSA o mesmo serviço do PATCH da
         // UI (validação, sync em voo, contentEdits — AD-6/AD-13).
         let contents = Array.isArray(action.contents) ? action.contents : [];
-        // QA 2026-10-06: "troca a mensagem por <texto>" — o modelo NÃO tem o
-        // id no estado; canal + texto resolve o conteúdo base AQUI.
+        // IMAGEM POR LINK no e-mail (2026-10-16, pedido do dono: e-mail com
+        // banner de produto como no exemplo): {channel:'email', imageUrl}
+        // insere o banner NO TOPO do emailDoc (href opcional = banner
+        // clicável). Todas as variantes de e-mail da campanha recebem.
+        if (contents.length === 0 && action.imageUrl) {
+          const rows = await prisma.studioContent.findMany({
+            where: { campaignId: campaign.id, kind: 'base', stepIndex: 1, channel: 'email' },
+          });
+          if (rows.length === 0) {
+            throw httpError('NO_CONTENT', 409, 'A campanha não tem conteúdo de e-mail para editar — me peça para gerar primeiro.');
+          }
+          const imageBlock = {
+            type: 'image',
+            src: String(action.imageUrl),
+            alt: action.imageAlt ? String(action.imageAlt).slice(0, 200) : '',
+            ...(action.imageHref ? { href: String(action.imageHref) } : {}),
+          };
+          contents = rows.map((row) => ({
+            id: row.id,
+            emailDoc: { blocks: [imageBlock, ...((row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [])] },
+          }));
+        }
+        // QA 2026-10-06: "troca a mensagem por <texto>" — o modelo NÃO tem o id
+        // no estado; canal + texto resolve o conteúdo base AQUI.
         if (contents.length === 0 && action.channel && (action.whatsappText != null || action.text != null || action.subject != null)) {
           // Normaliza o canal (o modelo pode emitir "WhatsApp" — canais são
           // minúsculos no banco; sem isso viraria no-op silencioso).

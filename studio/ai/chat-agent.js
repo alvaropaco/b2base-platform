@@ -270,6 +270,7 @@ const SYSTEM_PROMPT = [
   'remove_suppression {email} — reabilita o contato (o servidor pede confirmação); disconnect_email {email?} — desconecta a conta de envio (sempre pede confirmação);',
   'send_test_message {phone?|email?} — mensagem de TESTE da campanha para um destino, com dados de exemplo;',
   'edit_content {channel, whatsappText?|text?|subject?} — TROCA o texto do canal pelo texto EXATO que o usuário pediu (sem ids);',
+  'edit_content {channel:"email", imageUrl:"https://…"} — ANEXA IMAGEM POR LINK no TOPO do e-mail (banner de produto); imageHref opcional = para onde o clique leva, imageAlt = descrição;',
   'grant_whatsapp_consent {name} — registra o consentimento WhatsApp de um lead (atesto do dono);',
   'select_leads {add:[id], remove:[id]} ou {set:[id]}.',
   'Regras: nunca prometa disparo sem aprovação; nada é enviado automaticamente.',
@@ -626,9 +627,20 @@ function selectVariantHint(userMessage) {
 }
 
 const EDIT_CONTENT_RE = /\b(troc\w+|substitu\w+|alter\w+|edit\w+|mud\w+)\b[^.?!]{0,64}\b(mensagem|conte(ú|u)do|texto)\b/i;
+// Imagem no e-mail (2026-10-16): "anexa essa imagem no email", "coloca o
+// banner", "adiciona a foto no e-mail" — EMITA edit_content com imageUrl.
+const EMAIL_IMAGE_RE = /\b(anex\w+|adicion\w+|acrescent\w+|coloc\w+|p\w+\s+no\s+topo|inser\w+|inclu\w+)\b[^.?!]{0,80}\b(imagem|foto|banner|figura|arte)\b[^.?!]{0,80}\b(e-?\s?mail|e-?mails?)\b|\b(e-?\s?mail)\b[^.?!]{0,80}\b(anex\w+|adicion\w+|coloc\w+|inser\w+)\b[^.?!]{0,80}\b(imagem|foto|banner|figura|arte)\b/i;
 
 function editContentHint(userMessage) {
   const msg = String(userMessage || '');
+  if (EMAIL_IMAGE_RE.test(msg)) {
+    return [
+      'IMAGEM NO E-MAIL POR LINK — a action edit_content EXISTE para isso:',
+      '{"type":"edit_content","channel":"email","imageUrl":"<link EXATO da imagem que o usuário passou>"}',
+      'imageHref opcional = link do clique no banner; imageAlt = descrição. A imagem entra NO TOPO do e-mail',
+      '(banner). Copie o link do usuário ITERALMENTE. NUNCA diga que não dá para colocar imagem no e-mail.',
+    ].join('\n');
+  }
   if (!EDIT_CONTENT_RE.test(msg)) return null;
   return [
     'TROCA DE CONTEÚDO — a action edit_content EXISTE e aceita canal + texto SEM ids:',

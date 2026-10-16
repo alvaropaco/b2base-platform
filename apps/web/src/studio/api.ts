@@ -537,6 +537,7 @@ export interface EmailBlock {
   url?: string;
   src?: string;
   alt?: string;
+  href?: string;
   condition?: { field: string; op: string; value: unknown };
 }
 
