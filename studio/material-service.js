@@ -39,7 +39,10 @@ function createMaterialService(prisma, deps = {}) {
         // D7: upload no contexto de uma campanha nasce vinculado a ela
         // (nullable — materiais da org continuam existindo).
         campaignId: campaignId || null,
-        kind: kind || (buffer ? storage.extFromMime(mimeType, originalName) : url ? 'url' : 'prompt'),
+        // Upload de IMAGEM é kind 'image' — NÃO a extensão ('png'/'jpg'):
+        // com a extensão, o branch de visão/extração de imagem NUNCA casava
+        // e o material ficava 'pending' para sempre (2026-10-16).
+        kind: kind || (buffer ? (mime && mime.startsWith('image/') ? 'image' : storage.extFromMime(mimeType, originalName)) : url ? 'url' : 'prompt'),
         sourceRef,
         mimeType: mime,
         sizeBytes,
@@ -91,7 +94,18 @@ function createMaterialService(prisma, deps = {}) {
     return texts.join('\n');
   }
 
-  async function extractText(material) {
+  /** Material de IMAGEM por kind OU por mime/extensão — rows legados gravados
+ *  com kind 'png'/'jpg' (a derivação antiga usava a extensão) continuam
+ *  reconhecíveis. */
+function isImageMaterial(material) {
+  return (
+    material.kind === 'image' ||
+    /^image\//i.test(String(material.mimeType || '')) ||
+    ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(String(material.kind))
+  );
+}
+
+async function extractText(material) {
     if (material.kind === 'pdf') {
       const buf = storage.readBuffer(material.sourceRef);
       const result = await pdfParse(buf);
@@ -111,7 +125,7 @@ function createMaterialService(prisma, deps = {}) {
       const html = await res.text();
       return htmlToText(html);
     }
-    if (material.kind === 'image') {
+    if (isImageMaterial(material)) {
       // Visão via gateway LiteLLM (2026-10-16): lê o banner/foto e descreve
       // produto/oferta/público para o extractor estruturado. Deps injetadas
       // (testes) vencem; sem LiteLLM configurado → null (needs_manual,
@@ -162,7 +176,7 @@ function createMaterialService(prisma, deps = {}) {
       if (description) text = description;
       else text = await extractText(material);
 
-      if (material.kind === 'image' && text == null) {
+      if (isImageMaterial(material) && text == null) {
         await prisma.studioMaterial.update({
           where: { id: material.id },
           data: {

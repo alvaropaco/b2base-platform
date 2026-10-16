@@ -100,7 +100,7 @@ async function startServer({ fetchImpl } = {}) {
     const res = await fetch(`${base}/api/studio${p}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
     return { res, body: await res.json().catch(() => ({})) };
   };
-  return { prisma, api, restore: () => { global.fetch = orig; }, close: () => server.close() };
+  return { prisma, api, base, restore: () => { global.fetch = orig; }, close: () => server.close() };
 }
 
 test('confirm_material: imagem PENDENTE é lida (visão) e confirmada COM a extração', async () => {
@@ -252,4 +252,72 @@ test('hints: "gere uma imagem" → generate_image; "anexa essa imagem no email" 
   // O hint de imagem por link agora ensina os DOIS caminhos.
   const linkHint = editContentHint('anexa essa imagem no email');
   assert.ok(linkHint.includes('imageUrl') && linkHint.includes('generate_image'), 'hint de anexo aponta a geração quando não há link');
+});
+
+// ── extração AUTOMÁTICA no upload (a imagem não fica pending para sempre) ───
+
+async function startServerWithPlan(plan) {
+  const visionCalls = { n: 0 };
+  const world = await startServer({
+    fetchImpl: async (u) => {
+      if (u.includes('/v1/chat/completions')) {
+        visionCalls.n += 1;
+        return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'Banner EuroBLECH 2026 — MB Máquinas Industriais. Oferta: presença na feira. Público: indústrias metalúrgicas. Texto: É ESSE MÊS! EuroBLECH 2026.' } }] }) };
+      }
+      throw new Error('fetch inesperado: ' + u);
+    },
+  });
+  world.prisma.organization.rows[0].plan = plan;
+  world.visionCalls = visionCalls;
+  return world;
+}
+
+test('upload de imagem: extração de visão roda SOZINHA em background (premium) — adeus pending eterno', async () => {
+  const world = await startServerWithPlan('premium');
+  const { prisma, api, base } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Arte EuroBLECH', channels: ['email'] });
+    const form = new FormData();
+    form.append('file', new Blob([PNG], { type: 'image/png' }), 'euroblech.png');
+    form.append('campaignId', c.data.id);
+    const res = await fetch(`${base}/api/studio/materials`, { method: 'POST', body: form });
+    assert.equal(res.status, 201);
+    const material = (await res.json()).data;
+    assert.equal(material.kind, 'image');
+    assert.equal(material.extractionStatus, 'pending', 'o upload responde na hora (extração em background)');
+
+    // A extração automática conclui sozinha (visão) em instantes.
+    let row = null;
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      row = prisma.studioMaterial.rows.find((r2) => r2.id === material.id);
+      if (row && row.extractionStatus === 'extracted') break;
+    }
+    assert.equal(row.extractionStatus, 'extracted', 'a imagem NÃO fica pending: a visão leu sozinha');
+    assert.ok(row.extraction && /EuroBLECH/.test(row.extraction.sourceText || ''), 'descrição da visão no material');
+    assert.ok(world.visionCalls.n >= 1, 'leitor de visão chamado');
+  } finally {
+    world.restore();
+    world.close();
+  }
+});
+
+test('upload de imagem (trial): segue pending — extração é premium, como o /extract', async () => {
+  const world = await startServerWithPlan('trial');
+  const { prisma, api, base } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Arte trial', channels: ['email'] });
+    const form = new FormData();
+    form.append('file', new Blob([PNG], { type: 'image/png' }), 'arte.png');
+    form.append('campaignId', c.data.id);
+    const res = await fetch(`${base}/api/studio/materials`, { method: 'POST', body: form });
+    assert.equal(res.status, 201);
+    await new Promise((r) => setTimeout(r, 400));
+    const row = prisma.studioMaterial.rows.find((r2) => r2.kind === 'image');
+    assert.equal(row.extractionStatus, 'pending', 'trial: nada de custo de visão sem o gate (igual ao /extract)');
+    assert.equal(world.visionCalls.n, 0);
+  } finally {
+    world.restore();
+    world.close();
+  }
 });

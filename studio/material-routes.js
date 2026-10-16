@@ -205,6 +205,19 @@ function registerMaterialRoutes(router, context) {
       } else {
         throw httpError('INVALID_MATERIAL', 400, 'Envie um arquivo, url, prompt ou companyData.');
       }
+      // Extração AUTOMÁTICA em background (2026-10-16): o material nascia
+      // 'pending' e ficava assim para sempre — nada chamava /extract depois
+      // do upload, e a leitura de IMAGEM (visão) vive NELA. Mesmo gate do
+      // /extract (premium); falha é registrada no PRÓPRIO material
+      // (failed/needs_manual) e NUNCA derruba o upload.
+      try {
+        const { isPremiumOrg } = require('../plan');
+        if (material && (await isPremiumOrg(prisma, orgId))) {
+          materialService
+            .runExtraction(material, {})
+            .catch((err) => console.error('[materials] extração automática falhou (material segue):', err.message));
+        }
+      } catch (_e) { /* best-effort: o upload segue */ }
       res.status(201).json({ success: true, data: material });
     } catch (err) {
       next(err);
