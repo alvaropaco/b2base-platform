@@ -59,6 +59,44 @@ function removeFile(relativePath) {
   if (fs.existsSync(full)) fs.unlinkSync(full);
 }
 
+// ── Imagens GERADAS pelo Studio (banner de e-mail) ──────────────────────────
+// Vivem em `generated/` e são servidas PUBLICAMENTE (o cliente de e-mail do
+// LEAD busca a imagem sem sessão) — por isso a leitura é restrita a nomes
+// gerados por saveGenerated (hash SHA-256 de 32 hex + extensão whitelist).
+
+const GENERATED_NAME_RE = /^[a-f0-9]{32}\.(png|jpe?g)$/i;
+
+function generatedDir() {
+  return path.join(ensureDir(), 'generated');
+}
+
+/** Salva imagem gerada; devolve o nome público (hash.ext). */
+function saveGenerated(buffer, ext = 'png') {
+  const safeExt = String(ext || 'png').replace(/[^a-z0-9]/gi, '').slice(0, 4) || 'png';
+  const dir = generatedDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const hash = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 32);
+  const fileName = `${hash}.${safeExt}`;
+  fs.writeFileSync(path.join(dir, fileName), buffer);
+  return fileName;
+}
+
+/** Lê imagem gerada pelo nome público — recusa qualquer outra coisa. */
+function readGenerated(name) {
+  const safe = path.basename(String(name || ''));
+  if (!GENERATED_NAME_RE.test(safe)) {
+    const err = new Error(`nome de mídia gerada inválido: ${safe.slice(0, 40)}`);
+    err.code = 'INVALID_MEDIA_NAME';
+    throw err;
+  }
+  return fs.readFileSync(path.join(generatedDir(), safe));
+}
+
+function generatedExists(name) {
+  const safe = path.basename(String(name || ''));
+  return GENERATED_NAME_RE.test(safe) && fs.existsSync(path.join(generatedDir(), safe));
+}
+
 /** Extensão segura derivada do mime/nome original (whitelist do FR-023). */
 function extFromMime(mimeType, originalName) {
   const byName = String(originalName || '').split('.').pop();
@@ -82,4 +120,4 @@ function extFromMime(mimeType, originalName) {
   return map[mimeType] || 'bin';
 }
 
-module.exports = { storageDir, ensureDir, saveBuffer, readBuffer, fileExists, removeFile, extFromMime };
+module.exports = { storageDir, ensureDir, saveBuffer, readBuffer, fileExists, removeFile, extFromMime, saveGenerated, readGenerated, generatedExists };

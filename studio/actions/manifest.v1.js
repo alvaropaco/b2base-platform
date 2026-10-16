@@ -132,6 +132,9 @@ const ACTIONS_V1 = {
   // 'params': repetir o MESMO pedido devolve o MESMO card com o MESMO link —
   // o PDF é determinístico e o storage dedupa por SHA-256.
   export_leads: { version: 1, idempotency: 'params', description: 'Gera uma planilha em PDF dos leads (nome, WhatsApp, e-mail e mais — colunas à escolha) com botão de download aqui no chat' },
+  // IMAGEM: abrir (visão na extração de material) e GERAR (banner por IA).
+  // Idempotency 'params': o MESMO prompt devolve a MESMA imagem gerada.
+  generate_image: { version: 1, idempotency: 'params', description: 'Gera uma imagem (banner de e-mail) por IA a partir da descrição do usuário e devolve o link público; attachToEmail insere no topo do e-mail' },
 };
 
 /**
@@ -361,6 +364,15 @@ function validate(action, params = {}) {
     }
     case 'set_schedule':
       return true; // validação de janelas vive no serviço (INVALID_WINDOW)
+    case 'generate_image': {
+      if (typeof params.prompt !== 'string' || !params.prompt.trim()) {
+        const err = new Error('generate_image exige `prompt` (a descrição da imagem que o usuário pediu).');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
+      return true;
+    }
     case 'select_leads': {
       const lists = ['set', 'add', 'remove'];
       const hasAny = lists.some((k) => Array.isArray(params[k]) && params[k].length > 0);

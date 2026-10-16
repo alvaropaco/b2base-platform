@@ -271,6 +271,7 @@ const SYSTEM_PROMPT = [
   'send_test_message {phone?|email?} — mensagem de TESTE da campanha para um destino, com dados de exemplo;',
   'edit_content {channel, whatsappText?|text?|subject?} — TROCA o texto do canal pelo texto EXATO que o usuário pediu (sem ids);',
   'edit_content {channel:"email", imageUrl:"https://…"} — ANEXA IMAGEM POR LINK no TOPO do e-mail (banner de produto); imageHref opcional = para onde o clique leva, imageAlt = descrição;',
+  'generate_image {prompt, attachToEmail?} — GERA uma IMAGEM por IA a partir da descrição (ex.: "banner de dobradeira industrial azul com o texto QUAL DOBRADEIRA…") e devolve o link público; attachToEmail:true já insere no TOPO do e-mail. Prompt em português, descrevendo cena, produto, texto do banner e estilo;',
   'grant_whatsapp_consent {name} — registra o consentimento WhatsApp de um lead (atesto do dono);',
   'select_leads {add:[id], remove:[id]} ou {set:[id]}.',
   'Regras: nunca prometa disparo sem aprovação; nada é enviado automaticamente.',
@@ -631,14 +632,38 @@ const EDIT_CONTENT_RE = /\b(troc\w+|substitu\w+|alter\w+|edit\w+|mud\w+)\b[^.?!]
 // banner", "adiciona a foto no e-mail" — EMITA edit_content com imageUrl.
 const EMAIL_IMAGE_RE = /\b(anex\w+|adicion\w+|acrescent\w+|coloc\w+|p\w+\s+no\s+topo|inser\w+|inclu\w+)\b[^.?!]{0,80}\b(imagem|foto|banner|figura|arte)\b[^.?!]{0,80}\b(e-?\s?mail|e-?mails?)\b|\b(e-?\s?mail)\b[^.?!]{0,80}\b(anex\w+|adicion\w+|coloc\w+|inser\w+)\b[^.?!]{0,80}\b(imagem|foto|banner|figura|arte)\b/i;
 
-function editContentHint(userMessage) {
+/**
+ * GERAR imagem do nada (2026-10-16): "gere uma imagem de X", "cria um banner
+ * de Y" — a action generate_image gera por IA e devolve link público (com
+ * attachToEmail insere no topo do e-mail). Imagem que JÁ EXISTE (anexada/
+ * enviada) é outro caminho (extração/visão) — aqui é criação.
+ */
+const IMAGE_GEN_RE = /\b(gerar?|gere|gera|criar?|crie|cria|fa[çc]a|fa[çc]|montar?|monte|fazer)\b[^.?!]{0,60}\b(imagem|banner|arte|figura|criativo)\b/i;
+
+function imageGenHint(userMessage) {
   const msg = String(userMessage || '');
-  if (EMAIL_IMAGE_RE.test(msg)) {
+  if (!IMAGE_GEN_RE.test(msg)) return null;
+  // Imagem que JÁ EXISTE no mundo do usuário (anexada/enviada/referida com
+  // link) NÃO é geração — é abrir/ler (extração) ou inserir por link.
+  if (/\b(anexad[oa]s?|anex\w+|enviad[oa]s?|link\s+d[aeo]|essa|esta|o\s+material)\b/i.test(msg)) return null;
+  return [
+    'GERAR IMAGEM — a action generate_image EXISTE e gera por IA:',
+    '{"type":"generate_image","prompt":"<descrição DETALHADA: produto/serviço, cena, textos que devem aparecer no banner, cores, estilo>","attachToEmail":true}',
+    'attachToEmail:true quando o destino é o E-MAIL da campanha — o banner entra NO TOPO. O card devolve o',
+    'link público da imagem. Monte o prompt com o contexto da campanha (objetivo/oferta). NUNCA diga que',
+    'não consegue gerar imagem; se o card disser que o motor não está configurado, repasse essa honestidade.',
+  ].join('\n');
+}
+
+function editContentHint(userMessage) {
+  const msg = String(userMessage || '');  if (EMAIL_IMAGE_RE.test(msg)) {
     return [
       'IMAGEM NO E-MAIL POR LINK — a action edit_content EXISTE para isso:',
       '{"type":"edit_content","channel":"email","imageUrl":"<link EXATO da imagem que o usuário passou>"}',
       'imageHref opcional = link do clique no banner; imageAlt = descrição. A imagem entra NO TOPO do e-mail',
       '(banner). Copie o link do usuário ITERALMENTE. NUNCA diga que não dá para colocar imagem no e-mail.',
+      'SE o usuário NÃO tiver um link e pediu para GERAR/CRIAR a imagem, EMITA generate_image no lugar:',
+      '{"type":"generate_image","prompt":"<descrição detalhada>","attachToEmail":true}',
     ].join('\n');
   }
   if (!EDIT_CONTENT_RE.test(msg)) return null;
@@ -848,7 +873,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
       buildOrgBlock(extras),
       buildHistoryBlock(history),
       skills.selectFor(userMessage),
-      hintOverride || campaignManagementHint(userMessage) || exportLeadsHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage) || consentBatchHint(userMessage) || selectVariantHint(userMessage) || launchLimitHint(userMessage),
+      hintOverride || campaignManagementHint(userMessage) || exportLeadsHint(userMessage) || imageGenHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage) || consentBatchHint(userMessage) || selectVariantHint(userMessage) || launchLimitHint(userMessage),
       `NOVA MENSAGEM DO USUÁRIO: ${userMessage}`,
       'Decida as ações e escreva a resposta para o usuário.',
     ]
@@ -995,7 +1020,9 @@ module.exports = {
   extractReplySoFar,
   campaignManagementHint,
   exportLeadsHint,
+  imageGenHint,
   EXPORT_LEADS_RE,
+  IMAGE_GEN_RE,
   emailConnectHint,
   extractChannelIntent,
   testMessageIntent,

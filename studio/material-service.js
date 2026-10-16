@@ -112,8 +112,24 @@ function createMaterialService(prisma, deps = {}) {
       return htmlToText(html);
     }
     if (material.kind === 'image') {
-      // Sem modelo de visão configurado nos deps → manual (degradação explícita).
+      // Visão via gateway LiteLLM (2026-10-16): lê o banner/foto e descreve
+      // produto/oferta/público para o extractor estruturado. Deps injetadas
+      // (testes) vencem; sem LiteLLM configurado → null (needs_manual,
+      // degradação explícita de sempre). O arquivo pode estar na raiz
+      // (upload) ou em generated/ (imagem gerada por IA).
       if (deps.imageExtract) return deps.imageExtract(material);
+      const vision = require('./ai/vision');
+      if (vision.isConfigured()) {
+        let buf = null;
+        try { buf = storage.readBuffer(material.sourceRef); } catch (_e) { /* não é upload */ }
+        if (!buf && storage.generatedExists(material.sourceRef)) buf = storage.readGenerated(material.sourceRef);
+        if (!buf) throw new Error('arquivo do material indisponível no storage');
+        return vision.describeImage({
+          buffer: buf,
+          mimeType: material.mimeType || 'image/jpeg',
+          hint: material.title || null,
+        });
+      }
       return null;
     }
     if (material.kind === 'video') {

@@ -117,12 +117,13 @@ test('manifest v1: contrato fechado com as 38 actions do orquestrador', () => {
   assert.deepEqual(Object.keys(manifest.ACTIONS_V1).sort(), [
     'add_suppression', 'approve_campaign', 'attach_files', 'attach_url', 'cancel_campaign', 'capture_leads', 'confirm_material',
     'connect_email', 'create_campaign', 'create_lead', 'delete_campaign', 'disconnect_email', 'duplicate_campaign', 'edit_content',
-    'enrich_email', 'enrich_whatsapp', 'export_leads', 'generate_content', 'grant_whatsapp_consent', 'grant_whatsapp_consent_batch', 'launch_campaign', 'list_campaigns', 'remove_suppression', 'rename_campaign', 'select_content_variant', 'select_leads', 'send_test_message', 'set_audience',
+    'enrich_email', 'enrich_whatsapp', 'export_leads', 'generate_content', 'generate_image', 'grant_whatsapp_consent', 'grant_whatsapp_consent_batch', 'launch_campaign', 'list_campaigns', 'remove_suppression', 'rename_campaign', 'select_content_variant', 'select_leads', 'send_test_message', 'set_audience',
     'set_channels', 'set_objective', 'set_schedule', 'show_balance', 'show_capabilities', 'show_content',
     'show_dns_records', 'show_replies', 'show_suppression', 'start_whatsapp_pairing', 'update_lead',
   ]);
   assert.equal(manifest.ACTIONS_V1.add_suppression.idempotency, 'params', 'opt-out é idempotente por params');
   assert.equal(manifest.ACTIONS_V1.export_leads.idempotency, 'params', 'mesmo pedido de planilha = replay do MESMO link');
+  assert.equal(manifest.ACTIONS_V1.generate_image.idempotency, 'params', 'mesmo prompt = replay da MESMA imagem');
   for (const t of ['show_suppression', 'remove_suppression', 'disconnect_email']) {
     assert.equal(manifest.ACTIONS_V1[t].idempotency, 'none', `${t}: repetir é um pedido NOVO`);
   }

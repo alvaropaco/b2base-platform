@@ -85,6 +85,11 @@ function actionParams(action) {
         scope: typeof action.scope === 'string' ? action.scope : null,
         names: Array.isArray(action.names) ? action.names.map(String).slice(0, 200) : null,
       };
+    case 'generate_image':
+      return {
+        prompt: typeof action.prompt === 'string' ? action.prompt : null,
+        attachToEmail: action.attachToEmail === true,
+      };
     case 'create_lead':
       return {
         companyName: action.companyName || null,
@@ -746,8 +751,95 @@ function registerChatRoutes(router, context) {
       case 'confirm_material': {
         const material = await prisma.studioMaterial.findUnique({ where: { id: String(action.materialId) } });
         if (!material || material.orgId !== orgId) throw httpError('NOT_FOUND', 404, 'Material não encontrado');
-        await materialService.confirmExtraction(material, {});
+        // Imagem/anexo PENDENTE extrai ANTES de confirmar (2026-10-16): o dono
+        // anexa e pede "analise o material" — confirmar sem extração gravava
+        // extração vazia e a IA seguia sem o produto/oferta/público. Falha de
+        // extração volta como card explicável (needs_manual segue manual).
+        let working = material;
+        if (material.extractionStatus === 'pending') {
+          const run = await materialService.runExtraction(material, {});
+          if (run.status === 'failed') {
+            return {
+              type: 'material_extraction_failed',
+              label: 'Não consegui ler o material agora',
+              detail: `A extração falhou (${String(run.error || 'erro').slice(0, 160)}). Me peça para tentar de novo ou descreva produto/oferta/público manualmente.`,
+            };
+          }
+          if (run.status === 'needs_manual') {
+            // Visão indisponível: CONFIRMAR AQUI fingiria extração (o
+            // confirmExtraction marca 'extracted' incondicionalmente — bug
+            // pré-existente que este caminho expôs). Degradação honesta.
+            return {
+              type: 'material_needs_manual',
+              label: 'A imagem precisa de descrição manual',
+              detail: 'O leitor de imagem não está disponível neste ambiente. Descreva produto, oferta e público que eu confirmo — ou tente de novo mais tarde.',
+            };
+          }
+          working = await prisma.studioMaterial.findUnique({ where: { id: String(action.materialId) } });
+        }
+        await materialService.confirmExtraction(working, {});
         return { type: 'material_confirmed', label: 'Extração confirmada', detail: 'Material pronto como fonte de conteúdo.' };
+      }
+
+      case 'generate_image': {
+        // GERAÇÃO DE IMAGEM (2026-10-16): banner de e-mail gerado por IA a
+        // partir do pedido — salvo no storage e servido por URL pública
+        // (/media/:hash) para os clientes de e-mail dos leads. Sem
+        // STUDIO_IMAGE_MODEL configurado → card honesto com o caminho.
+        const imageGen = require('./ai/image-gen');
+        if (!imageGen.isConfigured()) {
+          return {
+            type: 'image_generated',
+            label: 'Geração de imagem não configurada neste ambiente',
+            detail: 'Para gerar imagens por IA o servidor precisa de STUDIO_IMAGE_MODEL (gateway de imagem). Enquanto isso: me passe o LINK de uma imagem pronta que eu insiro no e-mail, ou suba a arte como anexo.',
+          };
+        }
+        let generated;
+        try {
+          generated = await imageGen.generateImage({ prompt: String(action.prompt).slice(0, 1000) });
+        } catch (err) {
+          return {
+            type: 'image_generated',
+            label: 'Não consegui gerar a imagem agora',
+            detail: `O motor de imagem falhou (${err.code || 'erro'}). Tenta de novo em instantes ou me passe o LINK de uma imagem pronta que eu insiro no e-mail.`,
+          };
+        }
+        const storage = require('./storage');
+        const ext = generated.mimeType === 'image/jpeg' ? 'jpg' : 'png';
+        const fileName = storage.saveGenerated(generated.buffer, ext);
+        const base = String(process.env.APP_URL || '').replace(/\/$/, '');
+        if (!base) {
+          return {
+            type: 'image_generated',
+            label: 'Imagem gerada, mas sem URL pública',
+            detail: 'APP_URL não configurado no servidor — a imagem foi gerada e salva, mas não consigo montar o link público para o e-mail.',
+          };
+        }
+        const imageUrl = `${base}/media/${fileName}`;
+        let inserted = false;
+        if (action.attachToEmail) {
+          const rows = await prisma.studioContent.findMany({
+            where: { campaignId: campaign.id, kind: 'base', stepIndex: 1, channel: 'email' },
+          });
+          if (rows.length > 0) {
+            const contents = rows.map((row) => ({
+              id: row.id,
+              emailDoc: { blocks: [{ type: 'image', src: imageUrl, alt: String(action.prompt).slice(0, 200) }, ...((row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [])] },
+            }));
+            await campaignService.flow.updateContents(prisma, { campaign, contents, userId });
+            inserted = true;
+          }
+        }
+        return {
+          type: 'image_generated',
+          label: inserted ? 'Imagem gerada e inserida no topo do e-mail' : 'Imagem gerada',
+          detail:
+            `Prompt: "${String(action.prompt).slice(0, 160)}"` +
+            `\nLink público da imagem: ${imageUrl}` +
+            (inserted ? '\nEla está NO TOPO do e-mail como banner.' : '\nMe peça para inserir no e-mail que eu coloco no topo (ou use no editor de e-mail).'),
+          imageUrl,
+          insertedIntoEmail: inserted,
+        };
       }
 
       case 'generate_content': {
@@ -3022,6 +3114,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
     cancel_campaign: 'Cancelando a campanha…',
     set_channels: 'Ajustando os canais de disparo…',
     export_leads: 'Gerando a planilha em PDF…',
+    generate_image: 'Gerando a imagem…',
     show_capabilities: 'Organizando o que eu sei fazer…',
   };
 
