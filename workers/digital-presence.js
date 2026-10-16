@@ -27,6 +27,14 @@ const contactDiscovery = require('./contact-discovery');
 // ── Extração wa.me (fonte-literal) ──────────────────────────────────────────
 const WA_RE = /(?:wa\.me\/|api\.whatsapp\.com\/send(?:\?|&)(?:[^ ]*phone=)|web\.whatsapp\.com\/send\?[^"' >]*?phone=|whatsapp:\/\/send\?(?:[^ ]*phone=))\+?([0-9]+)/i;
 
+// Teto de custo da cadeia do gate (spec ampliar-crawl-sites-whatsapp-email):
+// no máx. 2 lookups Twilio por lead — 1º rejeitado tenta o 2º, e para.
+// Semântica DISTINTA de WA_CANDIDATES_MAX (contact-discovery), que é a
+// LARGURA da lista de candidatos exposta: lookups reais = min(GATE_MAX_
+// LOOKUPS, |wa_candidates|). Subir só este não muda nada (a lista corta em
+// WA_CANDIDATES_MAX); subir só aquele não gera lookup extra (este corta).
+const GATE_MAX_LOOKUPS = 2;
+
 /** Canoniza para disparo BR: 10-11 dígitos ganham DDI 55; 12-13 só se já 55. */
 function canonWhatsAppDigits(v) {
   const digits = String(v || '').replace(/\D/g, '');
@@ -131,24 +139,63 @@ const executors = {
       return { status: 'FAILED', error: { type: 'DISCOVERY_ERROR', message: String(err.message || err).slice(0, 200), retryable: true } };
     }
 
-    // Gate Twilio Lookup (spec gate-twilio-lookup-whatsapp-site): wa.me raspado
-    // pode ser fixo/0800/voicemail/inválido — número confirmadamente ruim NÃO
-    // é promovido (o lead mantém o fixo da Receita). Indisponibilidade do
-    // Twilio é fail-open (sem credenciais, sem registry, circuito aberto):
-    // protege contra dado ruim CONFIRMADO, nunca contra falta de dado.
-    // WIRING REFEITO em 2026-10-15: o refactor de 14/10 havia deixado o gate
-    // órfão (o executor delega ao contact-discovery e não chamava mais).
+    // Gate Twilio Lookup em CADEIA (spec ampliar-crawl-sites-whatsapp-email):
+    // wa.me raspado pode ser fixo/0800/voicemail/inválido — número
+    // confirmadamente ruim NÃO é promovido (o lead mantém o fixo da Receita).
+    // A descoberta agora devolve `wa_candidates` ordenado por score; o gate
+    // valida ATÉ GATE_MAX_LOOKUPS (2) candidatos em cadeia até o 1º passar —
+    // um landline rejeitado não mata mais a descoberta quando existe outro
+    // candidato válido na fonte. Fail-open inalterado (sem credenciais, sem
+    // registry, circuito aberto, erro): o candidato corrente é promovido SEM
+    // gastar lookup no próximo — o gate protege contra dado ruim CONFIRMADO,
+    // nunca contra falta de dado.
     let whatsapp = r.whatsapp;
-    if (whatsapp && deps.twilioLookup) {
+    let escolhido = null; // candidato promovido pela cadeia (quando o gate rodou)
+    const rejeitados = [];
+    const cadeia = (Array.isArray(r.wa_candidates) && r.wa_candidates.length)
+      ? r.wa_candidates
+      : (whatsapp ? [{
+          whatsapp,
+          score: r.score,
+          tipo: (r.fontes && r.fontes[0] && r.fontes[0].tipo) || 'wa_link',
+          url: (r.fontes && r.fontes[0] && r.fontes[0].url) || null,
+          trecho: (r.fontes && r.fontes[0] && r.fontes[0].trecho) || '',
+        }] : []);
+    if (deps.twilioLookup && cadeia.length) {
+      // O gate assumiu o controle: a partir daqui, SÓ candidato aprovado é
+      // promovido (todos rejeitados → lead mantém o fixo da Receita).
+      whatsapp = null;
+      let lookups = 0;
       try {
-        const gate = await gateWhatsApp(whatsapp, { deps, signal, logger });
-        if (gate.decision === 'BLOCK') {
-          logger && logger.warn && logger.warn(`digital_presence: Twilio bloqueou ${whatsapp} (${gate.reason})`);
-          r.motivo_descarte = [...(r.motivo_descarte || []), `twilio: ${whatsapp} rejeitado (${gate.reason})`];
-          whatsapp = null;
+        for (const cand of cadeia) {
+          if (lookups >= GATE_MAX_LOOKUPS) break; // teto de custo: 2 lookups/lead
+          let gate;
+          try {
+            gate = await gateWhatsApp(cand.whatsapp, { deps, signal, logger });
+          } catch (_e) {
+            gate = { decision: 'ALLOW', checked: false, reason: 'GATE_ERROR' }; // fail-open
+          }
+          if (gate.checked) lookups += 1;
+          if (gate.decision === 'BLOCK') {
+            logger && logger.warn && logger.warn(`digital_presence: Twilio bloqueou ${cand.whatsapp} (${gate.reason})`);
+            r.motivo_descarte = [...(r.motivo_descarte || []), `twilio: ${cand.whatsapp} rejeitado (${gate.reason})`];
+            rejeitados.push({ whatsapp: cand.whatsapp, motivo: gate.reason, url: cand.url || null, trecho: (cand.trecho || '').slice(0, 200) });
+            continue; // próximo candidato da cadeia
+          }
+          // ALLOW: candidato bom CONFIRMADO ou fail-open (checked=false →
+          // promove o corrente como hoje, sem lookup extra no próximo).
+          escolhido = cand;
+          whatsapp = cand.whatsapp;
+          break;
         }
-      } catch (_e) { /* gate NUNCA derruba a descoberta */ }
+      } catch (_e) { /* a cadeia NUNCA derruba a descoberta */ }
     }
+    const scoreEscolhido = escolhido ? escolhido.score : r.score;
+    // Fontes do número promovido: quando a cadeia promove um candidato que
+    // NÃO é o 1º, as fontes do 1º (r.fontes) não servem — usa a do promovido.
+    const fontesEscolhido = (escolhido && r.whatsapp && escolhido.whatsapp !== r.whatsapp)
+      ? [{ tipo: escolhido.tipo, url: escolhido.url || null, trecho: escolhido.trecho || '' }]
+      : r.fontes;
 
     const dp = {
       // REGRA DE OURO: whatsapp só existe quando status = 'confirmado'.
@@ -156,34 +203,46 @@ const executors = {
       corporate_email: r.email || null,
       corporate_email_fonte: r.email_fonte || null,
       status: r.status,
-      score: r.score,
-      fontes: r.fontes,
+      score: scoreEscolhido,
+      fontes: fontesEscolhido,
       identidade_usada: r.identidade_usada,
       motivo_descarte: r.motivo_descarte,
+      // Evidência de rejeição da cadeia (proveniência do que o Twilio barrou).
+      whatsapp_rejeitados: rejeitados,
       nao_confirmado: r.nao_confirmado,
       domain: r.domain,
       dominio_confirmado: r.dominio_confirmado,
       search_unavailable: Boolean(r.search_unavailable),
     };
-    logger && logger.info && logger.info(`digital_presence: status=${r.status} score=${r.score} whatsapp=${whatsapp || 'null'} email=${r.email || 'null'}`);
+    logger && logger.info && logger.info(`digital_presence: status=${r.status} score=${scoreEscolhido} whatsapp=${whatsapp || 'null'} email=${r.email || 'null'}${rejeitados.length ? ` twilio_rejeitou=${rejeitados.length}` : ''}`);
 
+    const confianca = Math.min(1, Math.max(0, scoreEscolhido / 100));
+    const agora = new Date().toISOString();
     return {
       status: 'COMPLETED',
       provider: 'contact.discovery',
       data: {
         digital_presence: dp,
         contacts: whatsapp
-          ? [{ type: 'whatsapp', value: whatsapp, classification: 'CONFIRMED', confidence: Math.min(1, Math.max(0, r.score / 100)) }]
+          ? [{ type: 'whatsapp', value: whatsapp, classification: 'CONFIRMED', confidence: confianca }]
           : [],
       },
-      facts: whatsapp
-        ? r.fontes.map((f) => ({
-            attribute: 'contact.whatsapp',
-            value: whatsapp,
-            confidence: Math.min(1, Math.max(0, r.score / 100)),
-            evidence: { sourceType: f.tipo, url: f.url || null, trecho: (f.trecho || '').slice(0, 200), retrievedAt: new Date().toISOString() },
-          }))
-        : [],
+      facts: [
+        ...(whatsapp ? (fontesEscolhido || []).map((f) => ({
+          attribute: 'contact.whatsapp',
+          value: whatsapp,
+          confidence: confianca,
+          evidence: { sourceType: f.tipo, url: f.url || null, trecho: (f.trecho || '').slice(0, 200), retrievedAt: agora },
+        })) : []),
+        // Proveniência do e-mail (spec): fact com evidence (sourceType/url) —
+        // o manager propaga facts genericamente para o enrichmentSummary.v2.
+        ...(r.email ? [{
+          attribute: 'contact.email',
+          value: r.email,
+          confidence: r.email_fonte_tipo === 'receita' ? 0.6 : 0.8,
+          evidence: { sourceType: r.email_fonte_tipo || 'site_oficial', url: r.email_fonte || null, retrievedAt: agora },
+        }] : []),
+      ],
     };
   },
 };

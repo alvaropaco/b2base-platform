@@ -740,3 +740,43 @@ test('QA: WhatsApp já presente não duplica; sem WhatsApp não mexe nos telefon
   const p2 = await deps.prisma.prospect.findUnique({ where: { id: prospect2.id } });
   assert.deepStrictEqual(p2.cnpjPhones, ['1132995850'], 'sem WhatsApp → nada muda');
 });
+
+test('QA: fact contact.email chega ao enrichmentSummary.v2 com proveniência (sourceType/url)', async () => {
+  const deps = makeDeps();
+  const prospect = await seedProspect(deps.prisma);
+  const { job, tasks } = await deps.manager.createJob({ orgId: 'org-1', prospectId: prospect.id, trigger: 'manual' });
+  const task = tasks.find((t) => t.capability === 'company.digital_presence');
+
+  await deps.manager.handleResult({
+    version: '1', taskId: task.id, taskKey: task.taskKey, jobId: job.id,
+    orgId: 'org-1', prospectId: job.prospectId, entityKey: task.entityKey, entityType: task.entityType,
+    capability: 'company.digital_presence', provider: 'contact.discovery', status: 'COMPLETED',
+    data: {
+      digital_presence: {
+        whatsapp: '5511987654321',
+        corporate_email: 'contato@acme.com.br',
+        corporate_email_fonte: 'https://acme.com.br/sobre',
+      },
+      contacts: [{ type: 'whatsapp', value: '5511987654321', classification: 'CONFIRMED', confidence: 0.95 }],
+    },
+    facts: [
+      { attribute: 'contact.whatsapp', value: '5511987654321', confidence: 0.95, evidence: { sourceType: 'wa_link', url: 'https://acme.com.br/', trecho: 'wa.me/5511987654321', retrievedAt: new Date().toISOString() } },
+      { attribute: 'contact.email', value: 'contato@acme.com.br', confidence: 0.8, evidence: { sourceType: 'site_oficial', url: 'https://acme.com.br/sobre', retrievedAt: new Date().toISOString() } },
+    ],
+    error: null, durationMs: 100, workerVersion: 'test', suggestedTasks: [], completedAt: new Date().toISOString(),
+  });
+
+  const updated = await deps.prisma.prospect.findUnique({ where: { id: prospect.id } });
+  const entry = updated.enrichmentSummary.v2['company.digital_presence'];
+  assert.strictEqual(entry.status, 'COMPLETED');
+  const emailFact = entry.facts.find((f) => f.attribute === 'contact.email');
+  assert.ok(emailFact, 'fact contact.email propagado ao resumo (proveniência E2E)');
+  assert.strictEqual(emailFact.value, 'contato@acme.com.br');
+  assert.strictEqual(emailFact.sourceType, 'site_oficial', 'sourceType da evidência chega ao resumo');
+  assert.strictEqual(updated.cnpjEmail, 'contato@acme.com.br', 'e-mail aplicado fill-if-empty');
+  assert.strictEqual(
+    entry.data.digital_presence.corporate_email_fonte,
+    'https://acme.com.br/sobre',
+    'url da fonte chega ao resumo via data (facts→summary do manager fica intocado: mapeia sourceType; url segue no data)'
+  );
+});

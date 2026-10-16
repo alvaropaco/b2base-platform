@@ -36,18 +36,32 @@ const DDD_UF = {
 const SITE_CONTACT_PATHS = ['', 'contato', 'fale-conosco'];
 // ── Crawl interno (2026-10-15 — "entrar no site de verdade") ────────────────
 // Home + /contato não bastam: muito site esconde o WhatsApp em /atendimento,
-// /orcamento, páginas de unidade/filial. Quando os caminhos fixos NÃO
-// renderam um wa.me, seguimos links internos de contato com orçamento
-// fechado (5 páginas, 15s, 8s por página) — o timeout da capability (60s)
-// cobre o resto do pipeline (Places/CNPJ/Instagram/Twilio).
+// /orcamento, páginas de unidade/filial. Seguimos links internos de contato
+// com orçamento fechado — o timeout da capability (60s) cobre o resto do
+// pipeline (Places/CNPJ/Instagram/Twilio).
+// 2026-10-16 (spec ampliar-crawl-sites-whatsapp-email): 5→12 páginas com
+// concorrência ≤3 (~2× páginas no MESMO teto de 16s/lead) e o crawl NÃO
+// aborta mais na 1ª wa.me — as internas são a principal fonte de e-mail
+// (contato@/comercial@); parar cedo é deixar resultado na mesa. Parada só
+// por orçamento/teto de páginas.
 const CRAWL_EXTRA_PATHS = ['atendimento', 'orcamento', 'sac', 'unidades', 'contate'];
-const CRAWL_MAX_EXTRA_PAGES = 5;
+const CRAWL_MAX_EXTRA_PAGES = 12;
+const SITE_CRAWL_CONCURRENCY = 3;
+// Cap de bytes por página (~512 KB — lição OOM ee3f2ce0): página gigante é
+// cortada e o INÍCIO é parseado (nav/header é onde vivem os contatos).
+const MAX_PAGE_BYTES = 512 * 1024;
 const CRAWL_BUDGET_MS = 15000;
 const CRAWL_PAGE_TIMEOUT_MS = 8000;
 // Orçamento do ESTÁGIO site inteiro (caminhos fixos + crawl) quando o caller
 // informa o início do lead — deixa o restante do timeout de 30s para as
 // fontes que vêm depois (Places, Instagram) e o gate Twilio.
 const SITE_STAGE_BUDGET_MS = 16000;
+// Largura da lista de candidatos exposta p/ a cadeia do gate Twilio —
+// semântica DISTINTA de GATE_MAX_LOOKUPS (workers/digital-presence.js), que
+// é o teto de CUSTO em lookups: lookups reais = min(GATE_MAX_LOOKUPS,
+// |wa_candidates|). Subir só este NÃO gera lookup extra (o gate corta em
+// GATE_MAX_LOOKUPS); subir só aquele não alcança candidatos além deste.
+const WA_CANDIDATES_MAX = 2;
 
 // ── Busca web multi-fonte (2026-10-15 — "ampliar a área de busca") ──────────
 // Porta do estágio caso MB (2026-10-09, derrubado pelo refactor de 14/10):
@@ -71,9 +85,18 @@ const CRAWL_LINK_RE = /<a\s[^>]*href\s*=\s*["']([^"'\s#]+)["'][^>]*>([\s\S]{0,30
 const CRAWL_PRIO_RE = /(contat|fale|whats|w\.me|zap|sac|atendiment|orcament|unidade|filial|loja|quem-?somos|sobre-nos|a-?empresa|equipe|converse|falan)/i;
 const CRAWL_SKIP_RE = /\.(pdf|jpe?g|png|gif|webp|svg|css|js|mjs|zip|rar|mp[34]|xml|rss|ico|woff2?)($|\?)|(wp-admin|wp-login|xmlrpc\.php|\/feed)($|\/|\?)|\b(facebook\.com|instagram\.com|linkedin\.com|twitter\.com|x\.com|youtube\.com|wa\.me|api\.whatsapp\.com|web\.whatsapp\.com)\b/i;
 const WA_LINKS_RE = /(?:wa\.me\/|api\.whatsapp\.com\/send\?[^"' >]*?phone=|web\.whatsapp\.com\/send\?[^"' >]*?phone=|whatsapp:\/\/send\?phone=)\+?([0-9]{10,13})/gi;
-const BR_PHONE_RE = /\(?\d{2}\)?[\s.-]?\d{4}[-.\s]?\d{4}/g;
+// 4-5 dígitos no 1º grupo: pega o formato mobile BR padrão "97654-3210"
+// (5+4) SEM perder o fixo "3456-7890" (4+4). Falsos positivos ficam por
+// conta dos gates de jusante: 10-13 dígitos + libphonenumber + DDD×UF +
+// anti-alucinação (dígitos literais no trecho).
+const BR_PHONE_RE = /\(?\d{2}\)?[\s.-]?\d{4,5}[-.\s]?\d{4}/g;
 const WHATS_KEYWORD_RE = /whats[a-zç]*|w\.me|\bzap\b/gi;
-const EMAIL_RE = /[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/gi;
+// Local part limitado a 64 (RFC 5321) e casamento ancorado num separador
+// (fim de string ou caractere fora do local part): SEM isso, o
+// `[a-z0-9._%+-]+` retrocede por posição num run longo de caracteres
+// não-e-mail (JS minificado/base64) → O(n²) de CPU queima o worker mesmo
+// com o cap de bytes (lição da página gigante, 2026-10-16).
+const EMAIL_RE = /(?:^|[^a-z0-9._%+-])([a-z0-9._%+-]{1,64}@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})/gi;
 const EMAIL_JUNK_RE = /(noreply|no-reply|nao-?responda|donotreply|postmaster|abuse|webmaster|hostmaster|sentry|wixpress|example\.|wordpress|godaddy|\.png$|\.jpe?g$|\.gif$|\.webp$|\.svg$)/i;
 const EMAIL_CONTACT_PREF_RE = /^(contato|contact|comercial|vendas|financeiro|info|informacoes|fale|oi|ola|atendimento|diretoria|sac)/i;
 const JUNK_HOST_RE = /(instagram\.|facebook\.com|wikipedia\.org|chatgpt\.com|openai\.com|reddit\.com|youtube\.com|linkedin\.com|tiktok\.com|mercadolivre\.|shopee\.|amazon\.|pinterest\.|twitter\.com|x\.com|gov\.br|cnpj|casadosdados|informecadastral)/i;
@@ -122,8 +145,8 @@ function dddMatchesState(phoneE164, state) {
 function extractEmailsFromHtml(html, { hostDomain } = {}) {
   if (!html) return [];
   const raw = new Set();
-  for (const m of html.matchAll(/mailto:\s*([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/gi)) raw.add(m[1].toLowerCase());
-  for (const m of html.matchAll(new RegExp(EMAIL_RE.source, 'gi'))) raw.add(m[0].toLowerCase());
+  for (const m of html.matchAll(/mailto:\s*([a-z0-9._%+-]{1,64}@[a-z0-9.-]+\.[a-z]{2,})/gi)) raw.add(m[1].toLowerCase());
+  for (const m of html.matchAll(new RegExp(EMAIL_RE.source, 'gi'))) raw.add(m[1].toLowerCase());
   const clean = [...raw].filter((e) => !EMAIL_JUNK_RE.test(e));
   const score = (e) => {
     let n = 0;
@@ -133,6 +156,64 @@ function extractEmailsFromHtml(html, { hostDomain } = {}) {
     return n;
   };
   return clean.sort((a, b) => score(a) - score(b)).slice(0, 5);
+}
+
+/**
+ * Corpo da resposta limitado a `maxBytes` (lição OOM ee3f2ce0), cortado em
+ * BYTES. Com stream: lê em chunks até o teto (cancel aguardado — rejeição
+ * de cancel vira unhandled rejection e derruba o worker); se `read()`
+ * rejeitar no meio (rede caiu), DECODIFICA E DEVOLVE o parcial já
+ * bufferizado — o body ficou locked, `res.text()` lançaria e o trabalho
+ * feito seria descartado. Sem stream (stubs de teste): corta o texto por
+ * bytes (Buffer.byteLength/subarray), não por caracteres.
+ */
+async function readBodyCapped(res, maxBytes) {
+  if (res.body && typeof res.body.getReader === 'function') {
+    const reader = res.body.getReader();
+    const chunks = [];
+    let total = 0;
+    let capped = false;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        total += value.byteLength;
+        if (total >= maxBytes) { capped = true; break; }
+      }
+    } catch (_e) {
+      /* parcial bufferizado vale mais que nada — segue para o decode */
+    }
+    if (capped) {
+      try { await reader.cancel(); } catch (_e) { /* stream já encerrado */ }
+    }
+    const buf = new Uint8Array(Math.min(total, maxBytes));
+    let off = 0;
+    for (const c of chunks) {
+      if (off >= buf.length) break;
+      const slice = c.byteLength > buf.length - off ? c.subarray(0, buf.length - off) : c;
+      buf.set(slice, off);
+      off += slice.length;
+    }
+    return new TextDecoder('utf-8', { fatal: false }).decode(buf);
+  }
+  const text = await res.text();
+  if (Buffer.byteLength(text, 'utf-8') <= maxBytes) return text;
+  return Buffer.from(text, 'utf-8').subarray(0, maxBytes).toString('utf-8');
+}
+
+/** Concorrência limitada: até `limit` workers consomem a lista em ordem. */
+async function mapLimit(items, limit, fn) {
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      try {
+        await fn(items[i], i);
+      } catch (_e) { /* item problemático não derruba o lote */ }
+    }
+  });
+  await Promise.all(workers);
 }
 
 async function fetchPageText(url, { fetchImpl = fetch, signal, timeoutMs = 12000 } = {}) {
@@ -151,7 +232,7 @@ async function fetchPageText(url, { fetchImpl = fetch, signal, timeoutMs = 12000
         headers: { Accept: 'text/html,*/*', 'Accept-Language': 'pt-BR,pt;q=0.9', 'User-Agent': UA },
       });
       if (!res.ok) return null;
-      return await res.text();
+      return await readBodyCapped(res, MAX_PAGE_BYTES);
     } finally {
       clearTimeout(timer);
       if (signal) signal.removeEventListener('abort', onAbort);
@@ -281,9 +362,12 @@ function extractInternalLinks(html, pageUrl, dominio) {
 
 // ── ETAPA 2 — Coleta de candidatos (fontes determinísticas) ─────────────────
 /**
- * a) Site oficial: home + /contato + /fale-conosco e, se NADA render wa.me,
- *    CRAWL INTERNO com orçamento seguindo links internos de contato
- *    (atendimento, orçamento, unidades, âncoras "fale conosco"…).
+ * a) Site oficial: home + /contato + /fale-conosco (concorrência ≤3) e CRAWL
+ *    INTERNO com orçamento seguindo links internos de contato (atendimento,
+ *    orçamento, unidades, âncoras "fale conosco"…). O crawl roda SEMPRE que
+ *    há orçamento — mesmo depois de achar wa.me — porque as páginas internas
+ *    são a principal fonte de e-mail corporativo. Parada só por
+ *    orçamento/teto de páginas.
  *    Extração via REGEX (wa.me/api.whatsapp/web.whatsapp + números perto de
  *    "whats|zap"). Cada candidato carrega URL + TRECHO literal. Coleta também
  *    e-mails e o link do Instagram (para a fonte 2d).
@@ -316,13 +400,13 @@ async function collectFromSite(identidade, { fetchImpl = fetch, signal, logger, 
   const base = `https://${dominio}`;
 
   /** Extração por página (wa_link + wa_contexto) — compartilhada fixos × crawl. */
-  const harvest = (html, url) => {
+  const harvest = (html, url, ord) => {
     // wa.me / api.whatsapp / web.whatsapp → candidato tipo wa_link
     for (const m of html.matchAll(new RegExp(WA_LINKS_RE.source, 'gi'))) {
       const raw = digitsOnly(m[1]);
       if (!raw || raw.length < 10) continue;
       const trecho = html.slice(Math.max(0, m.index - 80), m.index + m[0].length + 80).replace(/\s+/g, ' ').trim();
-      out.candidates.push({ raw, tipo: 'wa_link', url, trecho, host: dominio });
+      out.candidates.push({ raw, tipo: 'wa_link', url, trecho, host: dominio, ord });
     }
     // Números perto de "WhatsApp|Whats|Zap" → tipo wa_contexto
     for (const kw of html.matchAll(WHATS_KEYWORD_RE)) {
@@ -331,29 +415,38 @@ async function collectFromSite(identidade, { fetchImpl = fetch, signal, logger, 
         const raw = digitsOnly(ph[0]);
         if (raw.length < 10 || raw.length > 13) continue;
         const trecho = win.slice(Math.max(0, ph.index - 40), ph.index + ph[0].length + 40).replace(/\s+/g, ' ').trim();
-        out.candidates.push({ raw, tipo: 'wa_contexto', url, trecho, host: dominio });
+        out.candidates.push({ raw, tipo: 'wa_contexto', url, trecho, host: dominio, ord });
       }
     }
   };
-  const captureMeta = (html, url) => {
+  const captureMeta = (html, url, ord) => {
     if (!out.instagramHandle) {
       const ig = html.match(/instagram\.com\/([A-Za-z0-9_.]{2,40})/i);
       if (ig && !/\/p\//.test(ig[0])) out.instagramHandle = ig[1].replace(/\.$/, '');
     }
-    out.emails.push(...extractEmailsFromHtml(html, { hostDomain: dominio }).map((e) => ({ email: e, url })));
+    out.emails.push(...extractEmailsFromHtml(html, { hostDomain: dominio }).map((e) => ({ email: e, url, ord })));
+  };
+  // Fetch paralelo ≠ conclusão paralela: cada página carrega sua ordem de
+  // SUBMISSÃO (ord) e as acumulações são reordenadas por ela antes do
+  // retorno — emailPick (emails[0]) e os empates de score têm que ser
+  // determinísticos entre runs (o fill-if-empty do manager eterniza o vencedor).
+  let seq = 0;
+  const processPage = async (url, { timeoutMs } = {}) => {
+    const ord = seq++;
+    const html = await fetchPageText(url, { fetchImpl, signal, timeoutMs });
+    if (!html) return;
+    out.pages.push({ url, html });
+    captureMeta(html, url, ord);
+    harvest(html, url, ord);
   };
 
-  for (const path of SITE_CONTACT_PATHS) {
-    const url = `${base}/${path}`;
-    const html = await fetchPageText(url, { fetchImpl, signal });
-    if (!html) continue;
-    out.pages.push({ url, html });
-    captureMeta(html, url);
-    harvest(html, url);
-  }
+  // Caminhos fixos em paralelo (concorrência ≤3): 3 páginas no tempo de ~1.
+  await mapLimit(SITE_CONTACT_PATHS, SITE_CRAWL_CONCURRENCY, (path) => processPage(`${base}/${path}`));
 
-  // ── Crawl interno: só quando os caminhos fixos NÃO renderam wa.me ─────────
-  if (!out.candidates.some((c) => c.tipo === 'wa_link') && out.pages.length) {
+  // ── Crawl interno: SEMPRE roda (orçamento permitting) — WhatsApp E e-mail ──
+  // As internas são a principal fonte de contato@; parar na 1ª wa.me deixava
+  // o e-mail na mesa (matrix "WA na home, e-mail na interna").
+  if (out.pages.length) {
     const visited = new Set(out.pages.map((p) => normUrl(p.url)).filter(Boolean));
     const discovered = [];
     for (const p of out.pages) discovered.push(...extractInternalLinks(p.html, p.url, dominio));
@@ -381,22 +474,23 @@ async function collectFromSite(identidade, { fetchImpl = fetch, signal, logger, 
     const stageStartedAt = Number.isFinite(startedAt) ? startedAt : crawlStartedAt;
     const stageDeadline = stageStartedAt + (Number.isFinite(startedAt) ? SITE_STAGE_BUDGET_MS : CRAWL_BUDGET_MS);
     let crawled = 0;
-    for (const url of queue.slice(0, CRAWL_MAX_EXTRA_PAGES)) {
-      if (signal && signal.aborted) break;
-      if (Date.now() > stageDeadline) break;
-      const html = await fetchPageText(url, { fetchImpl, signal, timeoutMs: CRAWL_PAGE_TIMEOUT_MS });
+    // Concorrência ≤3 com checagem de orçamento antes de CADA fetch: páginas
+    // em voo terminam pelo próprio timeout (≤8s) — o teto de 16s/lead vale.
+    await mapLimit(queue.slice(0, CRAWL_MAX_EXTRA_PAGES), SITE_CRAWL_CONCURRENCY, async (url) => {
+      if (signal && signal.aborted) return;
+      if (Date.now() > stageDeadline) return;
       crawled += 1;
-      if (!html) continue;
-      out.pages.push({ url, html });
-      captureMeta(html, url);
-      harvest(html, url);
-      // wa.me encontrado numa página profunda encerra o crawl (o restante do
-      // orçamento fica para Places/CNPJ/Instagram/Twilio).
-      if (out.candidates.some((c) => c.tipo === 'wa_link')) break;
-    }
+      await processPage(url, { timeoutMs: CRAWL_PAGE_TIMEOUT_MS });
+      // SEM aborto na 1ª wa.me: segue para colher e-mails nas demais páginas
+      // (parada só por orçamento/teto de páginas).
+    });
     logger && logger.info && logger.info(`crawl interno ${dominio}: ${crawled} página(s) extra(s)`);
   }
 
+  // Reordena por SUBMISSÃO (estável — ordem dentro da página preservada): a
+  // conclusão do fetch paralelo não pode definir emails[0] nem empates de score.
+  out.emails.sort((a, b) => a.ord - b.ord);
+  out.candidates.sort((a, b) => a.ord - b.ord);
   logger && logger.info && logger.info(`site ${dominio}: ${out.candidates.length} candidato(s) em ${out.pages.length} página(s)`);
   return out;
 }
@@ -771,9 +865,13 @@ function scoreCandidates(normalized, identidade) {
 // ── ETAPA 5 — Orquestrador ───────────────────────────────────────────────────
 /**
  * Roda as 4 etapas e devolve a saída obrigatória por lead:
- * { whatsapp, status, score, fontes, identidade_usada, motivo_descarte,
- *   nao_confirmado, email, domain, dominio_confirmado, search_unavailable }
- * `whatsapp` só vem preenchido quando status = 'confirmado'.
+ * { whatsapp, status, score, fontes, wa_candidates, identidade_usada,
+ *   motivo_descarte, nao_confirmado, email, email_fonte, email_fonte_tipo,
+ *   domain, dominio_confirmado, search_unavailable }
+ * `whatsapp` só vem preenchido quando status = 'confirmado';
+ * `wa_candidates` (ordenado por score, dedupe por E.164, 1º = `whatsapp`) é
+ * o insumo da cadeia do gate Twilio no executor; `email_fonte_tipo` é
+ * 'site_oficial' | 'receita' (sourceType do fact `contact.email`).
  */
 async function discoverLeadContact(prisma, prospect, deps = {}) {
   const { fetchImpl = fetch, signal, logger } = deps;
@@ -815,12 +913,37 @@ async function discoverLeadContact(prisma, prospect, deps = {}) {
   }
 
   // E-mail corporativo: literal na fonte (site oficial / CNPJ), mesma regra
-  // de ouro — com a URL da fonte para exibição clicável.
+  // de ouro — com a URL da fonte para exibição clicável (e proveniência do
+  // fact `contact.email` no executor).
   const emailPick = site.emails[0] || (identidade.email_cnpj
     ? { email: identidade.email_cnpj, url: identidade.cnpj ? `https://brasilapi.com.br/api/cnpj/v1/${identidade.cnpj}` : null }
     : null);
   const email = emailPick ? emailPick.email : null;
   const email_fonte = emailPick ? emailPick.url : null;
+  const email_fonte_tipo = emailPick ? (site.emails[0] && site.emails[0].email === emailPick.email ? 'site_oficial' : 'receita') : null;
+
+  // Cadeia do gate Twilio (spec ampliar-crawl-sites-whatsapp-email): lista
+  // ordenada por score dos candidatos CONFIRMADOS (wa_link confirmado 95 >
+  // wa_contexto confirmado 85 > places/instagram/catálogo 70 > …), dedupe por
+  // E.164, teto de 2 (o gate valida no máx. 2 lookups/lead). O 1º É o
+  // `whatsapp` atual — compat: sem gate, nada muda.
+  const wa_candidates = [];
+  {
+    const vistos = new Set();
+    for (const c of confirmados) {
+      if (wa_candidates.length >= WA_CANDIDATES_MAX) break;
+      if (vistos.has(c.e164)) continue;
+      vistos.add(c.e164);
+      wa_candidates.push({
+        whatsapp: c.e164,
+        score: c.score,
+        tipo: c.tipo,
+        url: c.url || null,
+        trecho: (c.trecho || '').slice(0, 200),
+        host: c.host || null,
+      });
+    }
+  }
 
   const status = melhor ? 'confirmado' : (naoConfirmado ? 'nao_confirmado' : 'nao_encontrado');
 
@@ -829,6 +952,8 @@ async function discoverLeadContact(prisma, prospect, deps = {}) {
     status,
     score: melhor ? melhor.score : (naoConfirmado ? naoConfirmado.score : 0),
     fontes: fontesDoEscolhido,
+    // Insumo da cadeia do gate Twilio (executor): 1º = `whatsapp`.
+    wa_candidates,
     identidade_usada: {
       cnpj: identidade.cnpj,
       cnpj_confirmado: identidade.cnpj_confirmado,
@@ -845,6 +970,7 @@ async function discoverLeadContact(prisma, prospect, deps = {}) {
       : null,
     email,
     email_fonte,
+    email_fonte_tipo,
     domain: identidade.dominio,
     dominio_confirmado: identidade.dominio_confirmado,
     // Busca morta honesta: nada encontrado E os motores de busca não
@@ -874,4 +1000,7 @@ module.exports = {
   dddMatchesState,
   DDD_UF,
   SCORE_BASE,
+  MAX_PAGE_BYTES,
+  WA_CANDIDATES_MAX,
+  CRAWL_MAX_EXTRA_PAGES,
 };
