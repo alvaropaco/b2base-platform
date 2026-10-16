@@ -124,6 +124,23 @@ export function captureLeadsChip(card: ChatCard): RecoveryChip | null {
   };
 }
 
+/**
+ * Enriquecimento rodou na BASE porque a audiência da campanha estava vazia
+ * (2026-10-16): o card de conclusão traz o caminho de 1 clique para colocar a
+ * base enriquecida na audiência — mesma porta select_leads do chip de captura.
+ */
+export function enrichmentAudienceChip(card: ChatCard): RecoveryChip | null {
+  if (card.type !== 'enrichment_done' || !card.suggestedFilter?.prospectIds) return null;
+  const ids = card.suggestedFilter.prospectIds.filter(Boolean);
+  if (ids.length === 0) return null;
+  const count = typeof card.suggestedFilter.matchedCount === 'number' ? ` (${card.suggestedFilter.matchedCount.toLocaleString('pt-BR')} leads)` : '';
+  return {
+    key: 'use-enriched-base',
+    label: `Colocar a base na audiência${count}`,
+    action: { type: 'select_leads', params: { set: ids } },
+  };
+}
+
 /** Decisão de render PURA: chips de desambiguação do material (FR15/F2). */
 export function ambiguousMaterialChips(card: ChatCard): RecoveryChip[] {
   if (card.type !== 'material_ambiguous' || !Array.isArray(card.candidates)) return [];
@@ -552,6 +569,8 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
     // Epic 2 (UX-DR3): chip do card de captura — 1 clique materializa a
     // audiência com o lote capturado.
     const captureChip = captureLeadsChip(card);
+    // Enriquecimento na base com audiência vazia — 1 clique coloca a base.
+    const enrichChip = enrichmentAudienceChip(card);
     // Gate de confirmação (bug 5) + atalhos de campanha (bugs 1/2).
     const confirmChipCard = confirmChangeChip(card);
     const links = campaignLinks(card);
@@ -612,6 +631,16 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
             className="mt-2 rounded-full bg-[#160211] px-3 py-1.5 text-[11px] font-medium text-white shadow-md transition-transform hover:brightness-110"
           >
             {captureChip.label}
+          </button>
+        )}
+        {/* Enriquecimento na base com audiência vazia — 1 clique coloca a base. */}
+        {enrichChip && (
+          <button
+            type="button"
+            onClick={() => void applyRecoveryChip(enrichChip)}
+            className="mt-2 rounded-full bg-[#160211] px-3 py-1.5 text-[11px] font-medium text-white shadow-md transition-transform hover:brightness-110"
+          >
+            {enrichChip.label}
           </button>
         )}
         {/* Gate de confirmação (bug 5 do dono): 1 clique aprova a alteração. */}

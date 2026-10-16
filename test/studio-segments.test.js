@@ -101,8 +101,31 @@ test('critérios: tradução para where do Prisma com grupos AND/OR', () => {
     ],
   });
   // grupo AND vira condição direta; grupo OR vira { OR: [...] }, tudo em AND.
-  assert.deepEqual(where.AND[0], { state: { equals: 'SP' } });
+  // Estado é TOLERANTE: "SP" casa também "São Paulo" (e vice-versa) — leads
+  // capturados gravam o estado de fontes com grafias diferentes (2026-10-16).
+  assert.deepEqual(where.AND[0], { state: { in: ['SP', 'São Paulo'], mode: 'insensitive' } });
   assert.equal(where.AND[1].OR.length, 2);
+});
+
+test('critérios: estado tolerante — nome por extenso, caixa variada e lista', () => {
+  // Critério escrito por extenso casa leads gravados com UF.
+  const extenso = segmentService.translateCriteria({
+    version: 1,
+    groups: [{ op: 'AND', conditions: [{ field: 'state', op: 'equals', value: 'são paulo' }] }],
+  });
+  assert.deepEqual(extenso.AND[0].state.in, ['são paulo', 'SP']);
+  assert.equal(extenso.AND[0].state.mode, 'insensitive');
+
+  // Lista de estados: cada valor expande as próprias grafias.
+  const lista = segmentService.translateCriteria({
+    version: 1,
+    groups: [{ op: 'AND', conditions: [{ field: 'state', op: 'in', value: ['SP', 'RJ'] }] }],
+  });
+  assert.deepEqual(lista.AND[0].state.in, ['SP', 'São Paulo', 'RJ', 'Rio de Janeiro']);
+
+  // Caixa variada na base ("sao paulo" minúsculo sem acento) casa pelo mode.
+  assert.equal(segmentService.stateVariants('São Paulo').includes('SP'), true);
+  assert.equal(segmentService.stateVariants('sp').includes('São Paulo'), true);
 });
 
 test('critérios: região expande para os estados da região (FR-008)', () => {

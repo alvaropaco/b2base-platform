@@ -28,6 +28,17 @@ function registerStudioEnrich(prisma, { deps = {} } = {}) {
         where: { orgId, id: { in: prospectIds } },
         orderBy: { createdAt: 'desc' },
       });
+      // Recuperação de audiência vazia (2026-10-16): a varredura rodou na BASE
+      // da org porque a audiência da campanha está com 0 incluídos — o card
+      // carrega o caminho de 1 clique para colocar a base na audiência (o
+      // select_leads é idempotente e o clique é o gesto do dono).
+      let audienceRecovery = null;
+      try {
+        const snap = (await prisma.studioAudienceSnapshot.findMany({ where: { campaignId, status: 'active' } }))[0];
+        if (!snap || !snap.includedCount) {
+          audienceRecovery = { description: 'base da organização', prospectIds: prospects.map((p) => p.id), matchedCount: prospects.length };
+        }
+      } catch (_e) { /* best-effort: card segue sem o chip */ }
       const res = await enrichLeads(prisma, { orgId, campaignId, channel, leads: prospects });
       const cadastrados = [...res.found, ...res.promoted];
       cards = [
@@ -44,6 +55,7 @@ function registerStudioEnrich(prisma, { deps = {} } = {}) {
           comNumeroCount: res.comNumero.length,
           loteSize: prospects.length,
           restantes: 0,
+          audienceRecovery,
         }),
       ];
       const emailsN = (res.emailsFound || []).length;

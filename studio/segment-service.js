@@ -20,6 +20,43 @@ const REGIONS = {
   Sul: ['PR', 'RS', 'SC'],
 };
 
+/**
+ * Nome do estado por UF — leads capturados/enriquecidos gravam `state` de
+ * fontes diferentes: o MCP pode devolver "SP", "São Paulo" ou "sao paulo".
+ * Critério `state equals "SP"` tem que casar com TODAS as grafias (2026-10-16:
+ * campanha com critério decidido e 0 leads incluídos porque o estado do lead
+ * veio por extenso).
+ */
+const STATE_NAME_BY_UF = {
+  AC: 'Acre', AL: 'Alagoas', AP: 'Amapá', AM: 'Amazonas', BA: 'Bahia', CE: 'Ceará',
+  DF: 'Distrito Federal', ES: 'Espírito Santo', GO: 'Goiás', MA: 'Maranhão',
+  MT: 'Mato Grosso', MS: 'Mato Grosso do Sul', MG: 'Minas Gerais', PA: 'Pará',
+  PB: 'Paraíba', PR: 'Paraná', PE: 'Pernambuco', PI: 'Piauí', RJ: 'Rio de Janeiro',
+  RN: 'Rio Grande do Norte', RS: 'Rio Grande do Sul', RO: 'Rondônia', RR: 'Roraima',
+  SC: 'Santa Catarina', SP: 'São Paulo', SE: 'Sergipe', TO: 'Tocantins',
+};
+const UF_BY_NORMALIZED_NAME = Object.fromEntries(
+  Object.entries(STATE_NAME_BY_UF).map(([uf, name]) => [name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(), uf])
+);
+
+/**
+ * Grafias aceitas para um valor de estado: o literal informado + a UF (quando
+ * o valor é o nome por extenso) + o nome por extenso (quando o valor é a UF).
+ * A comparação final é case-insensitive ({ in, mode: 'insensitive' }).
+ */
+function stateVariants(value) {
+  const out = [];
+  const push = (v) => {
+    const trimmed = String(v ?? '').trim();
+    if (trimmed && !out.includes(trimmed)) out.push(trimmed);
+  };
+  push(value);
+  const norm = normalizeText(value);
+  if (UF_BY_NORMALIZED_NAME[norm]) push(UF_BY_NORMALIZED_NAME[norm]);
+  else if (STATE_NAME_BY_UF[String(value).trim().toUpperCase()]) push(STATE_NAME_BY_UF[String(value).trim().toUpperCase()]);
+  return out;
+}
+
 const { normalizeText } = require('../search-text');
 
 /** Catálogo fechado: campo → operadores permitidos. */
@@ -111,6 +148,19 @@ function translateCondition({ field, op, value }) {
   }
   if (field === 'lastContact' || field === 'createdAt') {
     return { [field]: { [op]: new Date(value) } };
+  }
+  // Estado é TOLERANTE: "SP" tem que casar lead gravado como "São Paulo" e
+  // vice-versa (fontes diferentes grafam diferente) — vira { in: grafias }
+  // case-insensitive.
+  if (field === 'state') {
+    const values = Array.isArray(value) ? value : [value];
+    const variants = [];
+    for (const v of values) {
+      for (const variant of stateVariants(v)) {
+        if (!variants.includes(variant)) variants.push(variant);
+      }
+    }
+    return { state: { in: variants, mode: 'insensitive' } };
   }
   // Contains é insensível a caixa: o LLM e o usuário escrevem "tecnologia",
   // a base tem "Tecnologia" — casar sempre (Postgres default é sensível).
@@ -249,10 +299,12 @@ async function resolveList(prisma, orgId, items) {
 
 module.exports = {
   REGIONS,
+  STATE_NAME_BY_UF,
   FIELD_CATALOG,
   SEARCHTEXT_FIELDS,
   normalizeText,
   termVariants,
+  stateVariants,
   validateCriteria,
   translateCriteria,
   buildWhere,

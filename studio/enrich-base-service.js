@@ -149,9 +149,11 @@ async function enrichLeads(prisma, { channel = 'whatsapp', leads, chunkSize = CH
 
 /**
  * Monta o card `enrichment_done` por canal. `escopoTotal` = leads no raio da
- * campanha/org; `loteSize` = processados.
+ * campanha/org; `loteSize` = processados. `audienceRecovery` = quando a
+ * varredura rodou na base PORQUE a audiência da campanha está vazia, o card
+ * carrega o caminho de 1 clique para colocar a base na audiência (chip).
  */
-function buildEnrichmentCard({ channel = 'whatsapp', found = [], promoted = [], emailsFound = [], notFound = [], semNovo = [], naoConfirmado = [], buscaMorta = 0, escopoTotal, semNumeroCount, comNumeroCount, loteSize, restantes }) {
+function buildEnrichmentCard({ channel = 'whatsapp', found = [], promoted = [], emailsFound = [], notFound = [], semNovo = [], naoConfirmado = [], buscaMorta = 0, escopoTotal, semNumeroCount, comNumeroCount, loteSize, restantes, audienceRecovery = null }) {
   const querEmail = channel !== 'whatsapp';
   const querWhats = channel !== 'email';
   const cadastrados = [...found, ...promoted];
@@ -210,7 +212,7 @@ function buildEnrichmentCard({ channel = 'whatsapp', found = [], promoted = [], 
       : (cadastrados.length || emailsFound.length
         ? `Enriquecimento concluído — ${cadastrados.length} WhatsApp(s) e ${emailsFound.length} e-mail(s) cadastrado(s)`
         : 'Enriquecimento concluído — nada novo encontrado'));
-  return {
+  const card = {
     type: 'enrichment_done',
     label,
     detail: lines.join('\n'),
@@ -221,6 +223,16 @@ function buildEnrichmentCard({ channel = 'whatsapp', found = [], promoted = [], 
     semNovo,
     restantes: restantes || 0,
   };
+  // Chip de recuperação (audiência 0 → base na audiência com 1 clique):
+  // mesma forma do card de captura — o frontend deriva o select_leads.
+  if (audienceRecovery && Array.isArray(audienceRecovery.prospectIds) && audienceRecovery.prospectIds.length > 0) {
+    card.suggestedFilter = {
+      description: audienceRecovery.description || 'base da organização',
+      prospectIds: audienceRecovery.prospectIds,
+      matchedCount: audienceRecovery.matchedCount != null ? audienceRecovery.matchedCount : audienceRecovery.prospectIds.length,
+    };
+  }
+  return card;
 }
 
 module.exports = { enrichLeads, buildEnrichmentCard, CHUNK_SIZE };

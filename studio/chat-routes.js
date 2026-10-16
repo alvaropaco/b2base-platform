@@ -2191,6 +2191,14 @@ function registerChatRoutes(router, context) {
         const lote = [...alvos, ...fora].slice(0, Math.min(limit, candidates.length));
         const res = await enrichLeads(prisma, { orgId, campaignId: campaign.id, channel, leads: lote });
         const restantes = Math.max(0, candidates.length - lote.length);
+        // Recuperação de audiência vazia (mesmo caminho do enrich-worker).
+        let audienceRecovery = null;
+        try {
+          const snap = (await prisma.studioAudienceSnapshot.findMany({ where: { campaignId: campaign.id, status: 'active' } }))[0];
+          if (!snap || !snap.includedCount) {
+            audienceRecovery = { description: 'base da organização', prospectIds: lote.map((p) => p.id), matchedCount: lote.length };
+          }
+        } catch (_e) { /* best-effort */ }
         return buildEnrichmentCard({
           channel,
           found: res.found,
@@ -2205,6 +2213,7 @@ function registerChatRoutes(router, context) {
           comNumeroCount: fora.length,
           loteSize: lote.length,
           restantes,
+          audienceRecovery,
         });
       }
 
