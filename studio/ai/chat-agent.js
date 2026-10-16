@@ -655,6 +655,39 @@ function imageGenHint(userMessage) {
   ].join('\n');
 }
 
+// LEITURA/acesso de imagem/material (2026-10-16): "consegue acessar a
+// imagem?", "analise o material", "extrai da foto" — quando há material
+// PENDENTE no estado, a resposta é confirm_material (a extração roda ANTES
+// de confirmar), não "reenvie o arquivo".
+const PENDING_MATERIAL_RE = /\b(acess\w*|ler|lendo|leitura|l[êe]\b|extrair|extra[çc][ãa]o|analisa\w*|abr[ií]\w*|abrir|visualiz\w*|enxerg\w*|pendente\w*|travad\w*|status)\b/i;
+const MATERIAL_SUBJECT_RE = /\b(imagem|imagens|foto|fotos|jpeg|jpg|png|anexo|anexos|material|materiais|arte|banner|arquivo)\b/i;
+
+/**
+ * Hint de material pendente: só dispara quando (a) a mensagem fala de
+ * leitura/acesso/extração de imagem-material e (b) EXISTE material pending
+ * no estado (extras.materials) — aí aponta os ids e manda chamar
+ * confirm_material. Geração de imagem NÃO é este caminho (imageGenHint).
+ */
+function pendingMaterialHint(userMessage, extras) {
+  const msg = String(userMessage || '');
+  if (!msg.trim()) return null;
+  if (IMAGE_GEN_RE.test(msg)) return null; // "gere uma imagem…" é outro caminho
+  if (!PENDING_MATERIAL_RE.test(msg) || !MATERIAL_SUBJECT_RE.test(msg)) return null;
+  const pendings = (Array.isArray(extras && extras.materials) ? extras.materials : [])
+    .filter((m) => m && m.status === 'pending');
+  if (!pendings.length) return null;
+  const list = pendings
+    .map((m) => `{"type":"confirm_material","materialId":"${m.id}"}${m.kind ? ` (${m.kind})` : ''}`)
+    .join(' · ');
+  return [
+    'LEITURA DE MATERIAL PENDENTE — a action confirm_material EXISTE e a EXTRAÇÃO RODA ANTES de confirmar:',
+    `${list}. Chame confirm_material para o material pedido (id vem do estado) e devolva o card do resultado`,
+    '(material_extraído/material_needs_manual/material_extraction_failed). Se voltar needs_manual ou failed, daí',
+    'sim ofereça descrição manual ou nova tentativa. NUNCA diga que não consegue acessar a imagem sem ter',
+    'chamado confirm_material; NUNCA peça para reenviar o arquivo antes dele.',
+  ].join('\n');
+}
+
 function editContentHint(userMessage) {
   const msg = String(userMessage || '');  if (EMAIL_IMAGE_RE.test(msg)) {
     return [
@@ -873,7 +906,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
       buildOrgBlock(extras),
       buildHistoryBlock(history),
       skills.selectFor(userMessage),
-      hintOverride || campaignManagementHint(userMessage) || exportLeadsHint(userMessage) || imageGenHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage) || consentBatchHint(userMessage) || selectVariantHint(userMessage) || launchLimitHint(userMessage),
+      hintOverride || pendingMaterialHint(userMessage, extras) || campaignManagementHint(userMessage) || exportLeadsHint(userMessage) || imageGenHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage) || consentBatchHint(userMessage) || selectVariantHint(userMessage) || launchLimitHint(userMessage),
       `NOVA MENSAGEM DO USUÁRIO: ${userMessage}`,
       'Decida as ações e escreva a resposta para o usuário.',
     ]
@@ -1021,6 +1054,7 @@ module.exports = {
   campaignManagementHint,
   exportLeadsHint,
   imageGenHint,
+  pendingMaterialHint,
   EXPORT_LEADS_RE,
   IMAGE_GEN_RE,
   emailConnectHint,

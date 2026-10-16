@@ -27,7 +27,9 @@ const { createStudioRouter } = require('../studio/router');
 const storage = require('../studio/storage');
 const vision = require('../studio/ai/vision');
 const imageGen = require('../studio/ai/image-gen');
-const { editContentHint, imageGenHint } = require('../studio/ai/chat-agent');
+const { createMaterialService } = require('../studio/material-service');
+const { registerMaterialBackfill } = require('../studio/material-backfill');
+const { editContentHint, imageGenHint, pendingMaterialHint } = require('../studio/ai/chat-agent');
 
 const LOGGER = { info() {}, warn() {}, error() {}, child() { return this; } };
 
@@ -320,4 +322,108 @@ test('upload de imagem (trial): segue pending — extração é premium, como o 
     world.restore();
     world.close();
   }
+});
+
+// ── auto-cura (backfill): materiais de imagem presos em pending ─────────────
+
+test('backfill: sweep reextrai material de imagem PENDENTE legado (kind jpg) em org premium', async () => {
+  const prisma = createFakePrisma();
+  prisma.organization.rows.push({ id: 'org-1', plan: 'premium' });
+  const fileName = storage.saveGenerated(PNG, 'png');
+  prisma.studioMaterial.rows.push({
+    id: 'mat-legado', orgId: 'org-1', campaignId: null, kind: 'jpg',
+    sourceRef: fileName, mimeType: 'image/jpeg', extractionStatus: 'pending',
+    origin: 'upload', variantLabel: null, confirmedAt: null,
+  });
+  const read = [];
+  const svc = createMaterialService(prisma, {
+    imageExtract: async (m) => { read.push(m.id); return 'Banner de DOBRADEIRA MB. Oferta: orçamento em 24h. Público: indústrias.'; },
+    extractor: async () => ({ product: 'Dobradeira MB', offer: 'Orçamento em 24h', audience: 'Indústrias' }),
+  });
+  const out = await svc.extractPendingImageMaterials({});
+  assert.equal(out.checked, 1);
+  assert.equal(out.extracted, 1, 'o preso de antes do deploy é lido');
+  assert.deepEqual(read, ['mat-legado']);
+  const row = prisma.studioMaterial.rows.find((r) => r.id === 'mat-legado');
+  assert.equal(row.extractionStatus, 'extracted');
+  assert.equal(row.extraction.product, 'Dobradeira MB');
+});
+
+test('backfill: org trial é PULADA — mesmo gate do upload automático', async () => {
+  const prisma = createFakePrisma();
+  prisma.organization.rows.push({ id: 'org-trial', plan: 'trial' });
+  prisma.studioMaterial.rows.push({
+    id: 'mat-trial', orgId: 'org-trial', campaignId: null, kind: 'image',
+    sourceRef: null, mimeType: 'image/jpeg', extractionStatus: 'pending',
+    origin: 'upload', variantLabel: null, confirmedAt: null,
+  });
+  const svc = createMaterialService(prisma, {
+    imageExtract: async () => { throw new Error('não deveria ler org trial'); },
+    extractor: async () => ({ product: 'x', offer: 'y', audience: 'z' }),
+  });
+  const out = await svc.extractPendingImageMaterials({});
+  assert.equal(out.checked, 1);
+  assert.equal(out.extracted, 0);
+  const row = prisma.studioMaterial.rows.find((r) => r.id === 'mat-trial');
+  assert.equal(row.extractionStatus, 'pending', 'trial segue manual (confirm_material no chat)');
+});
+
+test('backfill: sem visão configurada, o sweep pula sem tocar em nada', async () => {
+  const hadUrl = process.env.LITELLM_URL;
+  const hadKey = process.env.LITELLM_API_KEY;
+  delete process.env.LITELLM_URL;
+  delete process.env.LITELLM_API_KEY;
+  try {
+    const prisma = createFakePrisma();
+    prisma.organization.rows.push({ id: 'org-1', plan: 'premium' });
+    prisma.studioMaterial.rows.push({
+      id: 'mat-x', orgId: 'org-1', campaignId: null, kind: 'image',
+      sourceRef: null, mimeType: 'image/jpeg', extractionStatus: 'pending',
+      origin: 'upload', variantLabel: null, confirmedAt: null,
+    });
+    const svc = createMaterialService(prisma, {
+      imageExtract: async () => { throw new Error('não deveria ler sem visão'); },
+      extractor: async () => ({}),
+    });
+    const out = await svc.extractPendingImageMaterials({});
+    assert.equal(out.skipped, 'vision_not_configured');
+    assert.equal(out.checked, 0);
+    assert.equal(prisma.studioMaterial.rows.find((r) => r.id === 'mat-x').extractionStatus, 'pending');
+  } finally {
+    if (hadUrl !== undefined) process.env.LITELLM_URL = hadUrl;
+    if (hadKey !== undefined) process.env.LITELLM_API_KEY = hadKey;
+  }
+});
+
+test('material-backfill: registro executa o sweep no boot e loga visibilidade', async () => {
+  const logs = [];
+  const logger = { info: (m) => logs.push(m), error: (m) => logs.push(m) };
+  const prisma = createFakePrisma();
+  prisma.organization.rows.push({ id: 'org-1', plan: 'premium' });
+  const api = registerMaterialBackfill(prisma, { logger, bootDelayMs: 0, intervalMs: 3_600_000 });
+  await api.sweep('boot');
+  assert.ok(logs.some((m) => String(m).includes('[materials:backfill] boot:')), 'boot sempre loga (visibilidade do feature)');
+});
+
+// ── pendingMaterialHint: o agente OFERECE confirm_material, não reenvio ─────
+
+test('pendingMaterialHint: com pendente no estado, aponta confirm_material com o id', () => {
+  const hint = pendingMaterialHint('consegue acessar a imagem agora?', {
+    materials: [{ id: 'm1', kind: 'image', status: 'pending', confirmed: false }],
+  });
+  assert.ok(hint, 'hint dispara para pedido de acesso/leitura');
+  assert.ok(hint.includes('confirm_material'), 'manda chamar a action certa');
+  assert.ok(hint.includes('"materialId":"m1"'), 'aponta o id do estado');
+});
+
+test('pendingMaterialHint: geração de imagem, conversa sem pendente e assunto alheio NÃO disparam', () => {
+  const extras = { materials: [{ id: 'm1', kind: 'image', status: 'pending', confirmed: false }] };
+  assert.equal(pendingMaterialHint('gere uma imagem de dobradeira', extras), null, 'gerar é imageGenHint');
+  assert.equal(pendingMaterialHint('qual o público da campanha?', extras), null, 'sem intenção de leitura');
+  assert.equal(
+    pendingMaterialHint('consegue acessar a imagem agora?', { materials: [{ id: 'm1', kind: 'image', status: 'extracted', confirmed: true }] }),
+    null,
+    'nada pendente → hint desnecessário'
+  );
+  assert.equal(pendingMaterialHint('consegue acessar a imagem agora?', {}), null, 'sem materiais no estado');
 });

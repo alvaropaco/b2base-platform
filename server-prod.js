@@ -5731,6 +5731,15 @@ async function start() {
         console.error('[studio:enrich] registro indisponível (enriquecimento síncrono de lotes pequenos continua):', enrichErr.message);
       }
       require('./studio/analytics-service').registerSnapshotPurge(prisma);
+      // AUTO-CURA de materiais de imagem 'pending' (2026-10-16): uploads
+      // anteriores ao deploy da visão ficaram presos — o sweep reextrai no
+      // boot e periodicamente (premium-only, serializado, teto por rodada).
+      try {
+        require('./studio/material-backfill').registerMaterialBackfill(prisma);
+        console.log('[materials:backfill] ✓ auto-cura de imagens pendentes registrada');
+      } catch (backfillErr) {
+        console.error('[materials:backfill] registro indisponível (pendentes seguem para o confirm_material):', backfillErr.message);
+      }
       // specs/011 (AD-8): revalidação DNS diária do domínio de envio —
       // falha → floor do saldo efetivo zero (o gate bloqueia com instrução).
       require('./studio/dns-verify').registerDailyJob(prisma);

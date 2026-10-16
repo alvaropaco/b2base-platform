@@ -223,7 +223,47 @@ async function extractText(material) {
     });
   }
 
-  return { createMaterial, runExtraction, confirmExtraction, pptxToText };
+  /**
+   * AUTO-CURA de materiais de imagem presos em 'pending' (2026-10-16):
+   * uploads feitos ANTES do deploy da visão nasceram com kind pela extensão
+   * e sem ninguém chamando a extração — ficaram pendentes para sempre, e
+   * nada os relia. Varre os pendentes de imagem (kind novo OU legado por
+   * extensão/mime) e reextrai SERIALIZADO, com o mesmo gate do upload
+   * automático (premium; trial segue pelo caminho manual/confirm_material).
+   * Teto por rodada para não criar rajada de visão.
+   */
+  async function extractPendingImageMaterials({ max = 20 } = {}) {
+    const vision = require('./ai/vision');
+    if (!vision.isConfigured()) {
+      return { skipped: 'vision_not_configured', checked: 0, extracted: 0, failed: 0 };
+    }
+    const { isPremiumOrg } = require('../plan');
+    const pending = await prisma.studioMaterial.findMany({
+      where: {
+        extractionStatus: 'pending',
+        OR: [
+          { kind: 'image' },
+          { mimeType: { startsWith: 'image/' } },
+          { kind: { in: ['png', 'jpg', 'jpeg', 'webp', 'gif'] } },
+        ],
+      },
+      orderBy: { createdAt: 'asc' },
+      take: Math.max(1, Math.min(50, Number(max) || 20)),
+    });
+    let extracted = 0;
+    let failed = 0;
+    for (const material of pending) {
+      let premium = false;
+      try { premium = await isPremiumOrg(prisma, material.orgId); } catch (_e) { /* fail-closed: pula */ }
+      if (!premium) continue;
+      const run = await runExtraction(material, {});
+      if (run.status === 'extracted') extracted += 1;
+      else failed += 1;
+    }
+    return { checked: pending.length, extracted, failed };
+  }
+
+  return { createMaterial, runExtraction, confirmExtraction, pptxToText, extractPendingImageMaterials };
 }
 
 module.exports = { createMaterialService };
