@@ -218,6 +218,76 @@ test('estorno DEVOLVE a fatia do cap diário — falha definitiva não consome o
   assert.equal(before.usedToday.whatsapp, 0);
 });
 
+test('refundBatch devolve saldo E fatia do cap — sync/cancelamento fecha o cap fantasma (AD-13)', async () => {
+  const prisma = createFakePrisma();
+  walletAccount(prisma, { balance: 100 });
+
+  const grant = await reputation.debit(prisma, { orgId: 'org-1', channel: 'whatsapp', amount: 10, refId: 'b-1' });
+  assert.equal(grant.ok, true);
+  let wallet = await reputation.getWallet(prisma, 'org-1');
+  assert.equal(wallet.usedToday.whatsapp, 10, 'cap consumido pelo lote');
+
+  // 4 unidades não enviadas estornadas na sincronização da fila…
+  const first = await reputation.refundBatch(prisma, {
+    orgId: 'org-1', channel: 'whatsapp', batchId: 'sync:camp-1:whatsapp:ct-1', units: 4, reason: 'saiu da seleção',
+  });
+  assert.equal(first.ok, true);
+  assert.equal(first.credited, 4);
+  wallet = await reputation.getWallet(prisma, 'org-1');
+  assert.equal(wallet.balance, 94, 'saldo devolvido ao pool');
+  assert.equal(wallet.usedToday.whatsapp, 6, 'fatia do cap devolvida junto');
+
+  // …replay do MESMO refId não credita nem devolve cap 2×.
+  const replay = await reputation.refundBatch(prisma, {
+    orgId: 'org-1', channel: 'whatsapp', batchId: 'sync:camp-1:whatsapp:ct-1', units: 4, reason: 'retry do sync',
+  });
+  assert.equal(replay.replayed, true);
+  wallet = await reputation.getWallet(prisma, 'org-1');
+  assert.equal(wallet.balance, 94, 'replay não credita 2×');
+  assert.equal(wallet.usedToday.whatsapp, 6, 'replay não devolve cap 2×');
+});
+
+test('refundBatch após a virada do dia: saldo credita, cap inerte (contador já zerou sozinho)', async () => {
+  const prisma = createFakePrisma();
+  walletAccount(prisma, { balance: 50, whatsappSentToday: 10, usageDay: '2026-10-18' });
+
+  const result = await reputation.refundBatch(prisma, {
+    orgId: 'org-1', channel: 'whatsapp', batchId: 'cancel:camp-2:whatsapp', units: 5, reason: 'cancelamento com fila restante',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.credited, 5);
+  const row = prisma.studioReputationAccount.rows[0];
+  assert.equal(row.balance, 55, 'saldo do pool sempre credita');
+  assert.equal(row.whatsappSentToday, 10, 'contador do dia velho intocado — _returnDailyCap inerte');
+});
+
+test('refundBatch devolve o cap do canal E-MAIL: emailSentToday devolvido, replay não devolve 2×', async () => {
+  const prisma = createFakePrisma();
+  walletAccount(prisma, { balance: 200 });
+
+  const grant = await reputation.debit(prisma, { orgId: 'org-1', channel: 'email', amount: 10, refId: 'b-email-1' });
+  assert.equal(grant.ok, true);
+  let wallet = await reputation.getWallet(prisma, 'org-1');
+  assert.equal(wallet.usedToday.email, 10, 'cap de e-mail consumido pelo lote');
+
+  const first = await reputation.refundBatch(prisma, {
+    orgId: 'org-1', channel: 'email', batchId: 'cancel:camp-3:email', units: 4, reason: 'fila restante no cancelamento',
+  });
+  assert.equal(first.ok, true);
+  assert.equal(first.credited, 4);
+  wallet = await reputation.getWallet(prisma, 'org-1');
+  assert.equal(wallet.balance, 194, 'saldo devolvido ao pool');
+  assert.equal(wallet.usedToday.email, 6, 'emailSentToday devolvido junto');
+
+  const replay = await reputation.refundBatch(prisma, {
+    orgId: 'org-1', channel: 'email', batchId: 'cancel:camp-3:email', units: 4, reason: 'retry do cancelamento',
+  });
+  assert.equal(replay.replayed, true);
+  wallet = await reputation.getWallet(prisma, 'org-1');
+  assert.equal(wallet.balance, 194, 'replay não credita 2×');
+  assert.equal(wallet.usedToday.email, 6, 'replay não devolve cap 2×');
+});
+
 test('compra Stripe (top-up) credita o POOL — e sessão LEGADA com canal antigo também', async () => {
   const prisma = createFakePrisma();
   walletAccount(prisma, { balance: 20 });

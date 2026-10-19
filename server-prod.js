@@ -5805,6 +5805,40 @@ async function start() {
       console.error('[whatsapp] falha ao retomar sessões:', err.message);
     }
 
+    // AUTO-CURA da sessão WhatsApp (2026-10-19): sweep periódico reconcilia o
+    // status do banco com o WAHA e religa sessões com cura (FAILED → restart,
+    // STOPPED/DISCONNECTED → start) — sessão caída não fica caída até o
+    // próximo restart do pod. A 1ª cura roda LOGO APÓS o boot (sem esperar 1
+    // intervalo a cada deploy). WAHA inalcançável não muda nada; o guard
+    // anti-sobreposição cobre o boot E o timer. Intervalo ajustável via
+    // WHATSAPP_RECONCILE_MS (default 300000, floor 30000).
+    const reconcileEnvMs = Number(process.env.WHATSAPP_RECONCILE_MS);
+    const RECONCILE_INTERVAL_MS = Math.max(
+      30000,
+      Number.isFinite(reconcileEnvMs) && reconcileEnvMs > 0 ? reconcileEnvMs : 300000
+    );
+    const logSweepStats = (stats) => {
+      if (!stats) return;
+      if (stats.updated > 0 || stats.restarted > 0 || stats.started > 0) {
+        console.log('[whatsapp] sweep de sessões:', JSON.stringify(stats));
+      }
+    };
+    let reconcileRunning = false;
+    const runSweep = () => {
+      if (reconcileRunning) return Promise.resolve(null); // varredura em curso
+      reconcileRunning = true;
+      return whatsappEngine
+        .reconcileAllSessions(prisma, wahaProvider.WAHAWhatsAppProvider)
+        .then(logSweepStats)
+        .catch((err) => console.error('[whatsapp] sweep de sessões falhou (próxima varredura re-tenta):', err.message))
+        .finally(() => { reconcileRunning = false; });
+    };
+
+    runSweep(); // 1ª cura já no boot — não espera o 1º intervalo
+
+    const reconcileTimer = setInterval(runSweep, RECONCILE_INTERVAL_MS);
+    reconcileTimer.unref(); // o sweep nunca segura o processo vivo
+
     // Endpoint de métricas Prometheus (METRICS_PORT, default 9090).
     metrics.startMetricsServer(prisma);
 

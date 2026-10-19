@@ -395,7 +395,11 @@ async function processSend(job) {
     }
   }
   if (!account) {
-    throw new Error('Nenhuma conta WhatsApp CONECTADA nesta organização — pareie o WhatsApp (QR no chat) para enviar.');
+    // Auto-cura (2026-10-19): envio DEBITADO que nunca sai por canal caído
+    // segue a semântica de tentativa final — na última, FAILED + estorno de
+    // saldo E cap sem penalizar; antes, o throw escapava SEM estorno e o
+    // cap/saldo do disparo fantasmaava.
+    await _failChannelDown(prisma, message, job, new Error('Nenhuma conta WhatsApp CONECTADA nesta organização — pareie o WhatsApp (QR no chat) para enviar.'));
   }
 
   // Status no banco pode estar defasado (evento DISCONNECTED transitório do
@@ -404,7 +408,7 @@ async function processSend(job) {
     await reconcileSessionStatus(getPrisma(), wahaProvider, account);
     account = await getPrisma().whatsAppAccount.findUnique({ where: { id: account.id } });
     if (!account || account.status !== ACCOUNT_STATUS.CONNECTED) {
-      throw new Error('Conta WhatsApp não conectada');
+      await _failChannelDown(prisma, message, job, new Error('Conta WhatsApp não conectada'));
     }
   }
 
@@ -555,20 +559,76 @@ async function processSend(job) {
     // specs/011 (AD-13/FR-18): falha DEFINITIVA (última tentativa) → estorno
     // idempotente + penalização do saldo + Despertar (rejeição WhatsApp é
     // prioridade 1 na lista fechada). Falha transitória re-tenta sem estornar.
-    const attempts = Number(job.opts?.attempts) || 5;
+    // Default do Bull é 1 tentativa — sem opts.attempts, a 1ª falha JÁ é a
+    // definitiva (default antigo 5 matava o job na tentativa 0 SEM estorno).
+    const attempts = Number(job.opts?.attempts) || 1;
     if (job.attemptsMade >= attempts - 1) {
       await _refundForMessage(prisma, message, `falha definitiva do provider: ${err.message}`);
-      await _penalizeForMessage(prisma, message, `mensagem rejeitada/bloqueada: ${err.message}`);
+      await _penalizeForMessage(prisma, message, err);
     }
     throw err; // Bull re-tenta com backoff
   }
 }
 
 /**
- * specs/011 (FR-18): rejeição/bloqueio de WhatsApp reduz o saldo
- * automaticamente e desperta (lista fechada FR-31). Nunca quebra o worker.
+ * Auto-cura (2026-10-19): falha de CANAL (conta ausente/não conectada) nos
+ * dois throws que antecedem o try do envio. Na TENTATIVA FINAL marca FAILED +
+ * estorno idempotente SEM penalizar — a culpa é do canal, não do destinatário
+ * (FR-18: penalização é só sinal do destinatário) — com a MESMA observação do
+ * catch do path A (métrica + MESSAGE_FAILED no NATS) e relança: o job morre
+ * no Bull APÓS o estorno. Tentativa não-final apenas relança: Bull re-tenta
+ * com backoff sem estornar (falha transitória permanece transitória).
  */
-async function _penalizeForMessage(prisma, message, reason) {
+async function _failChannelDown(prisma, message, job, err) {
+  // Default do Bull é 1 tentativa: sem opts.attempts, a 1ª falha já é a
+  // definitiva (estorno dispara na tentativa 0).
+  const attempts = Number(job.opts?.attempts) || 1;
+  if (job.attemptsMade < attempts - 1) throw err;
+  metrics.incWhatsAppFailed();
+  try {
+    await prisma.whatsAppMessage.update({
+      where: { id: message.id },
+      data: { status: 'FAILED', error: err.message, failedAt: new Date() },
+    });
+  } catch (updateErr) {
+    console.error('[whatsapp] marcação FAILED (canal caído) falhou — estorno segue:', updateErr.message);
+  }
+  await whatsappNats.publishEvent(whatsappNats.SUBJECTS.MESSAGE_FAILED, {
+    orgId: message.orgId,
+    whatsappAccountId: (message.conversation && message.conversation.whatsappAccount && message.conversation.whatsappAccount.id) || null,
+    conversationId: message.conversationId,
+    messageId: message.id,
+    error: err.message,
+  });
+  await _refundForMessage(prisma, message, `canal indisponível: ${err.message}`);
+  throw err; // propaga p/ Bull — job morre após o estorno
+}
+
+// Allowlist de REJEIÇÃO do DESTINATÁRIO (FR-18): só isso penaliza. Queda de
+// canal/rede/mídia ("Conta WhatsApp não conectada", WAHA 5xx, "mídia
+// ilegível") NÃO drena o pool — só estorna (2026-10-19). Variantes com
+// espaço/hífen/underscore de "not registered"/"not on whatsapp" — sem o
+// `.{0,15}` frouxo, que casava erro de transporte tipo "not running (whatsapp)".
+const RECIPIENT_REJECTION_RE = /no[_-]?recipient|not[\s_-]?registered|not[\s_-]?on[\s_-]?whatsapp|não registrado|bloqueado|blocked/i;
+
+/**
+ * specs/011 (FR-18): rejeição/bloqueio de WhatsApp reduz o saldo
+ * automaticamente e desperta (lista fechada FR-31). Só penaliza quando o erro
+ * casa a allowlist de rejeição do destinatário — e NUNCA em erro de
+ * transporte (err.status ≥ 500 do provider; rejeição real chega como 4xx com
+ * texto de rejeição e segue penalizando). Nunca quebra o worker.
+ */
+async function _penalizeForMessage(prisma, message, err) {
+  const detail = String((err && err.message) || err || '');
+  const status = Number(err && err.status) || 0;
+  if (status >= 500) return null; // transporte/provider — nunca é o destinatário
+  if (!RECIPIENT_REJECTION_RE.test(detail)) {
+    // Omissão de penalização não pode ser invisível: falha definitiva sem
+    // padrão de rejeição fica registrada no log.
+    console.log(`[whatsapp] falha definitiva sem padrão de rejeição — sem penalização: ${detail}`);
+    return null;
+  }
+  const reason = `mensagem rejeitada/bloqueada: ${detail}`;
   try {
     if (!message?.orgId || !message?.id) return null;
     const reputation = require('./studio/reputation');

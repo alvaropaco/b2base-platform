@@ -17,11 +17,13 @@ const WAKE_RULES = {
   'studio.campaign.first_batch': { wake: true, priority: 1, label: 'Primeiro lote aguardando sua aprovação' },
   'studio.anomaly.detected': { wake: true, priority: 1, label: 'Anomalia de entrega detectada — campanha pausada' },
   'studio.whatsapp.rejected': { wake: true, priority: 1, label: 'Rejeição/bloqueio no WhatsApp — saldo reduzido' },
+  'studio.whatsapp.session_lost': { wake: true, priority: 1, label: 'Sessão WhatsApp caiu — reconexão automática em andamento' },
   'studio.content.error': { wake: true, priority: 2, label: 'Erro em conteúdo agendado' },
   'studio.schedule.blocked_balance': { wake: true, priority: 2, label: 'Agendamento bloqueado por saldo' },
   'studio.domain.auth_failed': { wake: true, priority: 2, label: 'Autenticação do domínio falhou — saldo suspenso' },
   'studio.consent.missing': { wake: true, priority: 3, label: 'Leads sem consentimento WhatsApp foram bloqueados' },
   'studio.org.paused': { wake: true, priority: 3, label: 'Envios pausados nesta organização — agendamentos retidos' },
+  'studio.whatsapp.session_recovered': { wake: true, priority: 3, label: 'Sessão WhatsApp voltou — disparos retomados' },
 };
 
 function startOfDay(now = new Date()) {

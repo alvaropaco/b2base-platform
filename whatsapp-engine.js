@@ -556,14 +556,135 @@ async function resumeSessions(prisma, wahaProvider) {
         console.log(`[whatsapp] sessão retomada: ${account.sessionName}`);
       }
     } catch (err) {
+      // Auto-cura (2026-10-19): erro de rede/timeout no boot NÃO envenena o
+      // status — o UPDATE para DISCONNECTED derrubava contas saudáveis à toa
+      // (o gate bloqueava disparos com a sessão viva no WAHA). Só loga; o
+      // sweep periódico reconcilia quando o WAHA responder.
       console.error(`[whatsapp] falha ao retomar ${account.sessionName}: ${err.message}`);
-      await prisma.whatsAppAccount.update({
-        where: { id: account.id },
-        data: { status: ACCOUNT_STATUS.DISCONNECTED },
-      });
     }
   }
   return accounts.length;
+}
+
+/**
+ * AUTO-CURA da sessão (2026-10-19): varre as contas ELEGÍVEIS (exclui
+ * STOPPED — desconexão DELIBERADA do dono não tem cura nem reescrita — e
+ * CREATED, nunca pareada) reconciliando o status do banco com o status
+ * AUTENTICADO do WAHA — verdade no painel e no gate — e aplica a cura que
+ * existe: FAILED → restartSession (sessão travada só volta por restart),
+ * STOPPED/DISCONNECTED → startSession (religa, idempotente). QR_REQUIRED é
+ * intocado: re-pareamento é do dono. WAHA inalcançável/LENTO NUNCA muda
+ * status (o fetch do provider não tem timeout — consulta presa estoura o
+ * teto de 30s e vira "inalcançável"; a próxima varredura re-tenta).
+ * Transições de/para CONNECTED despertam o dono (FR-31), mas ruído NÃO
+ * desperta: 1º pareamento (→ CONNECTED vindo de CREATED/QR_REQUIRED/STARTING)
+ * e blip transitório CONNECTED → STARTING são silenciosos. Nunca lança:
+ * falha por conta é isolada e logada.
+ */
+const RECONCILE_LOOKUP_TIMEOUT_MS = 30000;
+
+async function reconcileAllSessions(prisma, wahaProvider) {
+  const autonomy = require('./studio/autonomy');
+  const accounts = await prisma.whatsAppAccount.findMany({
+    where: { status: { notIn: [ACCOUNT_STATUS.STOPPED, ACCOUNT_STATUS.CREATED] } },
+  });
+  const stats = {
+    checked: accounts.length, updated: 0, restarted: 0, started: 0,
+    lost: 0, recovered: 0, unreachable: 0,
+  };
+  for (const account of accounts) {
+    let info = null;
+    try {
+      // Consulta com teto duro: provider preso (fetch sem timeout) não pode
+      // travar a cura permanentemente — estoura como "inalcançável".
+      let timer;
+      info = await Promise.race([
+        wahaProvider.getSessionStatus(account.sessionName),
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`consulta ao WAHA excedeu ${RECONCILE_LOOKUP_TIMEOUT_MS}ms`)),
+            RECONCILE_LOOKUP_TIMEOUT_MS
+          );
+        }),
+      ]).finally(() => clearTimeout(timer));
+    } catch (_err) {
+      // Rede/timeout/5xx do WAHA: inalcançabilidade não é verdade sobre a
+      // sessão — status PRESERVADO.
+      stats.unreachable += 1;
+      continue;
+    }
+    const mapped = mapWahaSessionStatus(info && info.status);
+    if (!mapped) continue; // status bruto desconhecido — nada autenticado
+
+    const was = account.status;
+    // Cinto-e-suspensório (o findMany já exclui STOPPED): desconexão
+    // DELIBERADA do dono (botão Desconectar grava STOPPED) não é reescrita
+    // nem curada — em paridade com o resumeSessions.
+    if (was === ACCOUNT_STATUS.STOPPED) continue;
+
+    if (mapped !== was) {
+      try {
+        // UPDATE condicional: outro writer (evento session.status, rota de
+        // pareamento) pode ter mudado o status desde a leitura — quem ganha
+        // escreve; quem perde pula cura e relatório nesta rodada.
+        const updated = await prisma.whatsAppAccount.updateMany({
+          where: { id: account.id, status: was },
+          data: { status: mapped },
+        });
+        if (!updated || updated.count === 0) continue;
+      } catch (err) {
+        console.error(`[whatsapp] sweep: falha ao persistir status de ${account.sessionName}: ${err.message}`);
+        continue; // sem escrita autenticada, sem cura/relatório desta rodada
+      }
+      account.status = mapped;
+      stats.updated += 1;
+    }
+
+    // Cura — chave no status AUTENTICADO do WAHA (independe de divergência:
+    // "conta em qualquer status, WAHA responde FAILED → restartSession").
+    try {
+      if (mapped === ACCOUNT_STATUS.ERROR) {
+        await wahaProvider.restartSession(account.sessionName);
+        stats.restarted += 1;
+        console.log(`[whatsapp] sweep: sessão FAILED reiniciada: ${account.sessionName}`);
+      } else if (mapped === ACCOUNT_STATUS.STOPPED || mapped === ACCOUNT_STATUS.DISCONNECTED) {
+        await wahaProvider.startSession(account.sessionName);
+        stats.started += 1;
+        console.log(`[whatsapp] sweep: sessão ${mapped} religada: ${account.sessionName}`);
+      }
+      // QR_REQUIRED: nada automático (re-pareamento é do dono).
+    } catch (err) {
+      console.error(`[whatsapp] sweep: cura de ${account.sessionName} falhou (próxima varredura re-tenta): ${err.message}`);
+    }
+
+    // Transição de/para CONNECTED desperta o dono (report nunca quebra o sweep).
+    // Ruído NÃO desperta: recovered só de queda real (DISCONNECTED/ERROR);
+    // lost só quando a sessão não é blip transitório de STARTING.
+    if (mapped !== was) {
+      if (was === ACCOUNT_STATUS.CONNECTED && mapped !== ACCOUNT_STATUS.STARTING) {
+        await autonomy.report(prisma, {
+          orgId: account.orgId,
+          type: 'studio.whatsapp.session_lost',
+          details: { whatsappAccountId: account.id, sessionName: account.sessionName, status: mapped },
+        });
+        stats.lost += 1;
+      } else if (
+        mapped === ACCOUNT_STATUS.CONNECTED &&
+        (was === ACCOUNT_STATUS.DISCONNECTED || was === ACCOUNT_STATUS.ERROR)
+      ) {
+        await autonomy.report(prisma, {
+          orgId: account.orgId,
+          type: 'studio.whatsapp.session_recovered',
+          details: { whatsappAccountId: account.id, sessionName: account.sessionName },
+        });
+        stats.recovered += 1;
+      }
+    }
+  }
+  if (stats.unreachable > 0) {
+    console.warn(`[whatsapp] sweep: WAHA inalcançável para ${stats.unreachable} conta(s) — status preservado`);
+  }
+  return stats;
 }
 
 module.exports = {
@@ -587,6 +708,7 @@ module.exports = {
   markOutboundSent,
   stopAutomationForProspect,
   reconcileSessionStatus,
+  reconcileAllSessions,
   resumeSessions,
   renderTemplate,
 };

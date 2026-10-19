@@ -458,7 +458,7 @@ async function refundSend(prisma, { orgId, channel, messageId, reason }) {
 
 /** Estorno de lote pausado/cancelado com fila restante (AD-13, refId=batchId). */
 async function refundBatch(prisma, { orgId, channel, batchId, units, reason }) {
-  return credit(prisma, {
+  const result = await credit(prisma, {
     orgId,
     channel,
     amount: units,
@@ -466,6 +466,15 @@ async function refundBatch(prisma, { orgId, channel, batchId, units, reason }) {
     refId: batchId,
     reason: reason || 'estorno de lote não enviado',
   });
+  if (!result.replayed) {
+    metrics.incLedgerRefund(channel); // paridade com refundSend
+    // Mesmo padrão do refundSend: devolve também a fatia do CAP DIÁRIO — as
+    // unidades estornadas (sync/cancelamento) não aconteceram, não podem
+    // consumir o ritmo do dia (2026-10-19 fecha o cap fantasma do caminho de
+    // lote; após a virada do dia _returnDailyCap é inerte — contador já zerou).
+    await _returnDailyCap(prisma, orgId, channel, result.credited).catch(() => {});
+  }
+  return result;
 }
 
 /**
