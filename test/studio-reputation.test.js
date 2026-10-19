@@ -132,6 +132,30 @@ test('reset lazy do contador: dia novo, cap novo (usageDay)', async () => {
   assert.equal(row.usageDay, '2026-10-08');
 });
 
+test('reset lazy ZERA TAMBÉM o contador do OUTRO canal — o cap fantasma 30/30 do WhatsApp (2026-10-19)', async () => {
+  // Bug real de produção: 30 WhatsApp num dia antigo + débito de e-mail hoje
+  // virava o usageDay SEM zerar whatsappSentToday → WhatsApp bloqueado 30/30
+  // sem 1 envio real no dia (ledger sem nenhum débito de WhatsApp).
+  const prisma = createFakePrisma();
+  walletAccount(prisma, { balance: 200, whatsappSentToday: 30, emailSentToday: 0, usageDay: '2026-10-16' });
+
+  const nextDay = await reputation.debit(prisma, {
+    orgId: 'org-1', channel: 'email', amount: 10, refId: 'b-email-hoje', now: new Date('2026-10-19T12:00:00Z'),
+  });
+  assert.equal(nextDay.ok, true, 'e-mail debita normal e vira o usageDay');
+  const row = prisma.studioReputationAccount.rows[0];
+  assert.equal(row.usageDay, '2026-10-19');
+  assert.equal(row.emailSentToday, 10);
+  assert.equal(row.whatsappSentToday, 0, 'contador do WhatsApp zerou junto — sem cap fantasma');
+
+  // E o WhatsApp do dia volta a ter o teto inteiro.
+  const wa = await reputation.debit(prisma, {
+    orgId: 'org-1', channel: 'whatsapp', amount: 30, refId: 'b-wa-hoje', now: new Date('2026-10-19T12:05:00Z'),
+  });
+  assert.equal(wa.ok, true, 'WhatsApp consegue debitar o teto cheio do dia');
+  assert.equal(wa.capUsed, 30);
+});
+
 test('DNS deixa de ser matemática de saldo: conta unverified debita o pool (o GATE bloqueia o e-mail)', async () => {
   const prisma = createFakePrisma();
   walletAccount(prisma, { domainAuthStatus: 'unverified' });
@@ -161,6 +185,37 @@ test('estorno de envio: credit idempotente por messageId (AD-13) — credita o p
   const credit = prisma.studioReputationEvent.rows.find((e) => e.type === 'credit');
   assert.equal(credit.refType, 'send');
   assert.equal(credit.refId, 'msg-1');
+});
+
+test('estorno DEVOLVE a fatia do cap diário — falha definitiva não consome o ritmo do dia', async () => {
+  const prisma = createFakePrisma();
+  walletAccount(prisma, { balance: 100 });
+  const before = await reputation.getWallet(prisma, 'org-1');
+
+  // Teto cheio de WhatsApp (30 no estágio 0)…
+  const grant = await reputation.debit(prisma, { orgId: 'org-1', channel: 'whatsapp', amount: 30, refId: 'b-cheio' });
+  assert.equal(grant.ok, true);
+  let wallet = await reputation.getWallet(prisma, 'org-1');
+  assert.equal(wallet.usedToday.whatsapp, 30, 'teto consumido');
+
+  // …2 envios falham definitivamente → estorno devolve saldo E fatia do cap.
+  await reputation.refundSend(prisma, { orgId: 'org-1', channel: 'whatsapp', messageId: 'm-1', reason: 'provider falhou' });
+  await reputation.refundSend(prisma, { orgId: 'org-1', channel: 'whatsapp', messageId: 'm-2', reason: 'provider falhou' });
+  wallet = await reputation.getWallet(prisma, 'org-1');
+  assert.equal(wallet.usedToday.whatsapp, 28, 'cap diário devolvido (não fica 30/30 fantasma)');
+
+  // Retry do MESMO estorno (replay) não devolve 2×.
+  await reputation.refundSend(prisma, { orgId: 'org-1', channel: 'whatsapp', messageId: 'm-1', reason: 'retry' });
+  wallet = await reputation.getWallet(prisma, 'org-1');
+  assert.equal(wallet.usedToday.whatsapp, 28, 'replay não devolve cap 2×');
+
+  // Piso respeitado: nunca fica negativo.
+  for (let i = 0; i < 40; i++) {
+    await reputation.refundSend(prisma, { orgId: 'org-1', channel: 'whatsapp', messageId: `m-x${i}`, reason: 'estorno em massa' });
+  }
+  wallet = await reputation.getWallet(prisma, 'org-1');
+  assert.equal(wallet.usedToday.whatsapp, 0, 'contador para em 0 (nunca negativo)');
+  assert.equal(before.usedToday.whatsapp, 0);
 });
 
 test('compra Stripe (top-up) credita o POOL — e sessão LEGADA com canal antigo também', async () => {

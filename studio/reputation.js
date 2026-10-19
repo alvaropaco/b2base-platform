@@ -316,15 +316,25 @@ async function debit(prisma, { orgId, channel, amount, refType = 'batch', refId,
       };
     }
     // UPDATE condicional: a alocação é decisão do banco, não do caller (AD-4).
-    // Reset lazy do contador quando o dia virou (usageDay ≠ hoje).
+    // Reset lazy do contador quando o dia virou (usageDay ≠ hoje) — e de TODOS
+    // os canais, não só o debitado: zera só o capField do canal e o contador
+    // dos OUTROS canais ficava preso no valor do dia anterior, bloqueando o
+    // canal inteiro sem 1 envio real no dia (2026-10-19: WhatsApp 30/30
+    // fantasma por dias após e-mail ter virado o usageDay).
     const stale = account.usageDay !== dayKey(now);
+    const data = {
+      balance: { decrement: grant },
+      usageDay: dayKey(now),
+      [capField]: stale ? grant : { increment: grant },
+    };
+    if (stale) {
+      for (const field of Object.values(CAP_FIELD)) {
+        if (field !== capField) data[field] = 0;
+      }
+    }
     const updated = await tx.studioReputationAccount.updateMany({
       where: { orgId, channel: UNIFIED_CHANNEL, balance: { gte: grant } },
-      data: {
-        balance: { decrement: grant },
-        usageDay: dayKey(now),
-        [capField]: stale ? grant : { increment: grant },
-      },
+      data,
     });
     if (updated.count === 0) {
       // Corrida entre leitura e escrita: falha fechada (nunca negativo).
@@ -436,7 +446,13 @@ async function refundSend(prisma, { orgId, channel, messageId, reason }) {
     refId: messageId,
     reason: reason || 'estorno de envio não realizado',
   });
-  if (!result.replayed) metrics.incLedgerRefund(channel);
+  if (!result.replayed) {
+    metrics.incLedgerRefund(channel);
+    // Devolve também a fatia do CAP DIÁRIO: o envio falho não aconteceu, não
+    // pode consumir o ritmo do dia (só quando o dia ainda é o mesmo — após a
+    // virada o contador já zerou sozinho).
+    await _returnDailyCap(prisma, orgId, channel, 1).catch(() => {});
+  }
   return result;
 }
 
@@ -449,6 +465,29 @@ async function refundBatch(prisma, { orgId, channel, batchId, units, reason }) {
     refType: 'batch',
     refId: batchId,
     reason: reason || 'estorno de lote não enviado',
+  });
+}
+
+/**
+ * Devolve `units` do contador diário do canal (cap de ritmo) — usado no
+ * estorno. Idempotente na prática: só desconta quando usageDay é HOJE e o
+ * contador ≥ units (a virada do dia já zera; corrida com updateMany
+ * condicional falha fechada para não tornar o contador negativo).
+ */
+async function _returnDailyCap(prisma, orgId, channel, units) {
+  const capField = CAP_FIELD[channel];
+  const n = Math.max(0, Math.floor(Number(units) || 0));
+  if (!capField || n === 0) return;
+  await withTx(prisma, async (tx) => {
+    const account = await getAccount(tx, orgId);
+    if (!account || account.usageDay !== dayKey(new Date())) return;
+    const used = Math.max(0, Number(account[capField] || 0));
+    const back = Math.min(n, used);
+    if (back <= 0) return;
+    await tx.studioReputationAccount.updateMany({
+      where: { orgId, channel: UNIFIED_CHANNEL, [capField]: { gte: back } },
+      data: { [capField]: { decrement: back } },
+    });
   });
 }
 
