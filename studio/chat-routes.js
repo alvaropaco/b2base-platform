@@ -241,13 +241,24 @@ async function currentExtras(prisma, campaign) {
   });
   const materials = await prisma.studioMaterial.findMany({
     where: { orgId: campaign.orgId },
+    orderBy: { createdAt: 'desc' },
   });
+  // O dono pergunta pela arte que ACABOU de anexar (2026-10-19): materiais
+  // SEM leitura (pending/failed/needs_manual) — desta campanha primeiro —
+  // entram no estado antes dos já resolvidos, com o erro curto; senão o
+  // slice(5) levava só os velhos extraídos e o modelo nem sabia o id da
+  // imagem falhada para pedir a re-leitura (confirm_material).
+  const UNRESOLVED = ['pending', 'failed', 'needs_manual'];
+  const rank = (m) => (m.campaignId === campaign.id ? 0 : 1) + (UNRESOLVED.includes(m.extractionStatus) ? 0 : 2);
+  materials.sort((a, b) => rank(a) - rank(b));
   const extras = {
     audienceCount: snapshotRows[0]?.includedCount ?? null,
     contentSummary: contents.map((c) => ({ channel: c.channel, tone: c.tone, subject: c.subject || c.whatsappText?.slice(0, 60) || null })),
     materials: materials.slice(0, 5).map((m) => ({
       id: m.id, kind: m.kind, status: m.extractionStatus, confirmed: Boolean(m.confirmedAt),
       product: m.extraction?.product || null,
+      ...(m.kind === 'url' && m.sourceRef ? { url: m.sourceRef } : {}),
+      ...(m.extractionError && UNRESOLVED.includes(m.extractionStatus) ? { error: String(m.extractionError).slice(0, 80) } : {}),
     })),
   };
 
@@ -756,7 +767,18 @@ function registerChatRoutes(router, context) {
         // extração vazia e a IA seguia sem o produto/oferta/público. Falha de
         // extração volta como card explicável (needs_manual segue manual).
         let working = material;
-        if (material.extractionStatus === 'pending') {
+        // Imagem em needs_manual/failed com erro de VISÃO tenta DE NOVO
+        // (2026-10-16): o material pode ter desistido da leitura num momento
+        // em que a visão estava fora/sem config — corrigido o ambiente, o
+        // confirmMaterial é a chance de cura. Falha de conteúdo (ilegível)
+        // NÃO re-tenta infinito? Tenta: é o gesto explícito do dono pedindo
+        // outra leitura.
+        const imagemPresaSemLeitura = ['needs_manual', 'failed'].includes(material.extractionStatus) && (
+          material.kind === 'image'
+          || /^image\//i.test(String(material.mimeType || ''))
+          || ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(String(material.kind))
+        );
+        if (material.extractionStatus === 'pending' || imagemPresaSemLeitura) {
           const run = await materialService.runExtraction(material, {});
           if (run.status === 'failed') {
             return {

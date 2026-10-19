@@ -77,6 +77,28 @@ test('vision: gateway fora → erro VISION_UNAVAILABLE (material degrada honesto
   } finally { global.fetch = orig; }
 });
 
+// JPEG de verdade (SOI…EOI) — o caso do "WhatsApp Image ….jpeg" que falhava.
+const JPEG = Buffer.from('ffd8ffe000104a46494600010100000100010000ffdb004300ffd9', 'hex');
+
+test('vision: mime declarado errado NÃO quebra a leitura — magic bytes vencem', async () => {
+  assert.equal(vision.normalizeImageMime(JPEG, 'image/jpg'), 'image/jpeg', 'image/jpg (não-padrão) vira image/jpeg');
+  assert.equal(vision.normalizeImageMime(JPEG, 'application/octet-stream'), 'image/jpeg', 'octet-stream em .jpeg é sniffado');
+  assert.equal(vision.normalizeImageMime(JPEG, null), 'image/jpeg');
+  assert.equal(vision.normalizeImageMime(PNG, 'image/jpeg'), 'image/png', 'assinatura vence o mime declarado');
+  assert.equal(vision.normalizeImageMime(JPEG, 'image/png'), 'image/jpeg');
+  const seen = [];
+  const orig = global.fetch;
+  global.fetch = async (url, opts = {}) => {
+    seen.push(JSON.parse(opts.body));
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) };
+  };
+  try {
+    await vision.describeImage({ buffer: JPEG, mimeType: 'application/octet-stream' });
+    const part = seen[0].messages[0].content.find((p) => p.type === 'image_url');
+    assert.match(part.image_url.url, /^data:image\/jpeg;base64,/, 'data-url sai com o mime REAL da imagem, não o declarado');
+  } finally { global.fetch = orig; }
+});
+
 // ── confirm_material extrai a imagem pendente ANTES de confirmar ───────────
 
 async function startServer({ fetchImpl } = {}) {
@@ -324,6 +346,58 @@ test('upload de imagem (trial): segue pending — extração é premium, como o 
   }
 });
 
+// ── .jpeg é lido igual png/jpg (caso real: "WhatsApp Image ….jpeg") ─────────
+
+test('upload .jpeg (nome de WhatsApp): kind image, visão chamada, extracted', async () => {
+  const world = await startServerWithPlan('premium');
+  const { prisma, api, base } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Arte JPEG', channels: ['email'] });
+    const form = new FormData();
+    form.append('file', new Blob([JPEG], { type: 'image/jpeg' }), 'WhatsApp Image 2026-10-16 at 14.28.10.jpeg');
+    form.append('campaignId', c.data.id);
+    const res = await fetch(`${base}/api/studio/materials`, { method: 'POST', body: form });
+    assert.equal(res.status, 201);
+    const material = (await res.json()).data;
+    assert.equal(material.kind, 'image', 'upload de imagem é kind image (não a extensão)');
+    assert.equal(material.mimeType, 'image/jpeg');
+    let row = null;
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      row = prisma.studioMaterial.rows.find((r2) => r2.id === material.id);
+      if (row && row.extractionStatus === 'extracted') break;
+    }
+    assert.equal(row.extractionStatus, 'extracted', '.jpeg é lido pela visão como png/jpg');
+    assert.ok(world.visionCalls.n >= 1, 'leitor de visão chamado para .jpeg');
+  } finally {
+    world.restore();
+    world.close();
+  }
+});
+
+test('upload .jpeg com mime ERRADO do cliente (octet-stream): a leitura sobrevive', async () => {
+  const world = await startServerWithPlan('premium');
+  const { prisma, api, base } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'JPEG mime errado', channels: ['email'] });
+    const form = new FormData();
+    form.append('file', new Blob([JPEG], { type: 'application/octet-stream' }), 'WhatsApp Image 2026-10-16 at 13.42.10.jpeg');
+    form.append('campaignId', c.data.id);
+    const res = await fetch(`${base}/api/studio/materials`, { method: 'POST', body: form });
+    assert.equal(res.status, 201);
+    let row = null;
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      row = prisma.studioMaterial.rows.find((r2) => r2.sourceRef && r2.sourceRef.endsWith('.jpeg'));
+      if (row && row.extractionStatus === 'extracted') break;
+    }
+    assert.equal(row.extractionStatus, 'extracted', 'mime mentiroso não derruba a leitura — magic bytes vencem');
+  } finally {
+    world.restore();
+    world.close();
+  }
+});
+
 // ── auto-cura (backfill): materiais de imagem presos em pending ─────────────
 
 test('backfill: sweep reextrai material de imagem PENDENTE legado (kind jpg) em org premium', async () => {
@@ -426,4 +500,86 @@ test('pendingMaterialHint: geração de imagem, conversa sem pendente e assunto 
     'nada pendente → hint desnecessário'
   );
   assert.equal(pendingMaterialHint('consegue acessar a imagem agora?', {}), null, 'sem materiais no estado');
+});
+
+test('pendingMaterialHint: imagem JPEG em FAILED oferece confirm_material (a leitura é re-tentada)', () => {
+  const hint = pendingMaterialHint('consegue acessar as imagens jpeg que anexei?', {
+    materials: [{ id: 'mj1', kind: 'jpeg', status: 'failed', confirmed: false }],
+  });
+  assert.ok(hint, 'imagem presa em failed dispara o hint — nunca mais "não existe action"');
+  assert.ok(hint.includes('"materialId":"mj1"'), 'aponta o id do estado');
+  assert.ok(hint.includes('jpeg, failed'), 'o modelo vê que é re-tentativa de leitura');
+  // needs_manual de imagem também (a cura pelo gesto do dono)
+  assert.ok(
+    pendingMaterialHint('tenta ler a imagem de novo', { materials: [{ id: 'mj2', kind: 'image', status: 'needs_manual', confirmed: false }] }),
+    'needs_manual de imagem também oferece confirm_material'
+  );
+  // material NÃO-imagem em failed não é caso de re-leitura de visão
+  assert.equal(
+    pendingMaterialHint('consegue acessar o material que falhou?', { materials: [{ id: 'mp1', kind: 'pdf', status: 'failed', confirmed: false }] }),
+    null,
+    'pdf falhado não vira re-leitura de imagem'
+  );
+});
+
+test('backfill: needs_manual por visão INDISPONÍVEL no passado é relido quando a visão volta (auto-cura da cura)', async () => {
+  const prisma = createFakePrisma();
+  prisma.organization.rows.push({ id: 'org-1', plan: 'premium' });
+  prisma.studioMaterial.rows.push({
+    id: 'mat-needs', orgId: 'org-1', campaignId: null, kind: 'image',
+    sourceRef: storage.saveGenerated(PNG, 'png'), mimeType: 'image/jpeg',
+    extractionStatus: 'needs_manual',
+    extractionError: 'Modelo de visão não configurado: descreva o material manualmente e confirme.',
+    origin: 'upload', variantLabel: null, confirmedAt: null,
+  });
+  // Ruído que NÃO deve ser relido: needs_manual por conteúdo (sem relação com visão).
+  prisma.studioMaterial.rows.push({
+    id: 'mat-conteudo', orgId: 'org-1', campaignId: null, kind: 'image',
+    sourceRef: storage.saveGenerated(PNG, 'png'), mimeType: 'image/jpeg',
+    extractionStatus: 'needs_manual',
+    extractionError: 'Material sem texto extraível (vazio ou ilegível).',
+    origin: 'upload', variantLabel: null, confirmedAt: null,
+  });
+  const read = [];
+  const svc = createMaterialService(prisma, {
+    imageExtract: async (m) => { read.push(m.id); return 'Banner lido agora que a visão voltou.'; },
+    extractor: async () => ({ product: 'X', offer: 'Y', audience: 'Z' }),
+  });
+  const out = await svc.extractPendingImageMaterials({});
+  assert.deepEqual(read, ['mat-needs'], 'só o erro de VISÃO é re-tentado');
+  assert.equal(out.extracted, 1);
+  const row = prisma.studioMaterial.rows.find((r) => r.id === 'mat-needs');
+  assert.equal(row.extractionStatus, 'extracted', 'a cura se aplica quando o ambiente é corrigido');
+  const ruido = prisma.studioMaterial.rows.find((r) => r.id === 'mat-conteudo');
+  assert.equal(ruido.extractionStatus, 'needs_manual', 'needs_manual legítimo (conteúdo) segue manual');
+});
+
+test('confirm_material: imagem em needs_manual por visão fora TENTA DE NOVO quando a visão voltou', async () => {
+  const world = await startServer({
+    fetchImpl: async (u) => {
+      if (u.includes('/v1/chat/completions')) {
+        return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'Banner: DOBRADEIRA MB. Oferta: orçamento 24h. Público: indústrias.' } }] }) };
+      }
+      throw new Error('fetch inesperado: ' + u);
+    },
+  });
+  const { prisma, api } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Cura needs_manual', channels: ['email'] });
+    prisma.studioMaterial.rows.push({
+      id: 'mat-remisso', orgId: 'org-1', campaignId: c.data.id, kind: 'image',
+      sourceRef: storage.saveGenerated(PNG, 'png'), mimeType: 'image/png',
+      extractionStatus: 'needs_manual',
+      extractionError: 'Modelo de visão não configurado: descreva o material manualmente e confirme.',
+      origin: 'upload', variantLabel: null, confirmedAt: null,
+    });
+    const out = await api('POST', `/campaigns/${c.data.id}/actions`, { type: 'confirm_material', params: { materialId: 'mat-remisso' } });
+    assert.equal(out.res.status, 200);
+    const mat = prisma.studioMaterial.rows.find((r) => r.id === 'mat-remisso');
+    assert.equal(mat.extractionStatus, 'extracted', 'a leitura que falhou por ambiente é re-tentada no gesto do dono');
+    assert.equal(out.body.data.card.type, 'material_confirmed');
+  } finally {
+    world.restore();
+    world.close();
+  }
 });

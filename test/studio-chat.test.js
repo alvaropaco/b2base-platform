@@ -163,6 +163,36 @@ test('chat: objetivo + audiência montados por conversa, com contagem real de le
   }
 });
 
+test('chat state: material SEM leitura (jpeg failed) entra no extras com id e erro — o modelo pode pedir a re-leitura', async () => {
+  const { server, prisma, api } = await startServer();
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Estado materiais', channels: ['email'] });
+    // Materiais velhos RESOLVIDOS lotando o estado (o slice(5) antigo só
+    // mostrava esses — a jpeg falhada nem chegava ao modelo).
+    for (let i = 0; i < 6; i++) {
+      prisma.studioMaterial.rows.push({
+        id: `mat-velho-${i}`, orgId: 'org-1', campaignId: c.data.id, kind: 'pdf',
+        sourceRef: null, mimeType: 'application/pdf', extractionStatus: 'extracted',
+        extractionError: null, confirmedAt: new Date(), origin: 'upload', variantLabel: null,
+      });
+    }
+    prisma.studioMaterial.rows.push({
+      id: 'mat-jpeg', orgId: 'org-1', campaignId: c.data.id, kind: 'jpeg',
+      sourceRef: 'abc.jpeg', mimeType: 'image/jpeg', extractionStatus: 'failed',
+      extractionError: 'VISION_HTTP_503: gateway indisponível', confirmedAt: null,
+      origin: 'upload', variantLabel: null,
+    });
+    const state = (await api('GET', `/campaigns/${c.data.id}/state`)).body.data;
+    const mats = state.extras.materials;
+    assert.ok(mats.length <= 5, 'estado continua enxuto');
+    assert.equal(mats[0].id, 'mat-jpeg', 'sem leitura vem PRIMEIRO (não é cortado pelo slice)');
+    assert.equal(mats[0].status, 'failed');
+    assert.ok(String(mats[0].error).includes('VISION_HTTP_503'), 'erro curto explica o failed');
+  } finally {
+    server.close();
+  }
+});
+
 test('chat: URL colada vira material com extração; confirmação no chat; conteúdo em revisão', async () => {
   const { server, prisma, api } = await startServer();
   try {

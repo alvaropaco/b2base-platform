@@ -224,23 +224,26 @@ async function extractText(material) {
   }
 
   /**
-   * AUTO-CURA de materiais de imagem presos em 'pending' (2026-10-16):
+   * AUTO-CURA de materiais de imagem presos sem leitura (2026-10-16):
    * uploads feitos ANTES do deploy da visão nasceram com kind pela extensão
    * e sem ninguém chamando a extração — ficaram pendentes para sempre, e
-   * nada os relia. Varre os pendentes de imagem (kind novo OU legado por
-   * extensão/mime) e reextrai SERIALIZADO, com o mesmo gate do upload
-   * automático (premium; trial segue pelo caminho manual/confirm_material).
-   * Teto por rodada para não criar rajada de visão.
+   * nada os relia. Varre imagem (kind novo OU legado por extensão/mime) em
+   * `pending` E em `needs_manual`/`failed` QUANDO o erro é de visão
+   * indisponível no momento (o sweep pode ter corrido antes do
+   * STUDIO_VISION_MODEL existir — precisa se curar quando a env chega).
+   * Reextrai SERIALIZADO, com o mesmo gate do upload automático (premium;
+   * trial segue pelo caminho manual/confirm_material). Teto por rodada.
    */
+  const VISION_ERROR_RE = /VISION_|vis[ãa]o n[ãa]o configurad[oa]|vision timeout/i;
   async function extractPendingImageMaterials({ max = 20 } = {}) {
     const vision = require('./ai/vision');
     if (!vision.isConfigured()) {
       return { skipped: 'vision_not_configured', checked: 0, extracted: 0, failed: 0 };
     }
     const { isPremiumOrg } = require('../plan');
-    const pending = await prisma.studioMaterial.findMany({
+    const stuck = await prisma.studioMaterial.findMany({
       where: {
-        extractionStatus: 'pending',
+        extractionStatus: { in: ['pending', 'needs_manual', 'failed'] },
         OR: [
           { kind: 'image' },
           { mimeType: { startsWith: 'image/' } },
@@ -248,11 +251,14 @@ async function extractText(material) {
         ],
       },
       orderBy: { createdAt: 'asc' },
-      take: Math.max(1, Math.min(50, Number(max) || 20)),
+      take: Math.max(1, Math.min(50, Number(max) || 20)) * 2,
     });
+    const retryable = stuck.filter((m) => (
+      m.extractionStatus === 'pending' || VISION_ERROR_RE.test(String(m.extractionError || ''))
+    )).slice(0, Math.max(1, Math.min(50, Number(max) || 20)));
     let extracted = 0;
     let failed = 0;
-    for (const material of pending) {
+    for (const material of retryable) {
       let premium = false;
       try { premium = await isPremiumOrg(prisma, material.orgId); } catch (_e) { /* fail-closed: pula */ }
       if (!premium) continue;
@@ -260,7 +266,7 @@ async function extractText(material) {
       if (run.status === 'extracted') extracted += 1;
       else failed += 1;
     }
-    return { checked: pending.length, extracted, failed };
+    return { checked: retryable.length, extracted, failed };
   }
 
   return { createMaterial, runExtraction, confirmExtraction, pptxToText, extractPendingImageMaterials };

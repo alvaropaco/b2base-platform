@@ -658,29 +658,36 @@ function imageGenHint(userMessage) {
 // LEITURA/acesso de imagem/material (2026-10-16): "consegue acessar a
 // imagem?", "analise o material", "extrai da foto" — quando há material
 // PENDENTE no estado, a resposta é confirm_material (a extração roda ANTES
-// de confirmar), não "reenvie o arquivo".
-const PENDING_MATERIAL_RE = /\b(acess\w*|ler|lendo|leitura|l[êe]\b|extrair|extra[çc][ãa]o|analisa\w*|abr[ií]\w*|abrir|visualiz\w*|enxerg\w*|pendente\w*|travad\w*|status)\b/i;
+// de confirmar), não "reenvie o arquivo". Imagem em failed/needs_manual
+// TAMBÉM (2026-10-19): confirm_material re-tenta a leitura — sem isso o
+// agente respondia "não existe action para forçar a leitura" exatamente
+// quando o dono pedia pra tentar de novo (caso das JPEGs do WhatsApp).
+const PENDING_MATERIAL_RE = /\b(acess\w*|ler|lendo|leitura|l[êe]\b|extrair|extra[çc][ãa]o|analisa\w*|abr[ií]\w*|abrir|visualiz\w*|enxerg\w*|pendente\w*|travad\w*|status|falh\w*|tent\w*|reenvi\w*)\b/i;
 const MATERIAL_SUBJECT_RE = /\b(imagem|imagens|foto|fotos|jpeg|jpg|png|anexo|anexos|material|materiais|arte|banner|arquivo)\b/i;
+const IMAGE_MATERIAL_KINDS = ['image', 'png', 'jpg', 'jpeg', 'webp', 'gif'];
 
 /**
- * Hint de material pendente: só dispara quando (a) a mensagem fala de
- * leitura/acesso/extração de imagem-material e (b) EXISTE material pending
- * no estado (extras.materials) — aí aponta os ids e manda chamar
- * confirm_material. Geração de imagem NÃO é este caminho (imageGenHint).
+ * Hint de material pendente: dispara quando (a) a mensagem fala de
+ * leitura/acesso/extração de imagem-material e (b) existe material pending
+ * OU imagem presa em failed/needs_manual no estado (extras.materials) — aí
+ * aponta os ids e manda chamar confirm_material. Geração de imagem NÃO é
+ * este caminho (imageGenHint).
  */
 function pendingMaterialHint(userMessage, extras) {
   const msg = String(userMessage || '');
   if (!msg.trim()) return null;
   if (IMAGE_GEN_RE.test(msg)) return null; // "gere uma imagem…" é outro caminho
   if (!PENDING_MATERIAL_RE.test(msg) || !MATERIAL_SUBJECT_RE.test(msg)) return null;
-  const pendings = (Array.isArray(extras && extras.materials) ? extras.materials : [])
-    .filter((m) => m && m.status === 'pending');
-  if (!pendings.length) return null;
-  const list = pendings
-    .map((m) => `{"type":"confirm_material","materialId":"${m.id}"}${m.kind ? ` (${m.kind})` : ''}`)
+  const rows = (Array.isArray(extras && extras.materials) ? extras.materials : []);
+  const pendings = rows.filter((m) => m && m.status === 'pending');
+  const imagensPresas = rows.filter((m) => m && ['failed', 'needs_manual'].includes(m.status) && IMAGE_MATERIAL_KINDS.includes(String(m.kind)));
+  if (!pendings.length && !imagensPresas.length) return null;
+  const list = [...pendings, ...imagensPresas]
+    .map((m) => `{"type":"confirm_material","materialId":"${m.id}"}${m.kind ? ` (${m.kind}${m.status !== 'pending' ? `, ${m.status}` : ''})` : ''}`)
     .join(' · ');
   return [
-    'LEITURA DE MATERIAL PENDENTE — a action confirm_material EXISTE e a EXTRAÇÃO RODA ANTES de confirmar:',
+    'LEITURA DE MATERIAL PENDENTE — a action confirm_material EXISTE e a EXTRAÇÃO RODA ANTES de confirmar',
+    '(e RE-TENTA a leitura de imagem que falhou antes):',
     `${list}. Chame confirm_material para o material pedido (id vem do estado) e devolva o card do resultado`,
     '(material_extraído/material_needs_manual/material_extraction_failed). Se voltar needs_manual ou failed, daí',
     'sim ofereça descrição manual ou nova tentativa. NUNCA diga que não consegue acessar a imagem sem ter',

@@ -28,6 +28,36 @@ function visionModel() {
   return process.env.STUDIO_VISION_MODEL || process.env.LITELLM_MODEL || 'gpt-4o-mini';
 }
 
+// O mime DECLARADO no upload não é confiável: clientes mandam 'image/jpg'
+// (não-padrão) ou 'application/octet-stream' para .jpeg — e o gateway
+// rejeita o data-url com mime inválido, matando a extração do material
+// (png/jpg de browser sempre vinham certos; jpeg por outros caminhos, não).
+// A assinatura (magic bytes) do buffer vence qualquer mime declarado.
+const IMAGE_SIGNATURES = [
+  { bytes: [0xff, 0xd8, 0xff], mime: 'image/jpeg' },
+  { bytes: [0x89, 0x50, 0x4e, 0x47], mime: 'image/png' },
+  { bytes: [0x47, 0x49, 0x46, 0x38], mime: 'image/gif' },
+  { bytes: [0x52, 0x49, 0x46, 0x46], mime: 'image/webp' }, // RIFF….WEBP
+];
+
+function sniffImageMime(buffer) {
+  for (const sig of IMAGE_SIGNATURES) {
+    if (!sig.bytes.every((byte, i) => buffer[i] === byte)) continue;
+    if (sig.mime !== 'image/webp') return sig.mime;
+    if (buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) return sig.mime;
+  }
+  return null;
+}
+
+function normalizeImageMime(buffer, mimeType) {
+  const sniffed = sniffImageMime(buffer);
+  if (sniffed) return sniffed;
+  const declared = String(mimeType || '').toLowerCase().split(';')[0].trim();
+  if (declared === 'image/jpg') return 'image/jpeg';
+  if (/^image\/(png|jpeg|webp|gif)$/.test(declared)) return declared;
+  return 'image/jpeg';
+}
+
 /**
  * Descreve a imagem para o extractor: produto, oferta, público, textos do
  * banner e cores — em texto corrido (o extractor estruturado consome texto).
@@ -42,7 +72,7 @@ async function describeImage({ buffer, mimeType = 'image/jpeg', hint = null, tim
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('vision timeout')), timeoutMs);
   try {
-    const dataUrl = `data:${mimeType};base64,${buffer.toString('base64')}`;
+    const dataUrl = `data:${normalizeImageMime(buffer, mimeType)};base64,${buffer.toString('base64')}`;
     const res = await fetch(`${llmUrl()}/v1/chat/completions`, {
       method: 'POST',
       signal: controller.signal,
@@ -99,4 +129,4 @@ function signalAborted(err) {
   return String((err && err.name) || '').includes('Abort') || String((err && err.message) || '').includes('timeout');
 }
 
-module.exports = { isConfigured, describeImage, visionModel };
+module.exports = { isConfigured, describeImage, visionModel, normalizeImageMime };
