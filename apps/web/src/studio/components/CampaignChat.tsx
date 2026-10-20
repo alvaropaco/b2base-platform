@@ -12,6 +12,9 @@
  * passo); o painel de leads virou GAVETA lateral acessível em qualquer fase
  * (não nasce mais dentro do thread); e "Colocar em voo" termina com um
  * RESUMO da campanha + atalho chamativo para o Monitor.
+ * 2026-10-20 (pedido do dono): os chips contextuais de próximo passo também
+ * saíram — o rodapé do chat não tem mais atalhos; o fio condutor é a
+ * conversa com a IA + os chips de ação DENTRO dos cards (FR-9).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -247,18 +250,10 @@ const FOCUS_DRAFT: Record<string, string> = {
   balance: 'Como está meu saldo de envios?',
 };
 
-/** Próximas ações válidas da máquina de estados (FR-3/FR-8) → chips. */
-function nextStepChips(state: CampaignState | null): Array<{ key: string; label: string; prompt: string }> {
-  if (!state) return [];
-  const { campaign, extras } = state;
-  const chips: Array<{ key: string; label: string; prompt: string }> = [];
-  if (!campaign.objective) chips.push({ key: 'objective', label: 'Definir objetivo', prompt: 'Quero definir o objetivo e a oferta da campanha.' });
-  if (extras.audienceCount == null || extras.audienceCount === 0) chips.push({ key: 'audience', label: 'Montar audiência', prompt: 'Monte a audiência comigo — quem deve receber?' });
-  if (extras.contentSummary.length === 0) chips.push({ key: 'content', label: 'Gerar conteúdo', prompt: 'Gere o conteúdo da campanha para eu revisar.' });
-  if (!campaign.schedule?.hourlyLimit) chips.push({ key: 'schedule', label: 'Definir quando enviar', prompt: 'Vamos definir quando e em que ritmo a campanha envia.' });
-  if (campaign.status === 'in_review') chips.push({ key: 'approve', label: 'Revisar e aprovar', prompt: 'Revise a campanha comigo para eu aprovar com segurança.' });
-  return chips.slice(0, 3);
-}
+// Chips CONTEXTUAIS de próximo passo REMOVIDOS (2026-10-20, pedido do dono):
+// a fileira "Gerar conteúdo / Definir quando enviar…" poluía o rodapé — o
+// chat anda sozinho por conversa + cards de ação (o guia do próximo passo é
+// papel da resposta da IA e dos cards, não de atalhos fixos).
 
 export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPreflight, onExitToHome, step, onOpenMonitor, focusStep, onOpenCampaign }: CampaignChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -496,9 +491,6 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
     // certificate/certificateLoading fora de propósito: reage só à necessidade.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [needsCertificate]);
-  // Chips contextuais do PRÓPRIO fluxo (fix 1, 2026-09-28): os chips genéricos
-  // de sugestão da home saíram do rodapé do chat — poluíam cada resposta.
-  const stepChips = nextStepChips(state);
   // Onda "criação sem bloqueios" (2026-09-29): pendências NUNCA desabilitam o
   // avanço — o Certificado é checklist de prontidão (estado + caminho + quando
   // libera). O que impede o disparo segue no gate, na hora do envio (AD-4).
@@ -875,21 +867,8 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
           </div>
         )}
 
-        {/* Chips-ação CONTEXTUAIS: só o que falta na campanha, nunca decorativo (FR-9) */}
-        {!pending && stepChips.length > 0 && (
-          <div className="cockpit-stagger flex flex-wrap gap-2 pt-1">
-            {stepChips.map((chip) => (
-              <button
-                key={chip.key}
-                type="button"
-                onClick={() => void send(chip.prompt)}
-                className="rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-              >
-                {chip.label}
-              </button>
-            ))}
-          </div>
-        )}
+        {/* Chips-ação contextuais removidos (2026-10-20): o rodapé fica limpo —
+            o próximo passo é papel da resposta da IA e dos cards de ação. */}
         <div ref={bottomRef} />
       </div>
 
