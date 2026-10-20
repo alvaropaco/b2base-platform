@@ -14,7 +14,7 @@
 
 const crypto = require('crypto');
 const { httpError } = require('./errors');
-const { createChatAgent, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery, extractCaptureState, extractChannelIntent, testMessageIntent, launchLimitHint } = require('./ai/chat-agent');
+const { createChatAgent, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery, extractCaptureLimit, extractCaptureState, extractChannelIntent, testMessageIntent, launchLimitHint } = require('./ai/chat-agent');
 const { createComposer } = require('./ai/compose');
 const { createExtractor } = require('./ai/extract');
 const { generateAndStorePackage, generateAndStoreWhatsApp } = require('./compose-service');
@@ -30,6 +30,21 @@ const URL_RE = /(https?:\/\/[^\s,;)"]+)/g;
 
 // Espera pelo QR do pareamento no chat (tests aceleram via STUDIO_QR_WAIT_MS).
 const QR_WAIT_MS = Number(process.env.STUDIO_QR_WAIT_MS || 25000);
+
+// Base pública para URL que sai do servidor e é consumida fora (imagem de
+// e-mail buscada pelo cliente do LEAD): APP_URL quando configurado; senão a
+// origem do próprio pedido — mesmo padrão de cockpit-routes/server-prod. O
+// Cockpit é acessado no host público, então /media/:hash no mesmo host é
+// alcançável pelos clientes de e-mail; sem req (worker/testes), volta ''.
+function publicBaseUrl(req) {
+  const fromEnv = String(process.env.APP_URL || '').replace(/\/$/, '');
+  if (fromEnv) return fromEnv;
+  // 'null' é o Origin que cliente não-browser (curl, fetch server-side) manda
+  // em POST — nunca é uma origem navegável.
+  const origin = req && req.headers && req.headers.origin ? String(req.headers.origin).replace(/\/$/, '') : '';
+  if (origin && origin !== 'null') return origin;
+  return req && typeof req.get === 'function' ? `${req.protocol}://${req.get('host')}` : '';
+}
 
 /** Params declarados da action (para hash de idempotência — AD-6). */
 function actionParams(action) {
@@ -494,7 +509,7 @@ function registerChatRoutes(router, context) {
    * chave estável); re-execução (mesmo actionId/params) devolve o MESMO
    * resultado sem tocar serviços — duplo toque não duplica segmento/conteúdo.
    */
-  async function runAction(action, { campaign, cards, orgId, userId }) {
+  async function runAction(action, { campaign, cards, orgId, userId, req = null }) {
     if (!action || !action.type || action.type === 'none') return null;
     if (!manifest.ACTIONS_V1[action.type]) return null;
     let params = actionParams(action);
@@ -611,14 +626,14 @@ function registerChatRoutes(router, context) {
       action: action.type,
       params,
       actionId: action.actionId || null,
-      run: () => executeAction(effective, { campaign, cards, orgId, userId }),
+      run: () => executeAction(effective, { campaign, cards, orgId, userId, req }),
     });
     if (replayed && result) return { ...result, replayed: true };
     return result;
   }
 
   /** Handler puro de cada action (efeitos reais nos serviços). */
-  async function executeAction(action, { campaign, cards, orgId, userId }) {
+  async function executeAction(action, { campaign, cards, orgId, userId, req = null }) {
     const label = { detail: '' };
     switch (action.type) {
       case 'set_objective': {
@@ -829,12 +844,16 @@ function registerChatRoutes(router, context) {
         const storage = require('./storage');
         const ext = generated.mimeType === 'image/jpeg' ? 'jpg' : 'png';
         const fileName = storage.saveGenerated(generated.buffer, ext);
-        const base = String(process.env.APP_URL || '').replace(/\/$/, '');
+        // Fallback do base (2026-10-19): APP_URL ausente no servidor NÃO mata
+        // mais a imagem gerada — a origem do próprio pedido monta o link
+        // (mesmo padrão de cockpit-routes/server-prod). Só sem req (fora de
+        // rota) o card honesto volta.
+        const base = publicBaseUrl(req);
         if (!base) {
           return {
             type: 'image_generated',
             label: 'Imagem gerada, mas sem URL pública',
-            detail: 'APP_URL não configurado no servidor — a imagem foi gerada e salva, mas não consigo montar o link público para o e-mail.',
+            detail: 'Sem APP_URL nem origem de requisição para montar o link público — a imagem foi gerada e salva. Configure APP_URL no servidor e me peça de novo.',
           };
         }
         const imageUrl = `${base}/media/${fileName}`;
@@ -2782,15 +2801,26 @@ function buildCaptureCard(result) {
       ? ' A busca por significado está indisponível agora — usei a busca por palavras, que já encontra pelo setor e pelo nome.'
       : '';
     const dupNote = result.duplicates > 0 ? ` ${result.duplicates} já estavam na sua base e não foram duplicados.` : '';
+    // Meta em aberto (2026-10-20): o dono pediu N e o gap não fechou porque a
+    // busca externa está fora — o card DIZ isso (o que falta + com quem), sem
+    // fingir que "capturou" quando só matches antigos voltaram.
+    const gapNote = result.gapCount > 0 && result.mcpAvailable === false
+      ? ` Para os ${result.gapCount} que faltavam chegar a ${result.requestedLimit}, a busca pública de CNPJ${result.mcpError ? ' não respondeu agora' : ' ainda não está conectada neste workspace'}${result.mcpError ? '' : ' — peça ao administrador para configurar'}.`
+      : '';
     return {
       ...base,
       status: 'captured',
       label: 'Leads capturados',
-      detail: `${lots.join(' + ')}. Nada foi enviado — os leads ficam prontos para você usar.${dupNote}${modeNote}`,
+      detail: `${lots.join(' + ')}. Nada foi enviado — os leads ficam prontos para você usar.${dupNote}${gapNote}${modeNote}`,
       captureSource: result.source,
       mode: result.mode,
       baseOwnCount: result.baseOwnCount,
       mcpCount: result.mcpCount,
+      // Meta do pedido (2026-10-20): quanto era o alvo, quanto ficou em aberto
+      // e se a busca externa estava disponível — o card nunca finge meta.
+      requestedLimit: result.requestedLimit ?? null,
+      gapCount: result.gapCount ?? 0,
+      mcpAvailable: result.mcpAvailable !== false,
       duplicates: result.duplicates || 0,
       // Contador do dia TAL COMO a contagem DB reproduz (re-contagem do
       // capture-service) — o card nunca reporta número que o banco não confirma.
@@ -2814,9 +2844,9 @@ function buildCaptureCard(result) {
       dailyLimit: result.dailyLimit,
     };
   }
-  // Recusa explicável (FR9): sem token MCP (ou erro dele) — NENHUM lead criado,
-  // e o card diz o que falta. Zero invenção: a base própria segue como está.
-  // Copy NUNCA cita env interna (o vendedor não age sobre variável de ambiente).
+  // Recusa explicável (FR9): nada na base casou E a busca externa não pôde
+  // rodar (desconectada ou erro) — NENHUM lead criado, e o card diz o que
+  // falta. Copy NUNCA cita env interna (o vendedor não age sobre variável).
   const why = result.reason === 'mcp_error'
     ? 'A consulta pública de CNPJ não respondeu agora.'
     : 'A busca fora da sua base ainda não está conectada neste workspace.';
@@ -2825,9 +2855,8 @@ function buildCaptureCard(result) {
     status: 'refused',
     label: 'Não consegui trazer leads novos agora',
     detail:
-      `${why} Sua base tem ${result.ownCount} lead(s) parecido(s) com o que você pediu — abaixo do mínimo (${result.minOwn}) ` +
-      `para um lote útil, então NENHUM lead foi criado. Peça ao administrador para configurar o acesso ao CNPJ e tente de novo ` +
-      `— ou trabalhe com a sua base atual.`,
+      `Nada na sua base casou com "${result.query || 'o que você pediu'}" e ${why.toLowerCase()} NENHUM lead foi criado. ` +
+      `Peça ao administrador para configurar o acesso ao CNPJ e tente de novo — ou tente outro termo (setor mais amplo).`,
     reason: result.reason,
     mode: result.mode,
     ownCount: result.ownCount,
@@ -3184,7 +3213,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
    *   {type:'card',    card} | {type:'card_error', card}
    *   {type:'done',    cards, campaignStatus}
    */
-  async function runChatTurn(prismaClient, { campaign, message, orgId, userId, onEvent = () => {} }) {
+  async function runChatTurn(prismaClient, { campaign, message, orgId, userId, req = null, onEvent = () => {} }) {
     const emit = (event) => onEvent(event);
     const startedAt = Date.now();
     const llmTelemetry = [];
@@ -3203,7 +3232,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
       actionTypes.push('attach_url');
       const actionStartedAt = Date.now();
       try {
-        const result = await runAction({ type: 'attach_url', url }, { campaign, cards: autoAttachCards, orgId, userId });
+        const result = await runAction({ type: 'attach_url', url }, { campaign, cards: autoAttachCards, orgId, userId, req });
         if (result) {
           autoAttachCards.push(result);
           emit({ type: 'card', card: result });
@@ -3254,7 +3283,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
           emit({ type: 'status', label: ACTION_LABELS.set_objective });
           const objectiveCard = await runAction(
             { type: 'set_objective', objective: intent.objective, ...(intent.offer ? { offer: intent.offer } : {}) },
-            { campaign, cards, orgId, userId }
+            { campaign, cards, orgId, userId, req }
           );
           if (objectiveCard) {
             cards.push(objectiveCard);
@@ -3265,7 +3294,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
           emit({ type: 'status', label: ACTION_LABELS.set_audience });
           const audienceCard = await runAction(
             { type: 'set_audience', description: intent.audience },
-            { campaign, cards, orgId, userId }
+            { campaign, cards, orgId, userId, req }
           );
           if (audienceCard) {
             cards.push(audienceCard);
@@ -3312,7 +3341,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
       try {
         const createdCard = await runAction(
           { type: 'create_campaign', name: createTarget },
-          { campaign, cards, orgId, userId }
+          { campaign, cards, orgId, userId, req }
         );
         if (createdCard) {
           cards.push(createdCard);
@@ -3336,7 +3365,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
       try {
         const renameCard = await runAction(
           { type: 'rename_campaign', name: renameTarget },
-          { campaign, cards, orgId, userId }
+          { campaign, cards, orgId, userId, req }
         );
         if (renameCard) {
           cards.push(renameCard);
@@ -3385,9 +3414,12 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
         const captureStartedAt = Date.now();
         try {
           const state = typeof extractCaptureState === 'function' ? extractCaptureState(message) : null;
+          // META do pedido (2026-10-20): "capture 8 leads…", "…para 50" — o
+          // número é o alvo; o capture-service preenche o gap com lead NOVO.
+          const captureLimit = typeof extractCaptureLimit === 'function' ? extractCaptureLimit(message) : null;
           const captureCard = await runAction(
-            { type: 'capture_leads', query, ...(state ? { state } : {}) },
-            { campaign, cards, orgId, userId }
+            { type: 'capture_leads', query, ...(state ? { state } : {}), ...(captureLimit ? { limit: captureLimit } : {}) },
+            { campaign, cards, orgId, userId, req }
           );
           if (captureCard) {
             cards.push(captureCard);
@@ -3404,7 +3436,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
             actionTypes.push('select_leads');
             const addCard = await runAction(
               { type: 'select_leads', add: ids, confirmed: true },
-              { campaign, cards, orgId, userId }
+              { campaign, cards, orgId, userId, req }
             );
             if (addCard) {
               cards.push(addCard);
@@ -3536,7 +3568,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
       if (effective && effective.type && effective.type !== 'none') actionTypes.push(effective.type);
       const actionStartedAt = Date.now();
       try {
-        const card = await runAction(effective, { campaign, cards, orgId, userId });
+        const card = await runAction(effective, { campaign, cards, orgId, userId, req });
         if (card) {
           cards.push(card);
           emit({ type: 'card', card });
@@ -3616,7 +3648,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
       const campaign = await loadCampaign(prisma, orgId, req.params.id);
       const message = String((req.body || {}).message || '').trim();
       if (!message) throw httpError('INVALID_MESSAGE', 400, 'Mensagem vazia.');
-      const result = await runChatTurn(prisma, { campaign, message, orgId, userId });
+      const result = await runChatTurn(prisma, { campaign, message, orgId, userId, req });
       res.json({ success: true, data: result });
     } catch (err) {
       next(err);
@@ -3652,6 +3684,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
           message,
           orgId,
           userId,
+          req,
           onEvent: (event) => {
             if (event.type === 'status') {
               if (event.phase) send('status', { phase: event.phase });
@@ -3761,7 +3794,7 @@ async function waitForChatQr(provider, sessionName, timeoutMs = 25_000) {
         ...(body.params || {}),
       };
       const cards = [];
-      const card = await runAction(action, { campaign, cards, orgId, userId });
+      const card = await runAction(action, { campaign, cards, orgId, userId, req });
       if (!card) throw httpError('UNKNOWN_ACTION', 400, `Ação desconhecida: ${action.type}`);
       if (!card.replayed) {
         // O turno fica no histórico: o Cockpit é o diário da campanha (FR-4).

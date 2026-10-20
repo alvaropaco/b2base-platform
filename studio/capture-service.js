@@ -10,10 +10,14 @@
  *     `Prospect.captureEmbedding` — ampliar recall e FALHAR PARA BAIXO
  *     (lexical-only) quando o gateway de embeddings não responde.
  *
- * Quando a base própria não atende (< mínimo configurável), fallback MCP CNPJ
- * (`mcp-cnpj.js`, NFR7): 1 `searchCompanies` por captura, dedupe por CNPJ
- * (P2002 → findFirst), prospects criados com proveniência 'mcp-cnpj' e dados
- * SÓ do MCP — zero invenção de contato (FR9/NFR3).
+ * META do dono (2026-10-20): a busca na base própria NÃO encerra a captura —
+ * quando os matches próprios não cobrem o `limit` pedido, o gap vira lead
+ * NOVO via fallback MCP CNPJ (`mcp-cnpj.js`, NFR7): 1 `searchCompanies` por
+ * captura, dedupe por CNPJ (P2002 → findFirst), prospects criados com
+ * proveniência 'mcp-cnpj' e dados SÓ do MCP — zero invenção de contato
+ * (FR9/NFR3). MCP fora/erro entrega o lote próprio e EXPLICA o gap aberto.
+ * (O antigo `minOwn`=20 encerrava cedo numa base grande e a base nunca
+ * crescia — 3 pedidos seguidos do dono sem aumento.)
  *
  * D2: disponível para trial e premium — este serviço NUNCA chama
  * requirePremiumOrg; o teto é o limite diário conservador por org.
@@ -28,7 +32,6 @@ const { createEmbeddingsClient, toPgVector } = require('./ai/embeddings');
 const mcpCnpj = require('../mcp-cnpj');
 
 const CAPTURE_SOURCES = ['base-propria', 'mcp-cnpj'];
-const DEFAULT_MIN_OWN = 20; // base própria abaixo disso → fallback MCP
 const DEFAULT_DAILY_LIMIT = 200; // conservador por org/dia (D2)
 const DEFAULT_LIMIT = 25; // candidatos devolvidos por captura
 const LEXICAL_SCAN_CAP = 400; // teto de leitura da fase lexical (rank em memória)
@@ -113,7 +116,6 @@ function createCaptureService(prisma, deps = {}) {
   const vectorSearch = deps.vectorSearch || defaultVectorSearch(prisma);
   const mcp = deps.mcp || mcpCnpj;
 
-  const minOwn = () => envInt('STUDIO_CAPTURE_MIN_OWN', DEFAULT_MIN_OWN);
   const dailyLimit = () => envInt('STUDIO_CAPTURE_DAILY_LIMIT', DEFAULT_DAILY_LIMIT);
 
   /**
@@ -294,7 +296,14 @@ function createCaptureService(prisma, deps = {}) {
     // Fase 1 — base própria.
     const own = await searchOwnBase({ orgId, query: q, filters, limit: max });
 
-    if (own.ids.length >= minOwn()) {
+    // META do dono (2026-10-20 — 3× pedido: "aumente a base para N" e a base
+    // NUNCA crescia): devolver só matches ANTIGOS da própria base não cumpre
+    // a meta — o fallback de captação externa roda SEMPRE que os matches
+    // próprios não cobrem o `limit` pedido, e o gap vira lead NOVO via CNPJ
+    // público. O antigo `minOwn` (20) escondia o fallback para sempre numa
+    // base grande: 25 matches ≥ 20 → "25 da sua base" e fim, zero lead novo.
+    const gap = max - own.ids.length;
+    if (gap <= 0) {
       // Lote marcado CLAMPEADO ao room restante — marcar mais do que o limite
       // permite seria contabilidade fictícia. `captureSource: null`: NUNCA
       // sobrescrever proveniência (auditoria LGPD).
@@ -311,6 +320,8 @@ function createCaptureService(prisma, deps = {}) {
         baseOwnCount: own.ids.length,
         mcpCount: 0,
         duplicates: 0,
+        requestedLimit: max,
+        gapCount: 0,
         prospectIds: own.ids,
         // RE-CONTAGEM: o card reporta o número que a contagem DB reproduz
         // EXATAMENTE (marcação de lead antigo não muda createdAt — não soma).
@@ -321,107 +332,83 @@ function createCaptureService(prisma, deps = {}) {
       };
     }
 
-    // Fase 2 — fallback MCP (a base não atende o mínimo próprio).
-    if (!mcp.isMcpConfigured()) {
-      // QA 2026-10-02 (diretiva do dono: "sempre que eu falar pra adicionar
-      // leads, ela faz"): MCP indisponível NUNCA esconde o que a base própria
-      // JÁ encontrou — entrega o lote próprio com proveniência. Recusa ZERO
-      // (explicável, sem inventar leads — FR9) só quando não achou NADA.
-      if (own.ids.length > 0) {
-        const markedIds = own.ids.slice(0, room);
-        await prisma.prospect.updateMany({
-          where: { orgId, id: { in: markedIds }, captureSource: null },
-          data: { captureSource: 'base-propria' },
-        });
-        return {
-          status: 'captured',
+    // Fase 2 — preencher o GAP com lead NOVO via MCP CNPJ. Erro do MCP NUNCA
+    // esconde o que a base própria já entregou (diretiva QA 2026-10-02): o
+    // lote próprio segue, a causa vai explicada no resultado.
+    let mcpResult = null;
+    let mcpError = null;
+    if (mcp.isMcpConfigured()) {
+      try {
+        mcpResult = await createFromMcp({
+          orgId,
           query: q,
-          source: 'base-propria',
-          mode: own.mode,
-          baseOwnCount: own.ids.length,
-          mcpCount: 0,
-          duplicates: 0,
-          prospectIds: own.ids,
-          mcpAvailable: false,
-          capturedToday: await prisma.prospect.count({
-            where: { orgId, captureSource: { in: CAPTURE_SOURCES }, createdAt: { gte: startOfDay } },
-          }),
-          dailyLimit: cap,
-        };
+          filters,
+          limit: Math.min(max, 50),
+          // O gap é a meta: MCP não cria mais lead novo do que falta para o
+          // `limit` pedido — o room DIÁRIO segue como teto independente.
+          room: Math.min(room, gap),
+        });
+      } catch (err) {
+        mcpError = String(err.message || err);
+        console.error('[capture] MCP CNPJ falhou — entregando o lote próprio e explicando:', err.stack || mcpError);
       }
-      return {
-        status: 'refused',
-        reason: 'mcp_not_configured',
-        mode: own.mode,
-        ownCount: own.ids.length,
-        minOwn: minOwn(),
-      };
     }
-    try {
-      const mcpResult = await createFromMcp({
-        orgId,
-        query: q,
-        filters,
-        limit: Math.min(max, 50),
-        room,
+    const createdIds = mcpResult ? mcpResult.created.map((p) => p.id) : [];
+    // Lote da base própria também entra com proveniência — clamped ao que
+    // sobrou do room e SEM sobrescrever proveniência existente.
+    if (own.ids.length > 0) {
+      const ownRoom = Math.max(0, room - createdIds.length);
+      await prisma.prospect.updateMany({
+        where: { orgId, id: { in: own.ids.slice(0, ownRoom) }, captureSource: null },
+        data: { captureSource: 'base-propria' },
       });
-      // Lote da base própria também entra com proveniência — clamped ao que
-      // sobrou do room e SEM sobrescrever proveniência existente.
-      if (own.ids.length > 0) {
-        const ownRoom = Math.max(0, room - mcpResult.created.length);
-        await prisma.prospect.updateMany({
-          where: { orgId, id: { in: own.ids.slice(0, ownRoom) }, captureSource: null },
-          data: { captureSource: 'base-propria' },
-        });
-      }
-      const createdIds = mcpResult.created.map((p) => p.id);
-      const prospectIds = [...own.ids, ...createdIds];
-      if (prospectIds.length === 0) {
-        // MCP consultado mas só trouxe duplicados/inválidos/nada — zero-framing.
-        return {
-          status: 'no_results',
-          query: q,
-          mode: own.mode,
-          baseOwnCount: 0,
-          mcpCount: 0,
-          duplicates: mcpResult.duplicates,
-          skippedInvalid: mcpResult.skipped,
-          capturedToday,
-          dailyLimit: cap,
-        };
-      }
+    }
+    const prospectIds = [...own.ids, ...createdIds];
+    if (prospectIds.length === 0) {
+      // NADA na base casou E nada virou lead: recusa quando a busca externa
+      // nem rodou (desconectada) ou falhou; no_results quando ela RODOU e só
+      // trouxe duplicado/inválido (zero-framing — nunca "capturados" vazio).
+      if (mcpError) return { status: 'refused', reason: 'mcp_error', mode: own.mode, ownCount: 0, requestedLimit: max, message: mcpError };
+      if (!mcp.isMcpConfigured()) return { status: 'refused', reason: 'mcp_not_configured', mode: own.mode, ownCount: 0, requestedLimit: max };
       return {
-        status: 'captured',
+        status: 'no_results',
         query: q,
-        source: 'mcp-cnpj',
         mode: own.mode,
-        baseOwnCount: own.ids.length,
-        mcpCount: createdIds.length,
-        duplicates: mcpResult.duplicates,
-        skippedInvalid: mcpResult.skipped,
-        prospectIds,
-        // RE-CONTAGEM: o card reporta o número que a contagem DB reproduz
-        // EXATAMENTE (leads criados agora têm createdAt de hoje — somam).
-        capturedToday: await prisma.prospect.count({
-          where: { orgId, captureSource: { in: CAPTURE_SOURCES }, createdAt: { gte: startOfDay } },
-        }),
+        baseOwnCount: 0,
+        mcpCount: 0,
+        duplicates: mcpResult ? mcpResult.duplicates : 0,
+        skippedInvalid: mcpResult ? mcpResult.skipped : 0,
+        requestedLimit: max,
+        capturedToday,
         dailyLimit: cap,
       };
-    } catch (err) {
-      // Erro do MCP: recusa explicável — NENHUM lead criado, causa logada (NFR4).
-      console.error('[capture] MCP CNPJ falhou — recusa explicável:', err.stack || String(err));
-      return {
-        status: 'refused',
-        reason: 'mcp_error',
-        mode: own.mode,
-        ownCount: own.ids.length,
-        minOwn: minOwn(),
-        message: String(err.message || err),
-      };
     }
+    return {
+      status: 'captured',
+      query: q,
+      source: createdIds.length > 0 ? 'mcp-cnpj' : 'base-propria',
+      mode: own.mode,
+      baseOwnCount: own.ids.length,
+      mcpCount: createdIds.length,
+      duplicates: mcpResult ? mcpResult.duplicates : 0,
+      skippedInvalid: mcpResult ? mcpResult.skipped : 0,
+      requestedLimit: max,
+      gapCount: gap,
+      // O card usa isto para explicar HONESTAMENTE quando o gap ficou em
+      // aberto (busca externa desconectada/falhada) em vez de fingir meta.
+      mcpAvailable: Boolean(mcp.isMcpConfigured()) && !mcpError,
+      mcpError,
+      prospectIds,
+      // RE-CONTAGEM: o card reporta o número que a contagem DB reproduz
+      // EXATAMENTE (leads criados agora têm createdAt de hoje — somam).
+      capturedToday: await prisma.prospect.count({
+        where: { orgId, captureSource: { in: CAPTURE_SOURCES }, createdAt: { gte: startOfDay } },
+      }),
+      dailyLimit: cap,
+    };
   }
 
-  return { captureLeads, searchOwnBase, createFromMcp, minOwn, dailyLimit };
+  return { captureLeads, searchOwnBase, createFromMcp, dailyLimit };
 }
 
 module.exports = {
@@ -429,7 +416,6 @@ module.exports = {
   defaultVectorSearch,
   toPgVector,
   CAPTURE_SOURCES,
-  DEFAULT_MIN_OWN,
   DEFAULT_DAILY_LIMIT,
   DEFAULT_LIMIT,
 };

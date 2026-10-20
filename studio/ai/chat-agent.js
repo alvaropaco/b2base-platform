@@ -533,6 +533,30 @@ function extractCaptureQuery(userMessage) {
 }
 
 /**
+ * META numérica do pedido de captura (2026-10-20, 3× pedido do dono sem a
+ * base crescer): "capture 8 leads de metalurgia", "aumente a base para 50" —
+ * o número É o alvo e precisa chegar ao capture-service como `limit` (o gap
+ * vira lead NOVO via CNPJ). Fallback determinístico do roteador de LLM.
+ * Padrões: número ANTES do substantivo (8 leads) ou DEPOIS de marcador de
+ * alvo (para/até/no mínimo 50). Clamp 1..100 (o serviço re-clampa).
+ */
+function extractCaptureLimit(userMessage) {
+  const msg = String(userMessage || '');
+  const patterns = [
+    /\b(\d{1,4})\s*(?:leads?|empresas?|contatos?|prospects?)\b/i,
+    /\b(?:para|até|no\s+m[ií]nimo|m[ií]nimo\s+de|cerca\s+de|uns)\s+(\d{1,4})\b/i,
+  ];
+  for (const re of patterns) {
+    const m = msg.match(re);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n) && n >= 1) return Math.min(Math.floor(n), 100);
+    }
+  }
+  return null;
+}
+
+/**
  * Roteador de CONEXÃO DE E-MAIL DE DISPARO (QA 2026-10-05: o modelo negava
  * "cadastrar e-mail pelo chat" — a capacidade existe desde a onda da
  * plataforma inteira). Injeta a action exata e o fluxo de coleta.
@@ -1076,5 +1100,6 @@ module.exports = {
   extractCreateTarget,
   leadCaptureIntent,
   extractCaptureQuery,
+  extractCaptureLimit,
   extractCaptureState,
 };

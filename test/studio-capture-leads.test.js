@@ -884,3 +884,91 @@ test('backfill: mesmo lote falhando 2× ENCERRA o passe com stuckIds (nunca thro
   const result = await runEmbeddingsBackfill(prismaStub, { maxRows: 10, embeddings });
   assert.deepEqual(result, { embedded: 0, stuckIds: ['p1', 'p2'] }, '2ª falha do mesmo lote encerra com ids');
 });
+
+// ── META do dono (2026-10-20): "aumente a base para N" tem que TRAZER novo ──
+
+test('captura: META maior que a base → o gap vira lead NOVO via CNPJ (a base cresce de verdade)', () =>
+  withEnv({}, async () => {
+    mcpCnpj._setMcpForTests({
+      isMcpConfigured: () => true,
+      searchCompanies: async () => Array.from({ length: 5 }, (_, i) => ({
+        cnpj: `9${i}.765.43${i}/0001-1${i}`,
+        legalName: `Indústria Nova ${i} LTDA`,
+        industry: 'Metalurgia',
+        city: 'São José dos Campos',
+        state: 'SP',
+        isActive: true,
+      })),
+    });
+    const { server, prisma, api } = await startServer({
+      llmImpl: llm({ type: 'capture_leads', query: 'metalurgia', state: 'SP', limit: 8 }),
+      overrides: { embedTexts: async () => null },
+    });
+    try {
+      const { body: c } = await api('POST', '/campaigns', { name: 'Meta 8', channels: ['email'] });
+      // Base JÁ tem matches antigos suficientes para o antigo minOwn=3 —
+      // era o cenário que encerrava a captura sem trazer NENHUM lead novo.
+      prisma.prospect.rows.push(
+        { id: 'a1', orgId: 'org-1', companyName: 'Metalúrgica Alfa', industry: 'Metalurgia', searchText: 'metalurgica alfa metalurgia', state: 'SP' },
+        { id: 'a2', orgId: 'org-1', companyName: 'Metalúrgica Beta', industry: 'Metalurgia', searchText: 'metalurgica beta metalurgia', state: 'SP' },
+        { id: 'a3', orgId: 'org-1', companyName: 'Metalúrgica Gama', industry: 'Metalurgia', searchText: 'metalurgica gama metalurgia', state: 'SP' }
+      );
+      const before = prisma.prospect.rows.length;
+      const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+        message: 'capture 8 leads de metalurgia em SP',
+      });
+      assert.equal(res.status, 200);
+      const card = body.data.cards.find((card) => card.type === 'capture');
+      assert.ok(card);
+      assert.equal(card.status, 'captured');
+      assert.equal(card.baseOwnCount, 3, 'matches antigos entram, mas NÃO encerram a captura');
+      assert.equal(card.mcpCount, 5, 'o gap (8−3) virou lead NOVO do CNPJ');
+      assert.equal(card.requestedLimit, 8);
+      assert.equal(card.gapCount, 5);
+      assert.ok(/via CNPJ/i.test(card.detail), 'proveniência do lote novo no card');
+      assert.ok(!/conectada/.test(card.detail), 'meta FECHADA não cita busca desconectada');
+      assert.equal(card.suggestedFilter.prospectIds.length, 8, '3 antigos + 5 novos prontos para a audiência');
+      assert.equal(prisma.prospect.rows.length, before + 5, 'a base CRESCEU — 5 prospects criados');
+      for (const p of prisma.prospect.rows) {
+        if (p.id.startsWith('a')) continue;
+        assert.equal(p.captureSource, 'mcp-cnpj', `lead novo ${p.id} com proveniência externa`);
+        assert.equal(p.status, 'prospect');
+      }
+    } finally {
+      mcpCnpj._resetMcpForTests();
+      server.close();
+    }
+  }));
+
+test('captura: meta NÃO fecha com busca externa FORA → card explica o gap em aberto (não finge meta)', () =>
+  withEnv({}, async () => {
+    mcpCnpj._setMcpForTests({ isMcpConfigured: () => false });
+    const { server, prisma, api } = await startServer({
+      llmImpl: llm({ type: 'capture_leads', query: 'metalurgia', state: 'SP', limit: 10 }),
+      overrides: { embedTexts: async () => null },
+    });
+    try {
+      const { body: c } = await api('POST', '/campaigns', { name: 'Meta aberta', channels: ['email'] });
+      prisma.prospect.rows.push(
+        { id: 'b1', orgId: 'org-1', companyName: 'Metalúrgica Delta', industry: 'Metalurgia', searchText: 'metalurgica delta metalurgia', state: 'SP' },
+        { id: 'b2', orgId: 'org-1', companyName: 'Metalúrgica Épsilon', industry: 'Metalurgia', searchText: 'metalurgica epsilon metalurgia', state: 'SP' }
+      );
+      const before = prisma.prospect.rows.length;
+      const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+        message: 'capture 10 leads de metalurgia em SP',
+      });
+      assert.equal(res.status, 200);
+      const card = body.data.cards.find((card) => card.type === 'capture');
+      assert.ok(card);
+      assert.equal(card.status, 'captured', 'o lote próprio é ENTREGUE mesmo com meta aberta');
+      assert.equal(card.baseOwnCount, 2);
+      assert.equal(card.mcpCount, 0);
+      assert.equal(card.mcpAvailable, false);
+      assert.ok(/conectada/.test(card.detail), 'card DIZ que a busca externa não está conectada');
+      assert.ok(/chegar a 10/.test(card.detail), 'card diz a meta que ficou em aberto');
+      assert.equal(prisma.prospect.rows.length, before, 'nada inventado para fechar a meta');
+    } finally {
+      mcpCnpj._resetMcpForTests();
+      server.close();
+    }
+  }));
