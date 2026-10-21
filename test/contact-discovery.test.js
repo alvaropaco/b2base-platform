@@ -8,6 +8,7 @@ const assert = require('node:assert');
 
 process.env.GOOGLE_PLACES_API_KEY = ''; // sem Places: fonte pulada (honesto)
 const discovery = require('../workers/contact-discovery');
+const searxng = require('../searxng');
 const logger = { info() {}, warn() {}, error() {}, child() { return this; } };
 
 const CNPJ = '11111111000111';
@@ -288,7 +289,7 @@ test('14) cap de bytes via STREAM: corpo >512KB corta no teto; wa.me dentro do c
   assert.ok(siteDentro.candidates.some((c) => c.tipo === 'wa_link' && c.raw === '5511987654321'), 'wa.me dentro do cap é lido');
 });
 
-test('15) teto do crawl com orçamento: até 12 páginas extras (5→12), sem repetir URL', async () => {
+test('15) teto do crawl com orçamento: até CRAWL_MAX_EXTRA_PAGES páginas extras (5→12→20), sem repetir URL', async () => {
   const fetched = [];
   const links = Array.from({ length: 20 }, (_, i) => `<a href="/pagina-${i + 1}">Pagina ${i + 1}</a>`).join('');
   const fetchImpl = async (url) => {
@@ -371,4 +372,104 @@ test('19) e-mail DETERMINÍSTICO: vence o da HOME, não o que completar primeiro
     assert.equal(r.email, 'contato@acme.com.br', 'prioridade home → /contato → /fale-conosco, INDEPENDENTE do timing');
     assert.notEqual(r.email, 'marketing@acme.com.br', 'a página que COMPLETOU primeiro não vence');
   } finally { global.fetch = orig; }
+});
+
+// ── aprofundar o crawl (2026-10-19): 2 ondas + mais fontes de e-mail ────────
+
+test('20) crawl 2 NÍVEIS: wa.me numa página linkada PELA interna (onda 2) é achado', async () => {
+  // home → /unidades (onda 1, sem contatos) → /unidade-sao-jose (onda 2,
+  // wa.me da filial). Antes da 2ª onda, esse wa.me ficava na mesa.
+  const world = stubFetch({
+    brasilapi: BRASILAPI,
+    // ORDEM IMPORTA: prefixo mais específico primeiro (o stub casa por startsWith).
+    'https://acme.com.br/unidade-sao-jose': '<html><title>Unidade São José dos Campos</title><a href="https://wa.me/5512988739001">WhatsApp da unidade</a></html>',
+    'https://acme.com.br/unidades': '<html><title>Unidades</title><a href="/unidade-sao-jose">Unidade São José</a></html>',
+    'https://acme.com.br': '<html><title>Acme</title><a href="/unidades">Unidades</a></html>',
+  });
+  try {
+    const r = await discovery.discoverLeadContact(null, makeProspect(), { signal: null, logger });
+    assert.equal(r.status, 'confirmado', 'página de profundidade 2 é crawleada');
+    assert.equal(r.whatsapp, '+5512988739001');
+    assert.ok(r.fontes[0].url.includes('/unidade-sao-jose'), `fonte é a página da 2ª onda, veio: ${r.fontes[0].url}`);
+    assert.ok(r.score >= 95, `score ${r.score} ≥ 95 (mesmo domínio oficial)`);
+  } finally { world.restore(); }
+});
+
+test('21) teto de páginas é TOTAL nas 2 ondas (onda 2 preenche o que sobrou, sem estourar)', async () => {
+  const fetched = [];
+  const wave1Links = Array.from({ length: 10 }, (_, i) => `<a href="/nivel1-${i + 1}">Pagina ${i + 1}</a>`).join('');
+  const fetchImpl = async (url) => {
+    const u = String(url);
+    fetched.push(u);
+    let html;
+    if (/\/nivel1-/.test(u)) {
+      const n = Number(String(u.split('-')[1]).replace(/\/$/, ''));
+      const deep = Array.from({ length: 5 }, (_, j) => `<a href="/nivel2-${n}-${j + 1}">Filial ${j + 1}</a>`).join('');
+      html = `<html><title>Acme</title>${deep}</html>`;
+    } else if (/\/nivel2-/.test(u)) {
+      html = '<html><title>Acme</title><p>sem contatos aqui</p></html>';
+    } else {
+      html = `<html><title>Acme</title>${wave1Links}</html>`;
+    }
+    return { ok: true, status: 200, text: async () => html };
+  };
+  const identidade = { dominio: 'acme.com.br', dominio_confirmado: true, uf: 'SP', nome_busca: 'Acme' };
+  const site = await discovery.collectFromSite(identidade, { fetchImpl, signal: null, logger, startedAt: Date.now() });
+  const extras = fetched.filter((u) => /\/nivel/.test(u));
+  const n1 = extras.filter((u) => /\/nivel1-/.test(u)).length;
+  const n2 = extras.filter((u) => /\/nivel2-/.test(u)).length;
+  // O teto de 20 é compartilhado com os 5 CRAWL_EXTRA_PATHS (crawleados na
+  // onda 1 neste cenário) → onda 2 fica com 10 nível-1 + 5 nível-2.
+  assert.ok(n2 > 0, 'onda 2 é crawleada quando há teto disponível');
+  assert.equal(n1, 10, 'todas as páginas de nível 1 são crawleadas');
+  assert.ok(extras.length <= discovery.CRAWL_MAX_EXTRA_PAGES, 'teto TOTAL respeitado');
+  assert.equal(site.pages.length, discovery.CRAWL_MAX_EXTRA_PAGES + 3, '3 fixas + teto de extras (compartilhado entre ondas)');
+  assert.equal(new Set(extras).size, extras.length, 'nenhuma página repetida entre ondas');
+});
+
+test('22) e-mail da bio do INSTAGRAM (perfil linkado pelo site) entra no emailPick', async () => {
+  const world = stubFetch({
+    brasilapi: { ...BRASILAPI, email: '' },
+    'https://acme.com.br': '<html><title>Acme</title><a href="https://www.instagram.com/acmeoficial">Instagram</a></html>',
+    'https://www.instagram.com/acmeoficial': '<html><head><meta property="og:description" content="Acme Restaurante — eventos e delivery. 📩 comercial@acme.com.br"/></head><body>login wall</body></html>',
+  });
+  try {
+    const r = await discovery.discoverLeadContact(null, makeProspect(), { signal: null, logger });
+    assert.equal(r.email, 'comercial@acme.com.br', 'bio do Instagram é fallback do e-mail (era descartada)');
+    assert.equal(r.email_fonte_tipo, 'instagram');
+    assert.ok(r.email_fonte.includes('instagram.com'), 'fonte é o perfil, com URL para proveniência');
+  } finally { world.restore(); }
+});
+
+test('22b) e-mail do SITE oficial vence o da bio do Instagram', async () => {
+  const world = stubFetch({
+    brasilapi: { ...BRASILAPI, email: '' },
+    'https://acme.com.br': '<html><title>Acme</title><a href="mailto:contato@acme.com.br">e-mail</a><a href="https://www.instagram.com/acmeoficial">Instagram</a></html>',
+    'https://www.instagram.com/acmeoficial': '<html><head><meta property="og:description" content="Acme — delivery. 📩 comercial@acme.com.br"/></head><body></body></html>',
+  });
+  try {
+    const r = await discovery.discoverLeadContact(null, makeProspect(), { signal: null, logger });
+    assert.equal(r.email, 'contato@acme.com.br', 'site oficial continua na frente da cadeia');
+    assert.equal(r.email_fonte_tipo, 'site_oficial');
+  } finally { world.restore(); }
+});
+
+test('23) e-mail no CATÁLOGO da busca web (diggy.menu) entra no emailPick com tipo busca_web', async () => {
+  const world = stubFetch({
+    brasilapi: { cnpj: CNPJ, razao_social: 'PIZZARIA DOM MARIO LTDA', nome_fantasia: 'Dom Mario', municipio: 'SANTOS', uf: 'SP', ddd_telefone_1: '', email: '' },
+    'https://dommario.com.br': '<html><title>Dom Mario</title><p>Pizzaria Dom Mario em Santos — sem e-mail no site.</p></html>',
+    'https://diggy.menu/dommario': '<html><title>Dom Mario — Cardápio e Contato</title><p>Pizzaria Dom Mario, delivery em Santos. Pedidos: contato@dommario.com.br</p></html>',
+    'https://diggy.menu': '<html><title>Diggy</title><p>plataforma de cardápios</p></html>',
+  });
+  const origSearx = searxng.searxSearch;
+  searxng.searxSearch = async () => [{ url: 'https://diggy.menu/dommario', title: 'Dom Mario — Cardápio Digital', content: 'Dom Mario pizzaria em Santos' }];
+  try {
+    const r = await discovery.discoverLeadContact(null, makeProspect({ domain: 'dommario.com.br', tradeName: 'Dom Mario', companyName: 'PIZZARIA DOM MARIO LTDA', city: 'Santos' }), { signal: null, logger });
+    assert.equal(r.email, 'contato@dommario.com.br', 'e-mail literal no catálogo da própria loja é colhido');
+    assert.equal(r.email_fonte_tipo, 'busca_web');
+    assert.equal(r.email_fonte, 'https://diggy.menu/dommario');
+  } finally {
+    searxng.searxSearch = origSearx;
+    world.restore();
+  }
 });

@@ -44,8 +44,17 @@ const SITE_CONTACT_PATHS = ['', 'contato', 'fale-conosco'];
 // aborta mais na 1ª wa.me — as internas são a principal fonte de e-mail
 // (contato@/comercial@); parar cedo é deixar resultado na mesa. Parada só
 // por orçamento/teto de páginas.
+// 2026-10-19 (aprofundar): crawl em 2 ONDAS — as páginas da 1ª onda também
+// doam links (ex.: /unidades → /unidade-sao-jose com o WhatsApp da filial;
+// /sobre → /equipe com o comercial@). Teto 12→20 páginas TOTAIS repartido
+// entre as ondas; orçamento/concorrência/cap de bytes intocados — quem corta
+// continua sendo o relógio, não o site.
 const CRAWL_EXTRA_PATHS = ['atendimento', 'orcamento', 'sac', 'unidades', 'contate'];
-const CRAWL_MAX_EXTRA_PAGES = 12;
+const CRAWL_MAX_EXTRA_PAGES = 20;
+// Profundidade máxima: 1 = links das páginas fixas (era o limite), 2 = uma
+// ondinha a mais a partir das internas. BFS em ondas, nunca em profundidade
+// infinita — perímetro segue sendo o MESMO domínio.
+const CRAWL_MAX_DEPTH = 2;
 const SITE_CRAWL_CONCURRENCY = 3;
 // Cap de bytes por página (~512 KB — lição OOM ee3f2ce0): página gigante é
 // cortada e o INÍCIO é parseado (nav/header é onde vivem os contatos).
@@ -434,38 +443,31 @@ async function collectFromSite(identidade, { fetchImpl = fetch, signal, logger, 
   const processPage = async (url, { timeoutMs } = {}) => {
     const ord = seq++;
     const html = await fetchPageText(url, { fetchImpl, signal, timeoutMs });
-    if (!html) return;
+    if (!html) return null;
     out.pages.push({ url, html });
     captureMeta(html, url, ord);
     harvest(html, url, ord);
+    return { url, html };
   };
 
   // Caminhos fixos em paralelo (concorrência ≤3): 3 páginas no tempo de ~1.
   await mapLimit(SITE_CONTACT_PATHS, SITE_CRAWL_CONCURRENCY, (path) => processPage(`${base}/${path}`));
 
-  // ── Crawl interno: SEMPRE roda (orçamento permitting) — WhatsApp E e-mail ──
+  // ── Crawl interno em ONDAS: SEMPRE roda (orçamento permitting) ──────────────
   // As internas são a principal fonte de contato@; parar na 1ª wa.me deixava
-  // o e-mail na mesa (matrix "WA na home, e-mail na interna").
+  // o e-mail na mesa (matrix "WA na home, e-mail na interna"). 2026-10-19:
+  // 2 ondas — páginas da onda 1 doam os links delas (profundidade 2), teto
+  // de páginas TOTAIS e orçamento compartilhados entre as ondas.
   if (out.pages.length) {
     const visited = new Set(out.pages.map((p) => normUrl(p.url)).filter(Boolean));
-    const discovered = [];
-    for (const p of out.pages) discovered.push(...extractInternalLinks(p.html, p.url, dominio));
-    discovered.sort((a, b) => b.prio - a.prio);
-    const queue = [];
     const seen = new Set(visited);
-    for (const l of discovered) {
-      if (seen.has(l.url)) continue;
-      seen.add(l.url);
-      queue.push(l.url);
-    }
-    // Caminhos brasileiros comuns que nem sempre estão no menu.
-    for (const extra of CRAWL_EXTRA_PATHS) {
-      const url = normUrl(`${base}/${extra}`);
-      if (url && !seen.has(url)) {
-        seen.add(url);
-        queue.push(url);
+    const enqueueNew = (links, into) => {
+      for (const l of links) {
+        if (seen.has(l.url)) continue;
+        seen.add(l.url);
+        into.push(l.url);
       }
-    }
+    };
     const crawlStartedAt = Date.now();
     // Orçamento do ESTÁGIO site relativo ao INÍCIO do lead (quando o caller
     // informa startedAt): o crawl não pode comer o tempo de Places/CNPJ/
@@ -474,16 +476,52 @@ async function collectFromSite(identidade, { fetchImpl = fetch, signal, logger, 
     const stageStartedAt = Number.isFinite(startedAt) ? startedAt : crawlStartedAt;
     const stageDeadline = stageStartedAt + (Number.isFinite(startedAt) ? SITE_STAGE_BUDGET_MS : CRAWL_BUDGET_MS);
     let crawled = 0;
-    // Concorrência ≤3 com checagem de orçamento antes de CADA fetch: páginas
-    // em voo terminam pelo próprio timeout (≤8s) — o teto de 16s/lead vale.
-    await mapLimit(queue.slice(0, CRAWL_MAX_EXTRA_PAGES), SITE_CRAWL_CONCURRENCY, async (url) => {
-      if (signal && signal.aborted) return;
-      if (Date.now() > stageDeadline) return;
-      crawled += 1;
-      await processPage(url, { timeoutMs: CRAWL_PAGE_TIMEOUT_MS });
-      // SEM aborto na 1ª wa.me: segue para colher e-mails nas demais páginas
-      // (parada só por orçamento/teto de páginas).
-    });
+    // Uma onda: fatia do teto que SOBROU (compartilhado entre ondas),
+    // concorrência ≤3, checagem de orçamento antes de CADA fetch — páginas
+    // em voo terminam pelo próprio timeout (≤8s). Determinística: a lista de
+    // páginas buscadas vem na ordem da fila, não na ordem de conclusão.
+    const crawlWave = async (queue) => {
+      const slice = queue.slice(0, Math.max(0, CRAWL_MAX_EXTRA_PAGES - crawled));
+      const fetchedPages = new Array(slice.length);
+      await mapLimit(slice, SITE_CRAWL_CONCURRENCY, async (url, i) => {
+        if (signal && signal.aborted) return;
+        if (Date.now() > stageDeadline) return;
+        crawled += 1;
+        fetchedPages[i] = await processPage(url, { timeoutMs: CRAWL_PAGE_TIMEOUT_MS });
+        // SEM aborto na 1ª wa.me: segue para colher e-mails nas demais páginas
+        // (parada só por orçamento/teto de páginas).
+      });
+      return fetchedPages.filter(Boolean);
+    };
+
+    // ONDA 1 — links das páginas fixas (home/contato/fale-conosco) +
+    // caminhos brasileiros comuns que nem sempre estão no menu.
+    const wave1 = [];
+    for (const p of out.pages) wave1.push(...extractInternalLinks(p.html, p.url, dominio));
+    wave1.sort((a, b) => b.prio - a.prio);
+    const queue1 = [];
+    enqueueNew(wave1, queue1);
+    for (const extra of CRAWL_EXTRA_PATHS) {
+      const url = normUrl(`${base}/${extra}`);
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        queue1.push(url);
+      }
+    }
+    const wave1Pages = await crawlWave(queue1);
+
+    // ONDA 2 (profundidade 2): as internas da onda 1 doam os links delas —
+    // /unidades → /unidade-sao-jose com o WhatsApp da filial, /sobre →
+    // /equipe com o comercial@. Doação determinística (ordem da fila da
+    // onda 1; prio dentro de cada página) e MESMO teto/orçamento.
+    if (wave1Pages.length) {
+      const wave2 = [];
+      for (const p of wave1Pages) wave2.push(...extractInternalLinks(p.html, p.url, dominio));
+      wave2.sort((a, b) => b.prio - a.prio);
+      const queue2 = [];
+      enqueueNew(wave2, queue2);
+      await crawlWave(queue2);
+    }
     logger && logger.info && logger.info(`crawl interno ${dominio}: ${crawled} página(s) extra(s)`);
   }
 
@@ -553,7 +591,7 @@ function collectFromCnpj(identidade) {
 
 /** d) Instagram — SÓ se o perfil vier linkado pelo site oficial. */
 async function collectFromInstagram(identidade, site, { fetchImpl = fetch, signal, logger } = {}) {
-  const out = { candidates: [] };
+  const out = { candidates: [], emails: [] };
   if (!site.instagramHandle) return out;
   const url = `https://www.instagram.com/${site.instagramHandle}/`;
   const html = await fetchPageText(url, { fetchImpl, signal, timeoutMs: 10000 });
@@ -568,8 +606,12 @@ async function collectFromInstagram(identidade, site, { fetchImpl = fetch, signa
       raw, tipo: 'instagram', url, trecho: `bio do Instagram (@${site.instagramHandle}): ${m[0]}`, host: 'instagram.com',
     });
   }
+  // E-mail da bio NÃO é mais descartado (2026-10-19): muita loja publica o
+  // comercial@ SÓ no Instagram. Segue literal na fonte, com a URL do perfil
+  // — o emailPick do orquestrador usa como fallback depois do site oficial.
   for (const email of emails) {
     out.candidates.push({ raw: null, email, tipo: 'instagram', url, trecho: `bio do Instagram (@${site.instagramHandle})`, host: 'instagram.com' });
+    out.emails.push({ email, url });
   }
   if (!out.candidates.length) logger && logger.info && logger.info('instagram: perfil sem telefone/e-mail público na bio');
   return out;
@@ -650,7 +692,7 @@ async function platformWaBlacklist(url, { signal, logger } = {}) {
  * wa.me (o caller decide) e com orçamento de estágio próprio.
  */
 async function collectFromWebSearch(identidade, { fetchImpl = fetch, signal, logger, startedAt = null } = {}) {
-  const out = { candidates: [], searchReturnedResults: false };
+  const out = { candidates: [], emails: [], searchReturnedResults: false };
   const searchName = identidade.nome_busca;
   if (!searchName || String(searchName).length < 3) return out;
   const tokens = nameTokens({ companyName: identidade.razao_social || searchName });
@@ -729,6 +771,16 @@ async function collectFromWebSearch(identidade, { fetchImpl = fetch, signal, log
     if (tokens.filter((t) => titleHay.includes(t)).length < Math.min(2, tokens.length)) continue;
     let host = '';
     try { host = new URL(url).hostname.replace(/^www\./, ''); } catch (_e) { /* url externa */ }
+    // E-mail literal na página da PRÓPRIA loja (2026-10-19): passou no gate
+    // de título, é sobre a empresa — contato@/comercial@ ali entra como
+    // fallback do emailPick quando o site oficial não tem e-mail. E-mail do
+    // PRÓPRIO host (rodapé da plataforma, ex.: contato@diggy.menu) fica fora
+    // — é o contato da plataforma, não da loja (mesmo espírito do GuiaPJ).
+    for (const e of extractEmailsFromHtml(html, {})) {
+      const eDom = e.split('@')[1] || '';
+      if (host && eDom && (eDom === host || eDom.endsWith(`.${host}`))) continue;
+      if (!out.emails.some((x) => x.email === e)) out.emails.push({ email: e, url });
+    }
     // Número que a PLATAFORMA usa nela mesma (home do host) não é da empresa.
     // EXCEÇÃO — site da PRÓPRIA empresa: host contém o primeiro token do nome
     // ('gustto.com.br' para D GUSTTO) e o wa.me da home É dela.
@@ -871,7 +923,8 @@ function scoreCandidates(normalized, identidade) {
  * `whatsapp` só vem preenchido quando status = 'confirmado';
  * `wa_candidates` (ordenado por score, dedupe por E.164, 1º = `whatsapp`) é
  * o insumo da cadeia do gate Twilio no executor; `email_fonte_tipo` é
- * 'site_oficial' | 'receita' (sourceType do fact `contact.email`).
+ * 'site_oficial' | 'instagram' | 'busca_web' | 'receita' (sourceType do fact
+ * `contact.email`).
  */
 async function discoverLeadContact(prisma, prospect, deps = {}) {
   const { fetchImpl = fetch, signal, logger } = deps;
@@ -885,7 +938,7 @@ async function discoverLeadContact(prisma, prospect, deps = {}) {
   // site — snippets de busca, catálogo digital da loja e agregadores de link
   // (caso MB), com os gates de identidade do pipeline.
   const webSearch = site.candidates.some((c) => c.tipo === 'wa_link')
-    ? { candidates: [], searchReturnedResults: true }
+    ? { candidates: [], emails: [], searchReturnedResults: true }
     : await collectFromWebSearch(identidade, { fetchImpl, signal, logger, startedAt: leadStartedAt });
 
   const allCandidates = [
@@ -912,15 +965,21 @@ async function discoverLeadContact(prisma, prospect, deps = {}) {
     }
   }
 
-  // E-mail corporativo: literal na fonte (site oficial / CNPJ), mesma regra
-  // de ouro — com a URL da fonte para exibição clicável (e proveniência do
-  // fact `contact.email` no executor).
-  const emailPick = site.emails[0] || (identidade.email_cnpj
-    ? { email: identidade.email_cnpj, url: identidade.cnpj ? `https://brasilapi.com.br/api/cnpj/v1/${identidade.cnpj}` : null }
-    : null);
+  // E-mail corporativo: literal na fonte, mesma regra de ouro — com a URL da
+  // fonte para exibição clicável (e proveniência do fact `contact.email` no
+  // executor). Cadeia do emailPick (2026-10-19): site oficial → bio do
+  // Instagram linkado → catálogo da busca web (gates de identidade próprios)
+  // → e-mail da Receita. Instagram/busca web eram coletados e DESCARTADOS.
+  const emailPick =
+    (site.emails[0] && { email: site.emails[0].email, url: site.emails[0].url, tipo: 'site_oficial' })
+    || (instagram.emails[0] && { email: instagram.emails[0].email, url: instagram.emails[0].url, tipo: 'instagram' })
+    || (webSearch.emails[0] && { email: webSearch.emails[0].email, url: webSearch.emails[0].url, tipo: 'busca_web' })
+    || (identidade.email_cnpj
+      ? { email: identidade.email_cnpj, url: identidade.cnpj ? `https://brasilapi.com.br/api/cnpj/v1/${identidade.cnpj}` : null, tipo: 'receita' }
+      : null);
   const email = emailPick ? emailPick.email : null;
   const email_fonte = emailPick ? emailPick.url : null;
-  const email_fonte_tipo = emailPick ? (site.emails[0] && site.emails[0].email === emailPick.email ? 'site_oficial' : 'receita') : null;
+  const email_fonte_tipo = emailPick ? emailPick.tipo : null;
 
   // Cadeia do gate Twilio (spec ampliar-crawl-sites-whatsapp-email): lista
   // ordenada por score dos candidatos CONFIRMADOS (wa_link confirmado 95 >
@@ -1003,4 +1062,5 @@ module.exports = {
   MAX_PAGE_BYTES,
   WA_CANDIDATES_MAX,
   CRAWL_MAX_EXTRA_PAGES,
+  CRAWL_MAX_DEPTH,
 };

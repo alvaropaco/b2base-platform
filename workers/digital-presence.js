@@ -236,10 +236,14 @@ const executors = {
         })) : []),
         // Proveniência do e-mail (spec): fact com evidence (sourceType/url) —
         // o manager propaga facts genericamente para o enrichmentSummary.v2.
+        // Confiança pela fonte (2026-10-19): site oficial 0.8 > bio do
+        // Instagram linkado / catálogo da busca web 0.7 > Receita 0.6.
         ...(r.email ? [{
           attribute: 'contact.email',
           value: r.email,
-          confidence: r.email_fonte_tipo === 'receita' ? 0.6 : 0.8,
+          confidence: r.email_fonte_tipo === 'receita' ? 0.6
+            : (r.email_fonte_tipo === 'instagram' || r.email_fonte_tipo === 'busca_web') ? 0.7
+              : 0.8,
           evidence: { sourceType: r.email_fonte_tipo || 'site_oficial', url: r.email_fonte || null, retrievedAt: agora },
         }] : []),
       ],

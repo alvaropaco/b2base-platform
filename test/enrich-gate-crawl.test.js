@@ -136,6 +136,36 @@ test('fact contact.email: e-mail só na BrasilAPI (Receita) → confidence 0.6 e
   } finally { world.restore(); }
 });
 
+test('fact contact.email: e-mail só na BIO do Instagram → confidence 0.7 e sourceType instagram', async () => {
+  const orig = global.fetch;
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (u.startsWith('https://brasilapi.com.br/')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ cnpj: '11111111000111', razao_social: 'ACME RESTAURANTE LTDA', municipio: 'GUARULHOS', uf: 'SP', ddd_telefone_1: '', email: '' }),
+      };
+    }
+    if (u.startsWith('https://acme.com.br')) {
+      return { ok: true, status: 200, text: async () => '<html><title>Acme</title><a href="https://www.instagram.com/acmeoficial">Instagram</a></html>' };
+    }
+    if (u.startsWith('https://www.instagram.com/acmeoficial')) {
+      return { ok: true, status: 200, text: async () => '<html><head><meta property="og:description" content="Acme Restaurante — eventos e delivery. 📩 contato@acme.com.br"/></head><body></body></html>' };
+    }
+    return { ok: false, status: 404, text: async () => '' };
+  };
+  try {
+    const out = await digitalPresence.executors['company.digital_presence'](DP_TASK, { signal: null, logger: LOGGER, deps: {} });
+    const emailFact = out.facts.find((f) => f.attribute === 'contact.email');
+    assert.ok(emailFact, 'fact contact.email emitido com fonte Instagram');
+    assert.strictEqual(emailFact.value, 'contato@acme.com.br');
+    assert.strictEqual(emailFact.confidence, 0.7, 'bio do Instagram vale 0.7 (entre site 0.8 e Receita 0.6)');
+    assert.strictEqual(emailFact.evidence.sourceType, 'instagram');
+    assert.ok(emailFact.evidence.url.includes('instagram.com'));
+    assert.strictEqual(out.data.digital_presence.corporate_email, 'contato@acme.com.br');
+  } finally { global.fetch = orig; }
+});
+
 test('gate Twilio SEM credenciais/registry → fail-open (promove como hoje)', async () => {
   const world = stubFetch();
   try {
