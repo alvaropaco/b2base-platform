@@ -2,6 +2,11 @@
 
 Never removes: the current snapshot, the previous snapshot needed for the next
 diff, snapshots used by an active backfill, or artifacts of a FAILED run.
+
+The protection set guards *canonical snapshots* only. Raw artifacts
+(``downloads``, ``extracted``, ``diffs``, ``rejected``) are pinned by nothing
+more than their own retention window: once the canonical parquet for a version
+exists, the extracted CSVs and source archives are pure duplication.
 """
 
 from __future__ import annotations
@@ -125,11 +130,15 @@ class RetentionService:
         report = CleanupReport(protected=protected)
         root = self.settings.data_root
 
+        # Only the canonical snapshot tree is protected from age-based pruning.
+        # Raw artifacts follow their own retention window exclusively: the
+        # snapshot protection set is about diff/backfill needs, which operate on
+        # canonical parquet, never on extracted CSVs or source archives.
         report.removed_downloads = self._sweep(
-            root / "downloads", _months_ago(self.settings.keep_raw_downloads_months), protected
+            root / "downloads", _months_ago(self.settings.keep_raw_downloads_months), set()
         )
         report.removed_extracted = self._sweep(
-            root / "extracted", _months_ago(self.settings.keep_extracted_files_months), protected
+            root / "extracted", _months_ago(self.settings.keep_extracted_files_months), set()
         )
         report.removed_snapshots = self._sweep(
             root / "snapshots",
@@ -137,10 +146,10 @@ class RetentionService:
             protected,
         )
         report.removed_diffs = self._sweep(
-            root / "diffs", _months_ago(self.settings.keep_diffs_months), protected
+            root / "diffs", _months_ago(self.settings.keep_diffs_months), set()
         )
         report.removed_rejected = self._sweep(
-            root / "rejected", _months_ago(self.settings.keep_rejected_rows_months), protected
+            root / "rejected", _months_ago(self.settings.keep_rejected_rows_months), set()
         )
 
         if not self.dry_run:
