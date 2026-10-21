@@ -215,6 +215,36 @@ test('generate_image: gera por IA, salva no storage e devolve link PÚBLICO /med
   }
 });
 
+test('generate_image: SEM APP_URL a origem do pedido monta o link (não morre no card "sem URL pública")', async () => {
+  delete process.env.APP_URL;
+  const world = await startServer({
+    fetchImpl: async (u, opts = {}) => {
+      if (u.includes('/v1/images/generations')) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ b64_json: PNG.toString('base64') }] }) };
+      }
+      throw new Error('fetch inesperado: ' + u);
+    },
+  });
+  const { api, base } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Banner sem APP_URL', channels: ['email'] });
+    const out = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'generate_image',
+      params: { prompt: 'banner de dobradeira industrial' },
+    });
+    assert.equal(out.res.status, 200);
+    const card = out.body.data.card;
+    assert.equal(card.type, 'image_generated');
+    assert.ok(!/sem URL pública/i.test(card.label), 'NÃO degrada para o card sem URL');
+    assert.ok(card.imageUrl.startsWith(`${base}/media/`), 'link público cai no host do pedido (fallback do APP_URL)');
+    assert.match(card.imageUrl, /\/media\/[a-f0-9]{32}\.png$/, 'formato do link com hash');
+  } finally {
+    process.env.APP_URL = 'https://www.b2base.net';
+    world.restore();
+    world.close();
+  }
+});
+
 test('generate_image: attachToEmail insere o banner NO TOPO do e-mail', async () => {
   const world = await startServer({
     fetchImpl: async (u) => {
