@@ -99,6 +99,9 @@ export interface ReputationBalance {
   floor: number;
   ceiling: number;
   rampStage: number;
+  /** Ilimitado (2026-10-21): teto diário removido — só o saldo único limita. */
+  capsUnlimited: boolean;
+  /** Quando capsUnlimited, caps contém MAX_SAFE_INTEGER — NUNCA renderizar direto. */
   caps: { email: number; whatsapp: number };
   usedToday: { email: number; whatsapp: number };
   domainAuthStatus: 'unverified' | 'verified' | 'prewarmed' | 'failed';

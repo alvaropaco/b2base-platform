@@ -378,8 +378,8 @@ async function currentExtras(prisma, campaign) {
           teto: wallet.ceiling,
           saldoBaixo: wallet.lowBalance,
         },
-        email: { usoHoje: wallet.usedToday.email, tetoDiario: wallet.caps.email, dominio: wallet.domainAuthStatus },
-        whatsapp: { usoHoje: wallet.usedToday.whatsapp, tetoDiario: wallet.caps.whatsapp },
+        email: { usoHoje: wallet.usedToday.email, tetoDiario: wallet.capsUnlimited ? null : wallet.caps.email, ilimitado: wallet.capsUnlimited, dominio: wallet.domainAuthStatus },
+        whatsapp: { usoHoje: wallet.usedToday.whatsapp, tetoDiario: wallet.capsUnlimited ? null : wallet.caps.whatsapp, ilimitado: wallet.capsUnlimited },
       };
     } else {
       extras.canais = { saldoUnico: null };
@@ -3094,15 +3094,16 @@ async function buildBalanceCard(prisma, orgId) {
   if (!wallet) {
     return { type: 'balance', label: 'Saldo de envios', detail: 'Nenhuma carteira de envios ainda — conecte o e-mail ou o WhatsApp que eu crio a sua com o saldo inicial.' };
   }
-  // Saldo ÚNICO (2026-10-08): e-mail e WhatsApp dividem o mesmo pool; cada
-  // canal tem um teto diário de ritmo e requisitos próprios (DNS/pareamento).
+  // Saldo Único (2026-10-08): e-mail e WhatsApp dividem o mesmo pool. Teto
+  // diário por canal REMOVIDO (2026-10-21, diretriz do dono: disparos
+  // ilimitados — só o saldo limita; STUDIO_REP_DAILY_CAP reativa um teto fixo).
   const lines = [];
   lines.push(
     `**Saldo único**: ${wallet.balance} envio(s) no pool compartilhado e-mail + WhatsApp (teto da carteira: ${wallet.ceiling})${wallet.lowBalance ? ' — **⚠ saldo acabando, compre mais no painel de saldo**' : ''}`
   );
   const dnsOk = ['verified', 'prewarmed'].includes(wallet.domainAuthStatus);
-  lines.push(`**E-mail** — ${wallet.usedToday.email}/${wallet.caps.email} hoje${dnsOk ? ' · domínio ✓ autenticado' : ' · ⚠ domínio SEM SPF/DKIM verificados (bloqueia o canal até autenticar)'}`);
-  lines.push(`**WhatsApp** — ${wallet.usedToday.whatsapp}/${wallet.caps.whatsapp} hoje · requer a sessão pareada (QR)`);
+  lines.push(`**E-mail** — ${wallet.usedToday.email}${wallet.capsUnlimited ? ' hoje · disparos ilimitados (só o saldo limita)' : `/${wallet.caps.email} hoje`}${dnsOk ? ' · domínio ✓ autenticado' : ' · ⚠ domínio SEM SPF/DKIM verificados (bloqueia o canal até autenticar)'}`);
+  lines.push(`**WhatsApp** — ${wallet.usedToday.whatsapp}${wallet.capsUnlimited ? ' hoje · ilimitado' : `/${wallet.caps.whatsapp} hoje`} · requer a sessão pareada (QR)`);
   const steps = [];
   if (!dnsOk) steps.push('Autenticar o domínio: publicar SPF, DKIM e DMARC no DNS (me peça "listar os registros DNS" que eu mostro cada um)');
   steps.push(`Comprar mais saldo: painel de saldo do Studio (Stripe) — a reposição diária também libera mais${replenishAt ? ` às ${replenishAt}` : ''}; enquanto isso, você já pode criar e aprovar campanhas`);

@@ -108,7 +108,9 @@ test('gate: e-mail com domínio não verificado → DOMINIO_NAO_VERIFICADO (eleg
   assert.equal(wa.allow, true, 'DNS é elegibilidade do E-MAIL, não do pool');
 });
 
-test('gate: cap diário do canal cheio → LIMITE_DIARIO_CANAL com saldo sobrando', async () => {
+test('gate: cap diário do canal cheio (STUDIO_REP_DAILY_CAP) → LIMITE_DIARIO_CANAL com saldo sobrando', async () => {
+  const savedCap = process.env.STUDIO_REP_DAILY_CAP;
+  process.env.STUDIO_REP_DAILY_CAP = '30';
   const prisma = seed(createFakePrisma(), { account: { balance: 100, whatsappSentToday: 30, usageDay: '2026-09-23' } });
   prisma.whatsappAccount.rows.push({ id: 'wacc-1', orgId: 'org-1', status: 'CONNECTED' });
   const verdict = await reputationGate.evaluate(prisma, { orgId: 'org-1', channel: 'whatsapp', units: 5, now: IN_WINDOW });
@@ -119,6 +121,8 @@ test('gate: cap diário do canal cheio → LIMITE_DIARIO_CANAL com saldo sobrand
   assert.equal(consume.granted, 0);
   assert.equal(consume.blocked.code, 'LIMITE_DIARIO_CANAL');
   assert.equal(prisma.studioReputationAccount.rows[0].balance, 100, 'nada debitado (cap ≠ saldo)');
+  if (savedCap === undefined) delete process.env.STUDIO_REP_DAILY_CAP;
+  else process.env.STUDIO_REP_DAILY_CAP = savedCap;
 });
 
 test('pausa global 1-clique: estado persistido, retomada exige ação explícita (FR-19)', async () => {

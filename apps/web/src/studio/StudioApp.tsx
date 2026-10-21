@@ -441,7 +441,9 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                   aria-controls="cockpit-saldo"
                   title={
                     channelHealthy(wallet)
-                      ? `${wallet.available} envios livres no pool · e-mail ${wallet.usedToday.email}/${wallet.caps.email} · WhatsApp ${wallet.usedToday.whatsapp}/${wallet.caps.whatsapp} hoje`
+                      ? wallet.capsUnlimited
+                        ? `${wallet.available} envios livres no pool · e-mail ${wallet.usedToday.email} · WhatsApp ${wallet.usedToday.whatsapp} hoje (ilimitados — só o saldo limita)`
+                        : `${wallet.available} envios livres no pool · e-mail ${wallet.usedToday.email}/${wallet.caps.email} · WhatsApp ${wallet.usedToday.whatsapp}/${wallet.caps.whatsapp} hoje`
                       : `Abaixo do piso (${wallet.available}/${wallet.floor}) — envio bloqueado`
                   }
                   className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
@@ -701,7 +703,9 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                     <div className="cockpit-glass rounded-xl p-2.5">
                       <p className="font-semibold text-foreground">E-mail · hoje</p>
                       <p className="text-muted-foreground">
-                        {wallet.usedToday.email}/{wallet.caps.email} envios ·{' '}
+                        {wallet.capsUnlimited
+                          ? `${wallet.usedToday.email} envios · ilimitado`
+                          : `${wallet.usedToday.email}/${wallet.caps.email} envios`} ·{' '}
                         {['verified', 'prewarmed'].includes(wallet.domainAuthStatus) ? (
                           <span className="text-emerald-700">domínio ✓</span>
                         ) : (
@@ -712,7 +716,9 @@ export function StudioApp({ userName, onExit }: StudioAppProps) {
                     <div className="cockpit-glass rounded-xl p-2.5">
                       <p className="font-semibold text-foreground">WhatsApp · hoje</p>
                       <p className="text-muted-foreground">
-                        {wallet.usedToday.whatsapp}/{wallet.caps.whatsapp} envios · consuma do mesmo pool
+                        {wallet.capsUnlimited
+                          ? `${wallet.usedToday.whatsapp} envios · ilimitado`
+                          : `${wallet.usedToday.whatsapp}/${wallet.caps.whatsapp} envios`} · consuma do mesmo pool
                       </p>
                     </div>
                   </div>

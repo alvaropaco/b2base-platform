@@ -11,7 +11,7 @@
  *    qualquer canal debita o mesmo pool.
  *  - Tetos DIÁRIOS por canal continuam como camada de ritmo (proteção de
  *    reputação): emailSentToday/whatsappSentToday contam o dia e o cap vem
- *    do estágio de rampa (CHANNEL_CAP_RAMPS). Saldo comprado NÃO compra
+ *    de STUDIO_REP_DAILY_CAP (ilimitado por padrão desde 2026-10-21). Saldo comprado NÃO compra
  *    ritmo no dia 1 — o estágio sobe 1x/dia no cron.
  *  - Elegibilidade do e-mail (DNS verificado) é GATE (reputation-gate), não
  *    matemática de saldo.
@@ -50,12 +50,36 @@ const WALLET_POLICY = {
   rampStages: [100, 200, 400, 800],
 };
 
-// Tetos DIÁRIOS por canal por estágio de rampa (WhatsApp conservador — FR-18).
-// Avançam JUNTOS com o estágio da carteira (1 estágio/dia no cron).
-const CHANNEL_CAP_RAMPS = {
-  email: [Number(process.env.STUDIO_REP_EMAIL_START || 100), 200, 400, 800],
-  whatsapp: [Number(process.env.STUDIO_REP_WA_START || 30), 50, 80],
-};
+// Teto DIÁRIO por canal (2026-10-21, diretriz do dono: DISPAROS ILIMITADOS —
+// o envio é limitado só pelo SALDO ÚNICO do pool). STUDIO_REP_DAILY_CAP com
+// número > 0 reativa um teto fixo (mesmo valor para e-mail e WhatsApp) para
+// o operador que quiser proteger a reputação do domínio/número; 0, negativo
+// ou ausente = ilimitado. A antiga rampa por estágio (100→800) virou morte:
+// era ela que devolvia "cobriu 44 de 88 (100/100 hoje) — o restante volta
+// amanhã" com saldo de sobra no pool.
+function dailyCapOverride() {
+  const v = Number(process.env.STUDIO_REP_DAILY_CAP);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+}
+
+/** Teto diário do canal no estágio de rampa atual (rampStage mantido p/ assinatura). */
+function capFor(channel, _rampStage) {
+  if (!SEND_CHANNELS.includes(channel)) {
+    const err = new Error(`Canal de disparo não suportado: ${channel}`);
+    err.code = 'CANAL_NAO_SUPORTADO';
+    err.status = 400;
+    throw err;
+  }
+  const fixed = dailyCapOverride();
+  // MAX_SAFE_INTEGER: aritmética de headroom/grant segue finita e o cap nunca
+  // é o eixo limitante — sem Infinity vazando em JSON/ledger.
+  return fixed > 0 ? fixed : Number.MAX_SAFE_INTEGER;
+}
+
+/** Teto diário é ILIMITADO neste ambiente? (UI/copys mostram "ilimitado".) */
+function capsUnlimited() {
+  return dailyCapOverride() <= 0;
+}
 
 // % do teto que dispara o aviso de "saldo acabando" (pop-up do Studio).
 const LOW_BALANCE_PCT = Math.min(100, Math.max(1, Number(process.env.STUDIO_LOW_BALANCE_PCT || 25)));
@@ -66,17 +90,23 @@ function channelPolicy() {
   return WALLET_POLICY;
 }
 
-/** Teto diário do canal no estágio de rampa atual. */
-function capFor(channel, rampStage) {
-  const ramp = CHANNEL_CAP_RAMPS[channel];
-  if (!ramp) {
+/** Teto diário do canal no estágio de rampa atual (rampStage mantido p/ assinatura). */
+function capFor(channel, _rampStage) {
+  if (!SEND_CHANNELS.includes(channel)) {
     const err = new Error(`Canal de disparo não suportado: ${channel}`);
     err.code = 'CANAL_NAO_SUPORTADO';
     err.status = 400;
     throw err;
   }
-  const idx = Math.min(Math.max(0, Number(rampStage) || 0), ramp.length - 1);
-  return ramp[idx];
+  const fixed = dailyCapOverride();
+  // MAX_SAFE_INTEGER: aritmética de headroom/grant segue finita e o cap nunca
+  // é o eixo limitante — sem Infinity vazando em JSON/ledger.
+  return fixed > 0 ? fixed : Number.MAX_SAFE_INTEGER;
+}
+
+/** Teto diário é ILIMITADO neste ambiente? (UI/copys mostram "ilimitado".) */
+function capsUnlimited() {
+  return dailyCapOverride() <= 0;
 }
 
 /** Contador do canal já usado hoje (0 quando o dia mudou — reset lazy). */
@@ -206,6 +236,9 @@ async function getWallet(prisma, orgId, now = new Date()) {
       email: capFor('email', stage),
       whatsapp: capFor('whatsapp', stage),
     },
+    // Diretriz do dono (2026-10-21): ilimitado por padrão — UI/copys mostram
+    // "ilimitado" em vez de "x/9007199254740991".
+    capsUnlimited: capsUnlimited(),
     usedToday: {
       email: usedToday(effective, 'email', now),
       whatsapp: usedToday(effective, 'whatsapp', now),
@@ -603,9 +636,9 @@ module.exports = {
   SEND_CHANNELS,
   UNIFIED_CHANNEL,
   WALLET_POLICY,
-  CHANNEL_CAP_RAMPS,
   LOW_BALANCE_PCT,
   capFor,
+  capsUnlimited,
   usedToday,
   channelPolicy,
   ensureAccount,

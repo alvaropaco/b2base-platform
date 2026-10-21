@@ -86,7 +86,9 @@ test('saldo nunca negativo: débito maior que o disponível concede a fatia e ex
   assert.equal(prisma.studioReputationAccount.rows[0].balance, 10, 'para no floor — nunca negativo');
 });
 
-test('CAP DIÁRIO: WhatsApp (30/dia no estágio 0) bloqueia com saldo sobrando — LIMITE_DIARIO_CANAL', async () => {
+test('CAP DIÁRIO (STUDIO_REP_DAILY_CAP): WhatsApp com cap fixo 30 bloqueia com saldo sobrando — LIMITE_DIARIO_CANAL', async () => {
+  const savedCap = process.env.STUDIO_REP_DAILY_CAP;
+  process.env.STUDIO_REP_DAILY_CAP = '30';
   const prisma = createFakePrisma();
   walletAccount(prisma, { balance: 100 });
 
@@ -102,10 +104,14 @@ test('CAP DIÁRIO: WhatsApp (30/dia no estágio 0) bloqueia com saldo sobrando �
   assert.equal(over.capUsed, 30);
   // O mesmo pedido pelo E-MAIL passa — o cap é POR CANAL, o pool é um:
   const email = await reputation.debit(prisma, { orgId: 'org-1', channel: 'email', amount: 5, refId: 'b-3' });
-  assert.equal(email.ok, true);
+  assert.equal(email.ok, true, 'contador é POR CANAL — e-mail zera o dia dele');
+  if (savedCap === undefined) delete process.env.STUDIO_REP_DAILY_CAP;
+  else process.env.STUDIO_REP_DAILY_CAP = savedCap;
 });
 
-test('CAP DIÁRIO: partial grant na borda do cap (pedido 40, restam 30)', async () => {
+test('CAP DIÁRIO (STUDIO_REP_DAILY_CAP): partial grant na borda do cap (pedido 40, restam 30)', async () => {
+  const savedCap = process.env.STUDIO_REP_DAILY_CAP;
+  process.env.STUDIO_REP_DAILY_CAP = '30';
   const prisma = createFakePrisma();
   walletAccount(prisma, { balance: 100 });
 
@@ -116,6 +122,8 @@ test('CAP DIÁRIO: partial grant na borda do cap (pedido 40, restam 30)', async 
   assert.equal(result.limitBinding, 'cap');
   assert.equal(prisma.studioReputationAccount.rows[0].balance, 70);
   assert.equal(prisma.studioReputationAccount.rows[0].whatsappSentToday, 30);
+  if (savedCap === undefined) delete process.env.STUDIO_REP_DAILY_CAP;
+  else process.env.STUDIO_REP_DAILY_CAP = savedCap;
 });
 
 test('reset lazy do contador: dia novo, cap novo (usageDay)', async () => {
@@ -319,14 +327,23 @@ test('reposição diária da carteira: idempotente por dia e respeita o teto (FR
   assert.equal(prisma.studioReputationAccount.rows[0].balance, 100, 'teto respeitado');
 });
 
-test('CAPS por canal são diferentes e o WhatsApp é conservador (FR-18 no mundo unificado)', () => {
-  const emailMax = reputation.CHANNEL_CAP_RAMPS.email.at(-1);
-  const waMax = reputation.CHANNEL_CAP_RAMPS.whatsapp.at(-1);
-  assert.ok(waMax < emailMax, 'WhatsApp nunca tem cap maior que e-mail');
-  assert.equal(reputation.capFor('whatsapp', 0), 30);
-  assert.equal(reputation.capFor('whatsapp', 2), 80);
-  assert.equal(reputation.capFor('email', 3), 800);
-  assert.throws(() => reputation.capFor('sms', 0), /não suportado/i);
+test('CAPS: ILIMITADOS por padrão (diretriz do dono 2026-10-21); STUDIO_REP_DAILY_CAP fixa um teto único', () => {
+  const savedCap = process.env.STUDIO_REP_DAILY_CAP;
+  delete process.env.STUDIO_REP_DAILY_CAP;
+  try {
+    assert.equal(reputation.capsUnlimited(), true, 'padrão do produto: disparos ilimitados');
+    assert.equal(reputation.capFor('whatsapp', 0), Number.MAX_SAFE_INTEGER, 'cap nunca é o eixo limitante');
+    assert.equal(reputation.capFor('email', 3), Number.MAX_SAFE_INTEGER);
+    assert.throws(() => reputation.capFor('sms', 0), /não suportado/i);
+
+    process.env.STUDIO_REP_DAILY_CAP = '500';
+    assert.equal(reputation.capsUnlimited(), false, 'operador reativou o teto');
+    assert.equal(reputation.capFor('email', 0), 500, 'teto fixo vale para os DOIS canais');
+    assert.equal(reputation.capFor('whatsapp', 2), 500);
+  } finally {
+    if (savedCap === undefined) delete process.env.STUDIO_REP_DAILY_CAP;
+    else process.env.STUDIO_REP_DAILY_CAP = savedCap;
+  }
 });
 
 test('penalize: rejeição/bloqueio WhatsApp drena o POOL com evento de bloqueio (FR-18/FR-14)', async () => {
@@ -342,17 +359,16 @@ test('penalize: rejeição/bloqueio WhatsApp drena o POOL com evento de bloqueio
   assert.equal(again.penalized, 0, 'mesma ocorrência não pune 2×');
 });
 
-test('promoteRamp: sobe estágio → teto da carteira E caps dos dois canais crescem (nunca desce)', async () => {
+test('promoteRamp: sobe estágio → teto da CARTEIRA cresce (caps ficam ilimitados — 2026-10-21)', async () => {
   const prisma = createFakePrisma();
   walletAccount(prisma);
 
   await reputation.promoteRamp(prisma, 'org-1');
   let row = prisma.studioReputationAccount.rows[0];
   assert.equal(row.rampStage, 1);
-  assert.equal(row.ceiling, 200);
+  assert.equal(row.ceiling, 200, 'o teto da REPOSIÇÃO diária segue a rampa');
   let wallet = await reputation.getWallet(prisma, 'org-1');
-  assert.equal(wallet.caps.email, 200);
-  assert.equal(wallet.caps.whatsapp, 50);
+  assert.equal(wallet.capsUnlimited, true, 'caps de disparo NÃO acompanham mais o estágio');
 
   await reputation.promoteRamp(prisma, 'org-1');
   await reputation.promoteRamp(prisma, 'org-1');
@@ -360,7 +376,8 @@ test('promoteRamp: sobe estágio → teto da carteira E caps dos dois canais cre
   row = prisma.studioReputationAccount.rows[0];
   assert.equal(row.rampStage, 3, 'estágio máximo');
   wallet = await reputation.getWallet(prisma, 'org-1');
-  assert.equal(wallet.caps.whatsapp, 80, 'cap do WA para no último estágio da rampa dele');
+  assert.equal(wallet.ceiling, 800, 'teto da carteira para no último estágio');
+  assert.equal(wallet.capsUnlimited, true);
 });
 
 test('ensureAccount: org nova começa com a carteira conservadora (FR-17) e é idempotente', async () => {
