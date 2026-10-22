@@ -613,3 +613,94 @@ test('confirm_material: imagem em needs_manual por visão fora TENTA DE NOVO qua
     world.close();
   }
 });
+
+// ── formato/vertical (2026-10-22): o pedido de formato chega ao gateway ─────
+
+test('generate_image: pedido VERTICAL usa 1024x1536 (o formato pedidо chega ao gateway)', async () => {
+  const bodies = [];
+  const world = await startServer({
+    fetchImpl: async (u, opts = {}) => {
+      if (u.includes('/v1/images/generations')) {
+        bodies.push(JSON.parse(opts.body));
+        return { ok: true, status: 200, json: async () => ({ data: [{ b64_json: PNG.toString('base64') }] }) };
+      }
+      throw new Error('fetch inesperado: ' + u);
+    },
+  });
+  const { api } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Banner vertical', channels: ['email'] });
+    const out = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'generate_image',
+      params: { prompt: 'Arte publicitária VERTICAL corporativa, azul-marinho e branco, evento no topo' },
+    });
+    assert.equal(out.res.status, 200);
+    assert.equal(out.body.data.card.type, 'image_generated');
+    assert.equal(bodies.length, 1, 'uma única chamada ao gateway');
+    assert.equal(bodies[0].size, '1024x1536', 'vertical pedida → 1024x1536');
+    assert.ok(!/formato VERTICAL/.test(out.body.data.card.detail), 'sem nota de degradação quando o formato é atendido');
+  } finally {
+    world.restore();
+    world.close();
+  }
+});
+
+test('generate_image: motor RECUSA o formato → cai no quadrado com nota honesta (não falha a geração)', async () => {
+  const world = await startServer({
+    fetchImpl: async (u, opts = {}) => {
+      if (u.includes('/v1/images/generations')) {
+        const body = JSON.parse(opts.body);
+        if (body.size !== '1024x1024') {
+          return { ok: false, status: 400, json: async () => ({ error: { message: 'size not supported by this model' } }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ data: [{ b64_json: PNG.toString('base64') }] }) };
+      }
+      throw new Error('fetch inesperado: ' + u);
+    },
+  });
+  const { api } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Vertical recusada', channels: ['email'] });
+    const out = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'generate_image',
+      params: { prompt: 'Flyer vertical para stories, azul e branco' },
+    });
+    assert.equal(out.res.status, 200);
+    const card = out.body.data.card;
+    assert.equal(card.type, 'image_generated');
+    assert.ok(/formato VERTICAL/.test(card.detail), 'nota honesta de degradação no card');
+    assert.ok(card.imageUrl, 'imagem gerada no fallback quadrado');
+  } finally {
+    world.restore();
+    world.close();
+  }
+});
+
+test('generate_image: prompt longo (>1000 chars) NÃO é cortado antes do gateway', async () => {
+  const bodies = [];
+  const world = await startServer({
+    fetchImpl: async (u, opts = {}) => {
+      if (u.includes('/v1/images/generations')) {
+        bodies.push(JSON.parse(opts.body));
+        return { ok: true, status: 200, json: async () => ({ data: [{ b64_json: PNG.toString('base64') }] }) };
+      }
+      throw new Error('fetch inesperado: ' + u);
+    },
+  });
+  const { api } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Prompt longo', channels: ['email'] });
+    const promptLongo = 'Arte azul-marinho com layout detalhado. '.repeat(40) + 'FIM DA ESPECIFICAÇÃO';
+    assert.ok(promptLongo.length > 1000, 'prompt de teste passa do teto antigo');
+    const out = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'generate_image',
+      params: { prompt: promptLongo },
+    });
+    assert.equal(out.res.status, 200);
+    assert.equal(bodies[0].prompt.length, Math.min(promptLongo.length, 4000), 'gateway recebe até 4000 chars');
+    assert.ok(bodies[0].prompt.endsWith('FIM DA ESPECIFICAÇÃO'), 'especificação completa chega ao motor');
+  } finally {
+    world.restore();
+    world.close();
+  }
+});

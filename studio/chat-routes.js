@@ -831,16 +831,50 @@ function registerChatRoutes(router, context) {
             detail: 'Para gerar imagens por IA o servidor precisa de STUDIO_IMAGE_MODEL (gateway de imagem). Enquanto isso: me passe o LINK de uma imagem pronta que eu insiro no e-mail, ou suba a arte como anexo.',
           };
         }
-        let generated;
-        try {
-          generated = await imageGen.generateImage({ prompt: String(action.prompt).slice(0, 1000) });
-        } catch (err) {
+        // FORMATO que o usuário pediu (2026-10-22: "arte VERTICAL" saía
+        // 1024x1024 — o handler nunca passava `size` ao gateway). Palavras do
+        // próprio prompt escolhem a orientação; se o motor recusar o formato
+        // (modelo só faz quadrado), cai no quadrado com nota honesta no card.
+        const promptText = String(action.prompt || '');
+        const wantsVertical = /vertical|retrato|9:16|stories?|flyer vertical/i.test(promptText);
+        const wantsHorizontal = /horizontal|panor[aâ]mic[ao]|16:9|capa larga/i.test(promptText);
+        const preferredSizes = wantsVertical
+          ? ['1024x1536', '1024x1792']
+          : wantsHorizontal
+            ? ['1536x1024', '1792x1024']
+            : ['1024x1024'];
+        let generated = null;
+        let usedSize = null;
+        let lastError = null;
+        for (const size of [...new Set([...preferredSizes, '1024x1024'])]) {
+          try {
+            // 4000 chars: teto dos motores de imagem (gpt-image-1/dall-e-3) —
+            // o slice antigo de 1000 cortava a especificação do usuário.
+            generated = await imageGen.generateImage({ prompt: promptText.slice(0, 4000), size });
+            usedSize = size;
+            break;
+          } catch (err) {
+            lastError = err;
+            // Só re-tenta quando a RECUSA é do formato (400/404/422); timeout
+            // e gateway fora não merecem 3 tentativas de 2min.
+            if (!/^IMAGE_GEN_HTTP_(400|404|422)$/.test(String(err.code || ''))) break;
+          }
+        }
+        if (!generated) {
+          const err = lastError || new Error('gateway respondeu sem imagem');
           return {
             type: 'image_generated',
             label: 'Não consegui gerar a imagem agora',
             detail: `O motor de imagem falhou (${err.code || 'erro'}). Tenta de novo em instantes ou me passe o LINK de uma imagem pronta que eu insiro no e-mail.`,
           };
         }
+        // Nota de degradação honesta: pediu vertical/horizontal e o motor só
+        // entregou o quadrado padrão.
+        const formatNote = wantsVertical && usedSize === '1024x1024'
+          ? '\n⚠ O motor não aceitou o formato VERTICAL agora — a arte saiu no quadrado padrão; tenta de novo em instantes ou me pede para ajustar o layout.'
+          : wantsHorizontal && usedSize === '1024x1024'
+            ? '\n⚠ O motor não aceitou o formato HORIZONTAL agora — a arte saiu no quadrado padrão.'
+            : '';
         const storage = require('./storage');
         const ext = generated.mimeType === 'image/jpeg' ? 'jpg' : 'png';
         const fileName = storage.saveGenerated(generated.buffer, ext);
@@ -871,11 +905,13 @@ function registerChatRoutes(router, context) {
             inserted = true;
           }
         }
+        const promptResumo = promptText.length > 300 ? `${promptText.slice(0, 300)}…` : promptText;
         return {
           type: 'image_generated',
           label: inserted ? 'Imagem gerada e inserida no topo do e-mail' : 'Imagem gerada',
           detail:
-            `Prompt: "${String(action.prompt).slice(0, 160)}"` +
+            `Prompt: "${promptResumo}"` +
+            `${formatNote}` +
             `\nLink público da imagem: ${imageUrl}` +
             (inserted ? '\nEla está NO TOPO do e-mail como banner.' : '\nMe peça para inserir no e-mail que eu coloco no topo (ou use no editor de e-mail).'),
           imageUrl,

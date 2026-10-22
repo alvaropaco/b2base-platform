@@ -49,8 +49,11 @@ async function generateImage({ prompt, size = '1024x1024', timeoutMs = 120000, f
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
+      // Code carrega o STATUS (2026-10-22): o handler do chat usa IMAGE_GEN_
+      // HTTP_400/404/422 para saber que a recusa é do FORMATO (size) e cair
+      // no quadrado — 'IMAGE_GEN_UNAVAILABLE' genérico escondia isso.
       const err = new Error(`IMAGE_GEN_HTTP_${res.status}: ${(body && body.error && body.error.message) || 'gateway indisponível'}`);
-      err.code = 'IMAGE_GEN_UNAVAILABLE';
+      err.code = `IMAGE_GEN_HTTP_${res.status}`;
       throw err;
     }
     const item = body && body.data && body.data[0];
