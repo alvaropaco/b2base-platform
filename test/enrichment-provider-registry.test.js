@@ -67,6 +67,23 @@ test('US4 concorrência: acquire além do limite recusa; release devolve o slot'
   assert.ok(t4.ok);
 });
 
+test('US4 concorrência: lease vencido é reclamado (auto-cura após morte do worker)', async () => {
+  const { registry, clock } = makeRegistry();
+  const leaked = await registry.acquire('brasilapi.cnpj');
+  const held = await registry.acquire('brasilapi.cnpj');
+  assert.ok(leaked.ok && held.ok);
+  // concorrência 2 esgotada e o worker do `leaked` "morre" sem release().
+  const blocked = await registry.acquire('brasilapi.cnpj');
+  assert.strictEqual(blocked.ok, false);
+  assert.strictEqual(blocked.reason, 'CONCURRENCY');
+
+  clock.advance(120001); // > leaseMs (120s)
+  const recovered = await registry.acquire('brasilapi.cnpj');
+  assert.ok(recovered.ok, 'lease vencido deve ser purgado no acquire');
+  assert.strictEqual((await registry.getState('brasilapi.cnpj')).concurrency.used, 1);
+  await recovered.ticket.release();
+});
+
 // ── Circuit breaker: HEALTHY → DEGRADED → OPEN → HALF-OPEN → recuperação ───
 
 test('US4 circuit breaker: erros consecutivos abrem o circuito e pausam o despacho', async () => {
