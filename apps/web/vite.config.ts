@@ -17,6 +17,14 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
+      // Imagens geradas pelo Studio (/media/:hash) são servidas pelo backend —
+      // o card do chat usa caminho RELATIVO (mesma origem), então o dev
+      // precisa do proxy assim como o /api.
+      '/media': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        secure: false,
+      },
     },
   },
 });

@@ -824,6 +824,8 @@ function registerChatRoutes(router, context) {
         // (/media/:hash) para os clientes de e-mail dos leads. Sem
         // STUDIO_IMAGE_MODEL configurado → card honesto com o caminho.
         const imageGen = require('./ai/image-gen');
+        const promptText = String(action.prompt || '');
+        const promptResumo = promptText.length > 300 ? `${promptText.slice(0, 300)}…` : promptText;
         if (!imageGen.isConfigured()) {
           return {
             type: 'image_generated',
@@ -835,7 +837,6 @@ function registerChatRoutes(router, context) {
         // 1024x1024 — o handler nunca passava `size` ao gateway). Palavras do
         // próprio prompt escolhem a orientação; se o motor recusar o formato
         // (modelo só faz quadrado), cai no quadrado com nota honesta no card.
-        const promptText = String(action.prompt || '');
         const wantsVertical = /vertical|retrato|9:16|stories?|flyer vertical/i.test(promptText);
         const wantsHorizontal = /horizontal|panor[aâ]mic[ao]|16:9|capa larga/i.test(promptText);
         const preferredSizes = wantsVertical
@@ -862,10 +863,15 @@ function registerChatRoutes(router, context) {
         }
         if (!generated) {
           const err = lastError || new Error('gateway respondeu sem imagem');
+          // retryable + prompt: o frontend oferece o chip "tentar de novo" —
+          // gesto EXPLÍCITO do dono (nova mensagem no chat); o card NUNCA
+          // re-tenta geração paga sozinho e não inventa imageUrl.
           return {
             type: 'image_generated',
             label: 'Não consegui gerar a imagem agora',
             detail: `O motor de imagem falhou (${err.code || 'erro'}). Tenta de novo em instantes ou me passe o LINK de uma imagem pronta que eu insiro no e-mail.`,
+            retryable: true,
+            prompt: promptResumo,
           };
         }
         // Nota de degradação honesta: pediu vertical/horizontal e o motor só
@@ -878,43 +884,50 @@ function registerChatRoutes(router, context) {
         const storage = require('./storage');
         const ext = generated.mimeType === 'image/jpeg' ? 'jpg' : 'png';
         const fileName = storage.saveGenerated(generated.buffer, ext);
+        // imagePath RELATIVO é o canônico para o CHAT (2026-10-26): mesma
+        // origem do app, sobrevive a troca de APP_URL e serve no histórico.
+        // imageUrl ABSOLUTO existe para o E-MAIL — cliente de e-mail do lead
+        // precisa da origem completa no src do banner.
+        const imagePath = `/media/${fileName}`;
         // Fallback do base (2026-10-19): APP_URL ausente no servidor NÃO mata
         // mais a imagem gerada — a origem do próprio pedido monta o link
-        // (mesmo padrão de cockpit-routes/server-prod). Só sem req (fora de
-        // rota) o card honesto volta.
+        // (mesmo padrão de cockpit-routes/server-prod).
         const base = publicBaseUrl(req);
-        if (!base) {
-          return {
-            type: 'image_generated',
-            label: 'Imagem gerada, mas sem URL pública',
-            detail: 'Sem APP_URL nem origem de requisição para montar o link público — a imagem foi gerada e salva. Configure APP_URL no servidor e me peça de novo.',
-          };
-        }
-        const imageUrl = `${base}/media/${fileName}`;
+        const imageUrl = base ? `${base}${imagePath}` : null;
         let inserted = false;
+        let emailNote = '';
         if (action.attachToEmail) {
-          const rows = await prisma.studioContent.findMany({
-            where: { campaignId: campaign.id, kind: 'base', stepIndex: 1, channel: 'email' },
-          });
-          if (rows.length > 0) {
-            const contents = rows.map((row) => ({
-              id: row.id,
-              emailDoc: { blocks: [{ type: 'image', src: imageUrl, alt: String(action.prompt).slice(0, 200) }, ...((row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [])] },
-            }));
-            await campaignService.flow.updateContents(prisma, { campaign, contents, userId });
-            inserted = true;
+          if (!imageUrl) {
+            // Sem origem o src do e-mail ficaria relativo e QUEBRARIA no
+            // cliente do lead — não insere (nada de e-mail com imagem morta);
+            // a imagem continua visível no chat via imagePath.
+            emailNote =
+              '\n⚠ A imagem está pronta aqui no chat, mas sem APP_URL/origem eu NÃO insiro no e-mail (o cliente de e-mail precisa do link completo). Configure APP_URL e me peça de novo.';
+          } else {
+            const rows = await prisma.studioContent.findMany({
+              where: { campaignId: campaign.id, kind: 'base', stepIndex: 1, channel: 'email' },
+            });
+            if (rows.length > 0) {
+              const contents = rows.map((row) => ({
+                id: row.id,
+                emailDoc: { blocks: [{ type: 'image', src: imageUrl, alt: promptText.slice(0, 200) }, ...((row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [])] },
+              }));
+              await campaignService.flow.updateContents(prisma, { campaign, contents, userId });
+              inserted = true;
+            }
           }
         }
-        const promptResumo = promptText.length > 300 ? `${promptText.slice(0, 300)}…` : promptText;
         return {
           type: 'image_generated',
           label: inserted ? 'Imagem gerada e inserida no topo do e-mail' : 'Imagem gerada',
           detail:
             `Prompt: "${promptResumo}"` +
             `${formatNote}` +
-            `\nLink público da imagem: ${imageUrl}` +
-            (inserted ? '\nEla está NO TOPO do e-mail como banner.' : '\nMe peça para inserir no e-mail que eu coloco no topo (ou use no editor de e-mail).'),
-          imageUrl,
+            (inserted
+              ? '\nEla está NO TOPO do e-mail como banner.'
+              : emailNote || (action.attachToEmail ? '\nAinda não há e-mail nesta campanha — gere o conteúdo que eu insiro o banner no topo.' : '\nMe peça para inserir no e-mail que eu coloco no topo (ou use no editor de e-mail).')),
+          imagePath,
+          imageUrl: imageUrl || undefined,
           insertedIntoEmail: inserted,
         };
       }

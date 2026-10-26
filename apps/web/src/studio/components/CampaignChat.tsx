@@ -58,6 +58,17 @@ export interface ChatCard {
   /** leads_export: colunas do PDF e total de leads exportados. */
   columns?: string[];
   total?: number;
+  /** Imagem gerada (generate_image): caminho RELATIVO canônico do app. */
+  imagePath?: string;
+  /** Imagem gerada: URL ABSOLUTA (cards antigos e uso no e-mail). */
+  imageUrl?: string;
+  /** Suporte a múltiplas imagens num mesmo card (futuro): lista estruturada. */
+  images?: Array<{ url?: string; alt?: string } | string>;
+  insertedIntoEmail?: boolean;
+  /** Falha de geração: o card oferece retry EXPLÍCITO (nova mensagem). */
+  retryable?: boolean;
+  /** Resumo do prompt da imagem gerada/falha (alt e retry). */
+  prompt?: string;
 }
 
 /** Chip-ação derivada do card de 0-match (FR6): aplicar o filtro sugerido. */
@@ -180,12 +191,114 @@ export async function downloadExportPdf(href: string, fileName: string): Promise
   URL.revokeObjectURL(url);
 }
 
+/**
+ * Imagem gerada (2026-10-26): URLs de EXIBIÇÃO do card image_generated — o
+ * resultado estruturado da ferramenta manda (nunca parse do texto da IA).
+ * Preferência ao caminho RELATIVO (/media/:hash — mesma origem, sobrevive a
+ * troca de APP_URL); cards antigos no histórico trazem só a URL absoluta.
+ * Cards de falha NUNCA têm URL — nada de falso sucesso.
+ */
+export function imageCardUrls(card: ChatCard): string[] {
+  if (card.type !== 'image_generated') return [];
+  const explicit = Array.isArray(card.images) ? card.images : [];
+  const urls = explicit
+    .map((img) => (typeof img === 'string' ? img : img && img.url))
+    .filter((u): u is string => Boolean(u));
+  if (urls.length === 0 && card.imagePath) urls.push(card.imagePath);
+  if (urls.length === 0 && card.imageUrl) urls.push(card.imageUrl);
+  return urls;
+}
+
+/**
+ * Retry de geração FALHA: só existe quando o backend marcou retryable —
+ * e vira mensagem NOVA do usuário (gesto explícito; nunca geração paga
+ * automática).
+ */
+export function imageGenRetryMessage(card: ChatCard): string | null {
+  if (card.type !== 'image_generated' || !card.retryable) return null;
+  const prompt = String(card.prompt || '').trim();
+  return prompt ? `Tente gerar a imagem de novo: "${prompt}"` : 'Tente gerar a imagem de novo.';
+}
+
+/**
+ * Cards ANTIGOS no histórico trazem "Link público da imagem: <url>" no
+ * detail — com a prévia renderizada isso é ruído. A linha sai só do RENDER
+ * (o histórico gravado nunca é reescrito).
+ */
+export function stripLegacyImageLink(detail: string): string {
+  return String(detail || '')
+    .split('\n')
+    .filter((line) => !/^\s*Link público da imagem:/i.test(line))
+    .join('\n');
+}
+
+/** Nome de arquivo seguro para o download a partir da URL da imagem. */
+export function imageDownloadName(src: string): string {
+  const base = String(src || '').split('?')[0].split('/').pop() || '';
+  return /^[\w.-]+\.(png|jpe?g)$/i.test(base) ? base : 'imagem.png';
+}
+
 interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   text: string;
   cards: ChatCard[];
   createdAt: string;
+}
+
+/**
+ * Prévia da imagem GERADA dentro do thread (2026-10-26): carrega com
+ * skeleton, preserva a proporção (h-auto, sem corte) e degrada honesta se o
+ * arquivo não carregar. "Tentar de novo" aqui é RECARREGAR a MESMA URL
+ * (cache-buster) — nunca dispara nova geração paga. Carregamento EAGER:
+ * com o <img> escondido no skeleton, `loading="lazy"` nunca cruza o
+ * viewport e o onLoad não dispara (bug da prévia eterna).
+ */
+function GeneratedImage({ src, alt, onZoom }: { src: string; alt: string; onZoom: () => void }) {
+  const [state, setState] = useState<'loading' | 'loaded' | 'error'>('loading');
+  const [attempt, setAttempt] = useState(0);
+  const url = attempt > 0 ? `${src}${src.includes('?') ? '&' : '?'}r=${attempt}` : src;
+  if (state === 'error') {
+    return (
+      <div className="rounded-xl border border-rose-300 bg-rose-50 p-3">
+        <p className="leading-relaxed text-rose-900">
+          A imagem foi gerada, mas a prévia não carregou — o arquivo pode ter ficado indisponível nesta origem.
+        </p>
+        <button
+          type="button"
+          onClick={() => {
+            setState('loading');
+            setAttempt((a) => a + 1);
+          }}
+          className="mt-2 rounded-full border border-rose-300 bg-white px-3 py-1.5 text-[11px] font-medium text-rose-800 transition-colors hover:bg-rose-100"
+        >
+          Tentar carregar de novo
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="relative overflow-hidden rounded-xl border border-[#160211]/10 bg-white/70">
+      {state === 'loading' && (
+        <div className="flex h-40 items-center justify-center gap-2 text-xs text-muted-foreground">
+          <span className="cockpit-typing flex items-center gap-1" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </span>
+          Carregando prévia…
+        </div>
+      )}
+      <img
+        src={url}
+        alt={alt}
+        onLoad={() => setState('loaded')}
+        onError={() => setState('error')}
+        onClick={onZoom}
+        className={`h-auto w-full cursor-zoom-in ${state === 'loading' ? 'hidden' : ''}`}
+      />
+    </div>
+  );
 }
 
 interface PendingTurn {
@@ -272,6 +385,9 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
   // Download da planilha de leads (export_leads): anexo em curso + erro.
   const [exportBusyId, setExportBusyId] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  // Zoom da imagem gerada (2026-10-26): { src, alt } em tela cheia —
+  // ampliar, abrir em nova aba e baixar.
+  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
@@ -294,6 +410,16 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, sending, certificate]);
+
+  // Lightbox da imagem gerada: ESC fecha (acessibilidade de diálogo modal).
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightbox(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightbox]);
 
   // Rail clicável (bug 3 do dono): rola até o card da etapa clicada e o
   // destaca; sem card no thread, pré-preenche a pergunta no campo de input.
@@ -553,6 +679,53 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
               ))}
             </div>
           )}
+        </div>
+      );
+    }
+    // IMAGEM GERADA (2026-10-26): o resultado da ferramenta manda — o card
+    // traz imagePath/imageUrl estruturados e a prévia nasce DENTRO do thread
+    // (clique amplia; abrir/baixar ficam no zoom). Falha de geração ou
+    // ambiente sem motor ganham estilo de erro/atenção com caminho claro —
+    // nunca um "Imagem gerada" sem arquivo por trás.
+    if (card.type === 'image_generated') {
+      const urls = imageCardUrls(card);
+      const retryMessage = imageGenRetryMessage(card);
+      if (urls.length === 0) {
+        const failed = Boolean(retryMessage);
+        return (
+          <div
+            key={i}
+            data-card-type={card.type}
+            className={`rounded-xl border p-3 text-xs ${failed ? 'border-rose-300 bg-rose-50' : 'border-amber-300 bg-amber-50'}`}
+          >
+            <p className="font-semibold text-foreground">{card.label}</p>
+            {card.detail && <p className="mt-0.5 whitespace-pre-wrap leading-relaxed text-foreground/80">{card.detail}</p>}
+            {retryMessage && (
+              <button
+                type="button"
+                disabled={sending}
+                onClick={() => void send(retryMessage)}
+                className="mt-2 rounded-full bg-[#160211] px-3 py-1.5 text-[11px] font-medium text-white shadow-md transition-transform hover:brightness-110 disabled:opacity-60"
+              >
+                Tentar gerar de novo
+              </button>
+            )}
+          </div>
+        );
+      }
+      const alt = card.prompt ? `Imagem gerada: ${card.prompt.slice(0, 120)}` : 'Imagem gerada por IA no Studio';
+      return (
+        <div key={i} data-card-type={card.type} className="cockpit-glass rounded-xl p-3 text-xs">
+          <p className="font-semibold text-foreground">
+            {card.label}
+            {card.replayed && <span className="ml-1 font-normal text-muted-foreground">(já feito — nada duplicado)</span>}
+          </p>
+          <div className="mt-2 space-y-2">
+            {urls.map((src, k) => (
+              <GeneratedImage key={`${k}-${src}`} src={src} alt={alt} onZoom={() => setLightbox({ src, alt })} />
+            ))}
+          </div>
+          {card.detail && <p className="mt-1.5 whitespace-pre-wrap leading-relaxed text-muted-foreground">{stripLegacyImageLink(card.detail)}</p>}
         </div>
       );
     }
@@ -1035,6 +1208,49 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
                 }}
               />
             </div>
+          </div>
+        </div>
+      )}
+      {/* Zoom da imagem gerada (2026-10-26): ampliar sem cortar (object-contain),
+          abrir em nova aba e baixar — fecha no ESC, no fundo ou no botão. */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Imagem gerada ampliada"
+          onClick={() => setLightbox(null)}
+        >
+          <img
+            src={lightbox.src}
+            alt={lightbox.alt}
+            className="max-h-[78vh] max-w-full rounded-xl object-contain shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2" onClick={(e) => e.stopPropagation()}>
+            <a
+              href={lightbox.src}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="rounded-full bg-white px-4 py-2 text-xs font-medium text-foreground shadow-md transition-colors hover:bg-accent"
+            >
+              Abrir imagem
+            </a>
+            <a
+              href={lightbox.src}
+              download={imageDownloadName(lightbox.src)}
+              className="rounded-full bg-white px-4 py-2 text-xs font-medium text-foreground shadow-md transition-colors hover:bg-accent"
+            >
+              Baixar
+            </a>
+            <button
+              type="button"
+              autoFocus
+              onClick={() => setLightbox(null)}
+              className="rounded-full border border-white/30 px-4 py-2 text-xs font-medium text-white/90 transition-colors hover:bg-white/10"
+            >
+              Fechar
+            </button>
           </div>
         </div>
       )}

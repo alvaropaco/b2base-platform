@@ -1,0 +1,229 @@
+'use strict';
+
+/**
+ * test/studio-image-chat.test.js — IMAGEM GERADA NO CHAT (2026-10-26):
+ * a imagem gerada tem que APARECER na conversa, não só virar link em texto.
+ *   1. a rota REAL /media/:name (a mesma montada no server-prod) serve o
+ *      arquivo com 200/Content-Type/bytes corretos e recusa o resto;
+ *   2. o card do chat carrega o caminho estruturado (imagePath relativo +
+ *      imageUrl absoluto) — sem link cru no detail;
+ *   3. falha do motor → card HONESTO (retryable) e nenhuma URL inventada;
+ *   4. turno completo: o card persiste na mensagem (GET /chat) e a imagem
+ *      volta pelo /media — sobrevive a recarregar a página/histórico.
+ */
+
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const express = require('express');
+
+process.env.STUDIO_STORAGE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-image-chat-'));
+process.env.LITELLM_URL = 'http://litellm.test';
+process.env.LITELLM_MODEL = 'test-model';
+process.env.STUDIO_IMAGE_MODEL = 'test-image-model';
+process.env.APP_URL = 'https://www.b2base.net';
+
+const { createFakePrisma } = require('./helpers/fake-prisma');
+const { createStudioRouter } = require('../studio/router');
+const storage = require('../studio/storage');
+const mediaRoute = require('../studio/media-route');
+
+// PNG 1x1 válido (mesmo fixture de studio-image-vision).
+const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63fcffff3f030005fe02fea72d8b300000000049454e44ae426082', 'hex');
+
+async function startServer({ fetchImpl, llmImpl } = {}) {
+  const orig = global.fetch;
+  // Gateway LiteLLM é externo (litellm.test) → interceptado; o que aponta
+  // para o próprio servidor de teste (127.0.0.1) vai ao fetch REAL.
+  global.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('127.0.0.1')) return orig(url, opts);
+    if (fetchImpl) return fetchImpl(u, opts);
+    throw new Error('fetch inesperado: ' + u);
+  };
+  const app = express();
+  app.use(express.json());
+  // A MESMA rota pública do server-prod (mesmo handler de produção).
+  app.get('/media/:name', mediaRoute);
+  const prisma = createFakePrisma();
+  prisma.organization.rows.push({ id: 'org-1', plan: 'premium' });
+  prisma.commercialSettings.rows.push({ orgId: 'org-1', productDescription: 'software B2B' });
+  app.use((req, _res, next) => {
+    req.user = { id: 'user-1', orgId: 'org-1' };
+    next();
+  });
+  let llmCalls = 0;
+  app.use('/api/studio', createStudioRouter(prisma, {
+    overrides: {
+      aiDeps: {
+        callLlm:
+          llmImpl ||
+          (async () => ({ content: JSON.stringify({ reply: 'ok', actions: [{ type: 'none' }] }) })),
+        fetchImpl: async () => ({ ok: true, status: 200, text: async () => '<html></html>' }),
+      },
+    },
+  }));
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const api = async (method, p, body) => {
+    const res = await fetch(`${base}${p.startsWith('/media') ? '' : '/api/studio'}${p}`, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const buffer = Buffer.from(await res.arrayBuffer());
+    let parsed = null;
+    try { parsed = JSON.parse(buffer.toString('utf8')); } catch (_e) { /* binário (/media) */ }
+    return { res, body: parsed, buffer };
+  };
+  return {
+    prisma,
+    api,
+    base,
+    llmCalls: () => llmCalls,
+    restore: () => { global.fetch = orig; },
+    close: () => server.close(),
+  };
+}
+
+// ── 1. rota /media REAL: 200 + Content-Type + bytes; 404 no resto ───────────
+
+test('rota /media (a mesma do server-prod): serve o PNG com status/Content-Type/Cache-Control corretos', async () => {
+  const world = await startServer();
+  try {
+    const name = storage.saveGenerated(PNG, 'png');
+    const { res, buffer } = await world.api('GET', `/media/${name}`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') || '', /image\/png/, 'Content-Type de imagem');
+    assert.match(res.headers.get('cache-control') || '', /immutable/, 'cache imutável (nome é hash do conteúdo)');
+    assert.deepEqual([...buffer], [...PNG], 'bytes servidos = bytes gerados');
+    // Nome inexistente e traversal → 404 seco (nada de HTML/SPA).
+    const missing = await world.api('GET', '/media/ffffffffffffffffffffffffffffffff.png');
+    assert.equal(missing.res.status, 404);
+    const traversal = await world.api('GET', '/media/..%2F..%2Fsecret.png');
+    assert.equal(traversal.res.status, 404);
+  } finally {
+    world.restore();
+    world.close();
+  }
+});
+
+// ── 2. card estruturado: imagePath relativo + imageUrl absoluto ─────────────
+
+test('generate_image: card traz imagePath RELATIVO (chat) + imageUrl ABSOLUTO (e-mail), sem link cru no detail', async () => {
+  const world = await startServer({
+    fetchImpl: async (u) => {
+      if (u.includes('/v1/images/generations')) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ b64_json: PNG.toString('base64') }] }) };
+      }
+      throw new Error('fetch inesperado: ' + u);
+    },
+  });
+  const { api } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Banner no chat', channels: ['email'] });
+    const out = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'generate_image',
+      params: { prompt: 'banner de dobradeira industrial azul' },
+    });
+    assert.equal(out.res.status, 200);
+    const card = out.body.data.card;
+    assert.equal(card.type, 'image_generated');
+    assert.match(card.imagePath, /^\/media\/[a-f0-9]{32}\.png$/, 'caminho relativo canônico para o chat');
+    assert.match(card.imageUrl, /^https:\/\/www\.b2base\.net\/media\/[a-f0-9]{32}\.png$/, 'URL absoluta preservada para o e-mail');
+    assert.ok(!/Link público da imagem/i.test(card.detail), 'detail não carrega mais link cru — a prévia é o deliverable');
+    // O caminho relativo do card SERVE a imagem na origem do app.
+    const served = await world.api('GET', card.imagePath);
+    assert.equal(served.res.status, 200);
+    assert.match(served.res.headers.get('content-type') || '', /image\/png/);
+    assert.deepEqual([...served.buffer], [...PNG]);
+  } finally {
+    world.restore();
+    world.close();
+  }
+});
+
+// ── 3. falha do motor: card honesto com retry — NENHUMA URL inventada ───────
+
+test('generate_image com motor FORA: card retryable sem imageUrl/imagePath (nada de falso sucesso)', async () => {
+  const world = await startServer({
+    fetchImpl: async (u) => {
+      if (u.includes('/v1/images/generations')) {
+        return { ok: false, status: 503, json: async () => ({ error: { message: 'motor fora' } }) };
+      }
+      throw new Error('fetch inesperado: ' + u);
+    },
+  });
+  const { api } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Banner falho', channels: ['email'] });
+    const out = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'generate_image',
+      params: { prompt: 'banner de pizza artesanal' },
+    });
+    assert.equal(out.res.status, 200);
+    const card = out.body.data.card;
+    assert.equal(card.type, 'image_generated');
+    assert.match(card.label, /Não consegui gerar/i);
+    assert.equal(card.imageUrl, undefined, 'falha NUNCA devolve URL');
+    assert.equal(card.imagePath, undefined, 'falha NUNCA devolve caminho');
+    assert.equal(card.retryable, true, 'card marca retry explícito');
+    assert.match(card.prompt, /pizza/, 'prompt resumido para o chip "tentar de novo"');
+  } finally {
+    world.restore();
+    world.close();
+  }
+});
+
+// ── 4. histórico: o card persiste na mensagem e a imagem volta pelo /media ──
+
+test('turno completo: card da imagem persiste no histórico (GET /chat) e o arquivo continua servido', async () => {
+  const world = await startServer({
+    fetchImpl: async (u) => {
+      if (u.includes('/v1/images/generations')) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ b64_json: PNG.toString('base64') }] }) };
+      }
+      throw new Error('fetch inesperado: ' + u);
+    },
+    llmImpl: async ({ user }) => {
+      // 1ª chamada é o roteador de intenção; o turno REAL traz o marcador
+      // "NOVA MENSAGEM DO USUÁRIO" (mesmo padrão de studio-agent-platform).
+      if (String(user || '').includes('NOVA MENSAGEM DO USUÁRIO')) {
+        return {
+          content: JSON.stringify({
+            reply: 'Gerando seu banner…',
+            actions: [{ type: 'generate_image', prompt: 'banner de consultancy industrial' }],
+          }),
+        };
+      }
+      return { content: JSON.stringify({ reply: 'Pronto — a imagem está acima.', actions: [{ type: 'none' }] }) };
+    },
+  });
+  const { api } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Banner histórico', channels: ['email'] });
+    const turn = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'gere uma imagem de banner industrial' });
+    assert.equal(turn.res.status, 200);
+    const card = (turn.body.data.cards || []).find((k) => k && k.type === 'image_generated');
+    assert.ok(card, 'card da imagem no turno');
+    assert.ok(card.imagePath, 'card persistido com imagePath');
+    // Histórico (o que o frontend busca ao recarregar a página):
+    const history = await api('GET', `/campaigns/${c.data.id}/chat`);
+    assert.equal(history.res.status, 200);
+    const assistant = (history.body.data || []).filter((m) => m.role === 'assistant');
+    const persisted = assistant.flatMap((m) => m.cards || []).find((k) => k && k.type === 'image_generated');
+    assert.ok(persisted, 'card da imagem está NO HISTÓRICO');
+    assert.match(persisted.imagePath, /^\/media\/[a-f0-9]{32}\.png$/);
+    // E o arquivo continua sendo servido depois do turno:
+    const served = await world.api('GET', persisted.imagePath);
+    assert.equal(served.res.status, 200);
+    assert.deepEqual([...served.buffer], [...PNG], 'imagem do histórico abre de verdade');
+  } finally {
+    world.restore();
+    world.close();
+  }
+});
