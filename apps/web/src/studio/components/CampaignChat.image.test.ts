@@ -166,3 +166,28 @@ describe('ContentReviewDetail — render do card de revisão', () => {
     expect(render('')).toContain('<div class="mt-0.5 space-y-1">');
   });
 });
+
+// ── 2026-10-27: CTA REAL no card da imagem (separado do zoom) ───────────────
+import { imageCta } from './CampaignChat';
+
+describe('imageCta — botão de verdade no card, distinto do zoom', () => {
+  const base: ChatCard = { type: 'image_generated', label: 'Imagem gerada' };
+
+  it('card com ctaUrl/ctaLabel → {label, url} (mesmo destino do e-mail)', () => {
+    expect(imageCta({ ...base, ctaUrl: 'https://wa.me/5512996399943', ctaLabel: 'Falar com a Arthur Company' })).toEqual({
+      label: 'Falar com a Arthur Company',
+      url: 'https://wa.me/5512996399943',
+    });
+  });
+
+  it('sem ctaLabel → rótulo padrão do WhatsApp', () => {
+    expect(imageCta({ ...base, ctaUrl: 'https://wa.me/5512996399943' })?.label).toBe('Falar com a gente no WhatsApp');
+  });
+
+  it('URL ausente, insegura ou card de OUTRO tipo → null (nada de botão falso)', () => {
+    expect(imageCta(base)).toBeNull();
+    expect(imageCta({ ...base, ctaUrl: 'javascript:alert(1)' })).toBeNull();
+    expect(imageCta({ ...base, ctaUrl: '' })).toBeNull();
+    expect(imageCta({ type: 'content_review', label: 'x', ctaUrl: 'https://wa.me/1' })).toBeNull();
+  });
+});

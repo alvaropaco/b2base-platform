@@ -535,6 +535,9 @@ export interface EmailBlock {
   text?: string;
   label?: string;
   url?: string;
+  /** CTA (2026-10-27): cor do botão (hex) e cor do texto — editáveis. */
+  color?: string;
+  textColor?: string;
   src?: string;
   alt?: string;
   href?: string;

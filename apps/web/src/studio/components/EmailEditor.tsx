@@ -301,19 +301,49 @@ function SortableBlock({
         />
       )}
       {block.type === 'button' && (
-        <div className="mt-1 flex gap-2">
-          <input
-            value={block.label || ''}
-            onChange={(e) => onChange({ label: e.target.value })}
-            placeholder="Rótulo"
-            className="h-8 flex-1 rounded border border-input bg-transparent px-2 text-sm"
-          />
-          <input
-            value={block.url || ''}
-            onChange={(e) => onChange({ url: e.target.value })}
-            placeholder="https://…"
-            className="h-8 flex-1 rounded border border-input bg-transparent px-2 text-sm"
-          />
+        <div className="mt-1 space-y-1">
+          <div className="flex gap-2">
+            <input
+              value={block.label || ''}
+              onChange={(e) => onChange({ label: e.target.value })}
+              placeholder="Rótulo"
+              className="h-8 flex-1 rounded border border-input bg-transparent px-2 text-sm"
+            />
+            <input
+              value={block.url || ''}
+              onChange={(e) => onChange({ url: e.target.value })}
+              placeholder="https://…"
+              className="h-8 flex-1 rounded border border-input bg-transparent px-2 text-sm"
+            />
+          </div>
+          {/* CTA editável (2026-10-27): cor do botão + cor do texto — o que
+              se vê na prévia é o MESMO HTML do e-mail enviado. */}
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1 text-xs text-muted-foreground">
+              Cor
+              <input
+                type="color"
+                value={/^#[0-9a-f]{6}$/i.test(block.color || '') ? block.color! : '#25d366'}
+                onChange={(e) => onChange({ color: e.target.value })}
+                className="h-8 w-10 cursor-pointer rounded border border-input bg-transparent"
+                aria-label="Cor do botão"
+              />
+            </label>
+            <input
+              value={block.color || ''}
+              onChange={(e) => onChange({ color: e.target.value })}
+              placeholder="#25D366"
+              className="h-8 w-24 rounded border border-input bg-transparent px-2 text-xs"
+              aria-label="Cor do botão (hex)"
+            />
+            <input
+              value={block.textColor || ''}
+              onChange={(e) => onChange({ textColor: e.target.value })}
+              placeholder="Cor do texto (#…)"
+              className="h-8 flex-1 rounded border border-input bg-transparent px-2 text-xs"
+              aria-label="Cor do texto do botão (hex)"
+            />
+          </div>
         </div>
       )}
       {block.type === 'image' && (

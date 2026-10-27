@@ -2383,3 +2383,123 @@ test('QA: "enriquecimento com email" acha o e-mail corporativo no site e cadastr
     server.close();
   }
 });
+
+// ── 2026-10-27: CTA EDITÁVEL pelo chat — texto, cor e URL do botão ──────────
+
+test('QA: edit_content com ctaUrl troca o BOTÃO do e-mail (gate confirma, tudo persistido)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Vou trocar o botão.',
+          actions: [{ type: 'edit_content', ctaUrl: 'https://wa.me/5512000000000', ctaLabel: 'Chamar no WhatsApp', ctaColor: '#25D366' }],
+        }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'CTA editável', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-cta-chat', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'S', whatsappText: null,
+      emailDoc: {
+        blocks: [
+          { type: 'text', text: 'Olá {{firstName}}' },
+          { type: 'button', label: 'Botão ANTIGO', url: 'https://exemplo.com/velho' },
+        ],
+      },
+    });
+
+    // 1ª volta: gate de confirmação — nada muda sem o dono aprovar.
+    const first = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'troca o link do botão' });
+    const gate = first.body.data.cards.find((card) => card.type === 'confirm_change');
+    assert.ok(gate, 'gate pede confirmação');
+    const rowBefore = prisma.studioContent.rows.find((r) => r.id === 'ce-cta-chat');
+    assert.equal(rowBefore.emailDoc.blocks[1].url, 'https://exemplo.com/velho', 'nada muda sem confirmar');
+
+    // 2ª volta: aprovação textual → executa com o selo.
+    const second = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'pode sim' });
+    assert.equal(second.res.status, 200);
+    const edited = second.body.data.cards.find((card) => card.type === 'content_updated' || card.type === 'content_edited');
+    assert.ok(edited, 'card de conteúdo atualizado');
+    const row = prisma.studioContent.rows.find((r) => r.id === 'ce-cta-chat');
+    const btn = row.emailDoc.blocks.find((b) => b.type === 'button');
+    assert.equal(btn.url, 'https://wa.me/5512000000000', 'novo link gravado no emailDoc');
+    assert.equal(btn.label, 'Chamar no WhatsApp', 'novo rótulo gravado');
+    assert.equal(btn.color, '#25d366', 'cor verde gravada (hex normalizado)');
+    assert.equal(row.ctaUrl, 'https://wa.me/5512000000000', 'coluna ctaUrl sincronizada (recarregar/reabrir preservam)');
+  } finally {
+    server.close();
+  }
+});
+
+test('QA: ctaUrl PERIGOSO (javascript:) é recusado com erro honesto; botão sem link não fica "pronto"', async () => {
+  const impl = async ({ user }) => {
+    // A decisão é pela ÚLTIMA mensagem do usuário (o prompt carrega histórico).
+    const m = String(user || '');
+    const markers = m.match(/NOVA MENSAGEM DO USUÁRIO:[^\n]*/g) || [];
+    const last = markers.length ? markers[markers.length - 1] : '';
+    if (last.includes('usa esse link')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Vou tentar.',
+          actions: [{ type: 'edit_content', ctaUrl: 'javascript:alert(1)' }],
+        }),
+      };
+    }
+    if (last.includes('cria o botão')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Vou criar o botão.',
+          actions: [{ type: 'edit_content', ctaLabel: 'Fale conosco' }],
+        }),
+      };
+    }
+    // Aprovação textual: o agente REAL reemite a action pendente (o fluxo
+    // adiciona o selo confirmed). O stub faz o mesmo, olhando o histórico.
+    if (/pode/i.test(last) && m.includes('cria o botão')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Criando o botão.',
+          actions: [{ type: 'edit_content', ctaLabel: 'Fale conosco' }],
+        }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'CTA seguro', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-safe', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'S', whatsappText: null,
+      emailDoc: { blocks: [{ type: 'text', text: 'Olá' }] },
+    });
+
+    // javascript: → recusado NA HORA (validação da action): card de erro
+    // honesto explicando o que é aceito — e nenhum botão criado.
+    const first = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'usa esse link' });
+    assert.equal(first.res.status, 200);
+    const errCard = first.body.data.cards.find((card) => card.type === 'error');
+    assert.ok(errCard, 'card de erro honesto');
+    assert.match(errCard.detail, /http\/https/, 'recusa explica o que é aceito');
+    const row = prisma.studioContent.rows.find((r) => r.id === 'ce-safe');
+    assert.ok(!row.emailDoc.blocks.some((b) => b.type === 'button'), 'nenhum botão criado com link perigoso');
+
+    // Rótulo SEM link e SEM botão existente → gate; ao confirmar, pede o
+    // endereço (nada "pronto" sem URL — nunca inventar).
+    await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'cria o botão' });
+    const third = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'pode' });
+    assert.equal(third.res.status, 200);
+    const needLinkCard = third.body.data.cards.find((card) => card.type === 'error');
+    assert.ok(needLinkCard, 'card pedindo o link');
+    assert.match(needLinkCard.detail, /preciso do LINK/i, 'pede o link antes de considerar pronto');
+    assert.ok(!row.emailDoc.blocks.some((b) => b.type === 'button' && !b.url), 'nenhum botão sem URL salvo');
+  } finally {
+    server.close();
+  }
+});

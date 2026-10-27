@@ -232,9 +232,11 @@ test('turno completo: card da imagem persiste no histórico (GET /chat) e o arqu
 // o bloco image nasce com href = link do botão do próprio e-mail (wa.me).
 
 test('generate_image com attachToEmail: banner herda o href do botão (clique cai no WhatsApp)', async () => {
+  const imageBodies = [];
   const world = await startServer({
-    fetchImpl: async (u) => {
+    fetchImpl: async (u, opts = {}) => {
       if (u.includes('/v1/images/generations')) {
+        imageBodies.push(JSON.parse(String(opts.body || '{}')));
         return { ok: true, status: 200, json: async () => ({ data: [{ b64_json: PNG.toString('base64') }] }) };
       }
       throw new Error('fetch inesperado: ' + u);
@@ -273,6 +275,15 @@ test('generate_image com attachToEmail: banner herda o href do botão (clique ca
       row.emailDoc.blocks.some((b) => b.type === 'button' && b.url === 'https://wa.me/5512996399943'),
       'bloco button original permanece (mesmo destino do clique)'
     );
+    // ARTE LIMPA (2026-10-27): a imagem para e-mail NÃO desenha o botão — o
+    // CTA de verdade é HTML. A diretriz vai no prompt do motor de imagem.
+    assert.equal(imageBodies.length, 1, 'uma geração de imagem');
+    const sentPrompt = String(imageBodies[0].prompt || '');
+    assert.match(sentPrompt, /NÃO desenhe botões/i, 'diretriz de arte limpa no prompt do gateway');
+    assert.match(sentPrompt, /máquinas industriais/, 'descrição do usuário preservada');
+    // CTA REAL no card: o chat mostra o botão de verdade separado do zoom.
+    assert.equal(card.ctaUrl, 'https://wa.me/5512996399943', 'card traz o link do CTA');
+    assert.match(card.ctaLabel, /Falar com a Arthur Company/, 'card traz o rótulo do botão');
   } finally {
     world.restore();
     world.close();

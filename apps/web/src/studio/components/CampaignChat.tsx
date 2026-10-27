@@ -65,6 +65,10 @@ export interface ChatCard {
   /** Suporte a múltiplas imagens num mesmo card (futuro): lista estruturada. */
   images?: Array<{ url?: string; alt?: string } | string>;
   insertedIntoEmail?: boolean;
+  /** CTA REAL do e-mail (2026-10-27): link/label do botão — o card mostra o
+   * botão de verdade (verde, linkado) SEPARADO do zoom da imagem. */
+  ctaUrl?: string;
+  ctaLabel?: string;
   /** Falha de geração: o card oferece retry EXPLÍCITO (nova mensagem). */
   retryable?: boolean;
   /** Resumo do prompt da imagem gerada/falha (alt e retry). */
@@ -236,6 +240,19 @@ export function stripLegacyImageLink(detail: string): string {
 export function imageDownloadName(src: string): string {
   const base = String(src || '').split('?')[0].split('/').pop() || '';
   return /^[\w.-]+\.(png|jpe?g)$/i.test(base) ? base : 'imagem.png';
+}
+
+/**
+ * CTA REAL do card de imagem (2026-10-27, pedido do dono): o botão de
+ * WhatsApp é um elemento HTML PRÓPRIO, separado da arte — na prévia do chat,
+ * clicar na imagem amplia (zoom) e o botão abre o destino. Só http/https
+ * (mesma regra do envio); sem URL segura, NADA de botão falso.
+ */
+export function imageCta(card: ChatCard): { label: string; url: string } | null {
+  if (card.type !== 'image_generated') return null;
+  const url = String(card.ctaUrl || '').trim();
+  if (!/^https?:\/\//i.test(url)) return null;
+  return { label: String(card.ctaLabel || 'Falar com a gente no WhatsApp').slice(0, 80), url };
 }
 
 /**
@@ -761,6 +778,7 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
         );
       }
       const alt = card.prompt ? `Imagem gerada: ${card.prompt.slice(0, 120)}` : 'Imagem gerada por IA no Studio';
+      const cta = imageCta(card);
       return (
         <div key={i} data-card-type={card.type} className="cockpit-glass rounded-xl p-3 text-xs">
           <p className="font-semibold text-foreground">
@@ -772,6 +790,22 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
               <GeneratedImage key={`${k}-${src}`} src={src} alt={alt} onZoom={() => setLightbox({ src, alt })} />
             ))}
           </div>
+          {/* CTA REAL separado da arte (2026-10-27): abrir o link é ação
+              DIFERENTE do zoom — clicar na imagem amplia; o botão abre o
+              destino no e-mail (mesmo URL que o lead vai receber). */}
+          {cta && (
+            <div className="mt-2 flex items-center gap-2">
+              <a
+                href={cta.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-full bg-[#25D366] px-4 py-2 text-[11px] font-semibold text-white shadow-md transition-transform hover:brightness-105"
+              >
+                {cta.label}
+              </a>
+              <span className="text-[11px] text-muted-foreground">abre o link do botão · clicar na imagem amplia</span>
+            </div>
+          )}
           {card.detail && <p className="mt-1.5 whitespace-pre-wrap leading-relaxed text-muted-foreground">{stripLegacyImageLink(card.detail)}</p>}
         </div>
       );

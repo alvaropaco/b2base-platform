@@ -235,6 +235,11 @@ function actionParams(action) {
       if (action.imageUrl != null) params.imageUrl = String(action.imageUrl);
       if (action.imageHref != null) params.imageHref = String(action.imageHref);
       if (action.imageAlt != null) params.imageAlt = String(action.imageAlt);
+      // CTA editável (2026-10-27): entra na chave — dois edits de CTA
+      // diferentes NÃO são replay um do outro.
+      if (action.ctaUrl != null) params.ctaUrl = String(action.ctaUrl);
+      if (action.ctaLabel != null) params.ctaLabel = String(action.ctaLabel);
+      if (action.ctaColor != null) params.ctaColor = String(action.ctaColor);
       return params;
     }
     default:
@@ -848,11 +853,21 @@ function registerChatRoutes(router, context) {
         let generated = null;
         let usedSize = null;
         let lastError = null;
+        // ARTE LIMPA (2026-10-27, pedido do dono): quando a imagem vai para o
+        // E-MAIL, o botão de verdade é HTML (verde, clicável) renderizado
+        // FORA da imagem — botão desenhado na arte duplica o CTA e o clique
+        // nele não abre link nenhum.
+        const CLEAN_ART_DIRECTIVE =
+          'Diretriz de layout OBRIGATÓRIA: NÃO desenhe botões, ícones de CTA, links, rodapés com endereço/URL nem chamadas para ação na arte — o botão é um elemento HTML separado renderizado abaixo da imagem. ';
+        const usesCleanArt = Boolean(action.attachToEmail);
         for (const size of [...new Set([...preferredSizes, '1024x1024'])]) {
           try {
             // 4000 chars: teto dos motores de imagem (gpt-image-1/dall-e-3) —
             // o slice antigo de 1000 cortava a especificação do usuário.
-            generated = await imageGen.generateImage({ prompt: promptText.slice(0, 4000), size });
+            const gatewayPrompt = (
+              usesCleanArt ? `${CLEAN_ART_DIRECTIVE}Arte: ${promptText}` : promptText
+            ).slice(0, 4000);
+            generated = await imageGen.generateImage({ prompt: gatewayPrompt, size });
             usedSize = size;
             break;
           } catch (err) {
@@ -897,6 +912,7 @@ function registerChatRoutes(router, context) {
         const imageUrl = base ? `${base}${imagePath}` : null;
         let inserted = false;
         let emailNote = '';
+        let ctaBlock = null;
         if (action.attachToEmail) {
           if (!imageUrl) {
             // Sem origem o src do e-mail ficaria relativo e QUEBRARIA no
@@ -908,6 +924,13 @@ function registerChatRoutes(router, context) {
             const rows = await prisma.studioContent.findMany({
               where: { campaignId: campaign.id, kind: 'base', stepIndex: 1, channel: 'email' },
             });
+            // CTA REAL (2026-10-27): o link do botão do e-mail vai no card —
+            // o chat mostra o botão de verdade (verde, linkado) separado do
+            // zoom da imagem, e o banner segue clicável para o MESMO destino.
+            ctaBlock =
+              rows
+                .flatMap((r) => ((r.emailDoc && Array.isArray(r.emailDoc.blocks)) ? r.emailDoc.blocks : []))
+                .find((b) => b && b.type === 'button' && b.url) || null;
             if (rows.length > 0) {
               const contents = rows.map((row) => {
                 const existingBlocks = (row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [];
@@ -930,6 +953,8 @@ function registerChatRoutes(router, context) {
             }
           }
         }
+        const { sanitizeLink } = require('./email-renderer');
+        const ctaUrl = sanitizeLink(ctaBlock ? ctaBlock.url : '');
         return {
           type: 'image_generated',
           label: inserted ? 'Imagem gerada e inserida no topo do e-mail' : 'Imagem gerada',
@@ -937,11 +962,12 @@ function registerChatRoutes(router, context) {
             `Prompt: "${promptResumo}"` +
             `${formatNote}` +
             (inserted
-              ? '\nEla está NO TOPO do e-mail como banner.'
+              ? `\nEla está NO TOPO do e-mail como banner.${usesCleanArt ? ' A arte saiu SEM botão desenhado — o botão de verdade (verde, clicável) é HTML e fica junto ao banner no e-mail.' : ''}${ctaUrl ? ' O banner inteiro também fica clicável apontando para o mesmo link do botão.' : ''}`
               : emailNote || (action.attachToEmail ? '\nAinda não há e-mail nesta campanha — gere o conteúdo que eu insiro o banner no topo.' : '\nMe peça para inserir no e-mail que eu coloco no topo (ou use no editor de e-mail).')),
           imagePath,
           imageUrl: imageUrl || undefined,
           insertedIntoEmail: inserted,
+          ...(ctaUrl ? { ctaUrl, ctaLabel: ctaBlock.label || 'Falar com a gente no WhatsApp' } : {}),
         };
       }
 
@@ -2154,6 +2180,63 @@ function registerChatRoutes(router, context) {
             id: row.id,
             emailDoc: { blocks: [imageBlockFor(row), ...((row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [])] },
           }));
+        }
+        // CTA EDITÁVEL PELO CHAT (2026-10-27, pedido do dono): {ctaUrl,
+        // ctaLabel?, ctaColor?} troca o botão do e-mail — texto, cor e URL
+        // editáveis, persistidos no emailDoc + coluna ctaUrl (sobrevivem a
+        // reload/reabrir/envio). SEM link informado e sem botão existente, o
+        // botão NÃO fica "pronto": erro honesto pedindo o endereço — nunca
+        // inventar URL/número (nem reusar o do print automaticamente).
+        if (contents.length === 0 && (action.ctaUrl != null || action.ctaLabel != null || action.ctaColor != null)) {
+          const rows = await prisma.studioContent.findMany({
+            where: { campaignId: campaign.id, kind: 'base', stepIndex: 1, channel: 'email' },
+          });
+          if (rows.length === 0) {
+            throw httpError('NO_CONTENT', 409, 'A campanha não tem conteúdo de e-mail para editar — me peça para gerar primeiro.');
+          }
+          const { sanitizeLink, normalizeHexColor } = require('./email-renderer');
+          const newUrl = action.ctaUrl != null ? sanitizeLink(String(action.ctaUrl)) : null;
+          if (action.ctaUrl != null && !newUrl) {
+            throw httpError(
+              'INVALID_LINK',
+              400,
+              'Esse link não vou usar — só aceito http/https completo (ex.: https://wa.me/5512996399943). Me passa o endereço certinho?'
+            );
+          }
+          const color = action.ctaColor != null ? normalizeHexColor(action.ctaColor) : null;
+          if (action.ctaColor != null && !color) {
+            throw httpError('INVALID_COLOR', 400, 'Cor inválida — me dá o hexadecimal (ex.: #25D366 para o verde WhatsApp).');
+          }
+          const newLabel = action.ctaLabel != null ? String(action.ctaLabel).slice(0, 80) : null;
+          for (const row of rows) {
+            const existingBlocks = (row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks.map((b) => ({ ...b })) : [];
+            let btn = existingBlocks.find((b) => b && b.type === 'button');
+            if (!btn) {
+              if (!newUrl) {
+                throw httpError(
+                  'CTA_NEEDS_URL',
+                  400,
+                  'Para o botão ficar pronto eu preciso do LINK — me passa o endereço (ex.: https://wa.me/5512996399943) que eu crio o botão com ele.'
+                );
+              }
+              existingBlocks.push({ type: 'button', label: newLabel || 'Falar com a gente no WhatsApp', url: newUrl, ...(color ? { color } : {}) });
+            } else {
+              if (newUrl) btn.url = newUrl;
+              if (newLabel) btn.label = newLabel;
+              if (color) btn.color = color;
+            }
+            await campaignService.flow.updateContents(prisma, {
+              campaign,
+              contents: [{ id: row.id, ctaUrl: newUrl || row.ctaUrl || null, emailDoc: { blocks: existingBlocks } }],
+              userId,
+            });
+          }
+          const changedBits = [newUrl && 'link', newLabel && 'texto', color && 'cor'].filter(Boolean).join(', ');
+          return {
+            type: 'content_updated',
+            label: `Botão do e-mail atualizado (${changedBits || 'sem mudança'})`,
+            detail: `O CTA segue o MESMO destino na prévia, no editor e no e-mail enviado.${newUrl ? ` Destino: ${newUrl}` : ''}`,
+          };
         }
         // QA 2026-10-06: "troca a mensagem por <texto>" — o modelo NÃO tem o id
         // no estado; canal + texto resolve o conteúdo base AQUI.

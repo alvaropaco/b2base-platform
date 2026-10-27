@@ -220,3 +220,70 @@ test('emailDocToHtml: sem blocos → null (chamador cai no texto plano)', () => 
   assert.equal(emailDocToHtml(null, LEAD), null);
   assert.equal(emailDocToHtml({ blocks: [] }, LEAD), null);
 });
+
+// ── 2026-10-27: CTA REAL — URL sanitizada + botão com cor editável ──────────
+// O botão verde "Fale com a gente no WhatsApp" é HTML estilizado (texto/cor/
+// URL editáveis), NUNCA desenho dentro da imagem. Links: só http/https
+// absoluto (wa.me incluído, parâmetros preservados); protocolo perigoso é
+// bloqueado e credenciais na URL nunca saem no HTML.
+
+const { sanitizeLink, normalizeHexColor } = require('../studio/email-renderer');
+
+test('sanitizeLink: http/https passa (wa.me com path e query preservados)', () => {
+  assert.equal(sanitizeLink('https://wa.me/5512996399943'), 'https://wa.me/5512996399943');
+  assert.equal(
+    sanitizeLink('https://wa.me/5512996399943?text=Ol%C3%A1%20Arthur'),
+    'https://wa.me/5512996399943?text=Ol%C3%A1%20Arthur',
+    'query preservada'
+  );
+  assert.equal(sanitizeLink(' http://exemplo.com/promo?a=1&b=2 '), 'http://exemplo.com/promo?a=1&b=2');
+});
+
+test('sanitizeLink: javascript:, data:, relativa e vazia → BLOQUEADAS', () => {
+  assert.equal(sanitizeLink('javascript:alert(1)'), '');
+  assert.equal(sanitizeLink('data:text/html;base64,PHNjcmlwdD4='), '');
+  assert.equal(sanitizeLink('JAVASCRIPT:void(0)'), '', 'protocolo case-insensitive também bloqueia');
+  assert.equal(sanitizeLink('/pagina-relativa'), '');
+  assert.equal(sanitizeLink('não é url'), '');
+  assert.equal(sanitizeLink(''), '');
+  assert.equal(sanitizeLink(null), '');
+});
+
+test('sanitizeLink: credenciais na URL (user:pass@host) NUNCA saem no link', () => {
+  const clean = sanitizeLink('https://user:secreta@exemplo.com/oferta?a=1');
+  assert.ok(clean.startsWith('https://exemplo.com/oferta'), 'userinfo removido: ' + clean);
+  assert.ok(!clean.includes('secreta'));
+  assert.ok(clean.includes('a=1'), 'query preservada');
+});
+
+test('normalizeHexColor: só #rgb/#rrggbb; resto → null', () => {
+  assert.equal(normalizeHexColor('#25D366'), '#25d366');
+  assert.equal(normalizeHexColor('#F60'), '#f60');
+  assert.equal(normalizeHexColor('green'), null);
+  assert.equal(normalizeHexColor('#25D366; background:url(x)'), null, 'injeção via style bloqueada');
+  assert.equal(normalizeHexColor(''), null);
+});
+
+test('renderEmail: button com color green → estilo inline usa a COR do bloco', () => {
+  const { html } = renderEmail({
+    blocks: [{ type: 'button', label: 'Falar com a gente no WhatsApp', url: 'https://wa.me/5512996399943', color: '#25D366' }],
+  }, LEAD);
+  assert.ok(html.includes('background:#25d366'), 'cor verde do CTA');
+  assert.ok(html.includes('<a href="https://wa.me/5512996399943"'), 'link real no CTA');
+  assert.ok(html.includes('Falar com a gente no WhatsApp'), 'texto do CTA');
+});
+
+test('renderEmail: button SEM color mantém o padrão atual (indigo)', () => {
+  const { html } = renderEmail({
+    blocks: [{ type: 'button', label: 'Agendar', url: 'https://exemplo.com' }],
+  }, LEAD);
+  assert.ok(html.includes('background:#4f46e5'), 'default inalterado');
+});
+
+test('renderEmail: button com URL PERIGOSA → styled span SEM link (nada de href)', () => {
+  const { html } = renderEmail({
+    blocks: [{ type: 'button', label: 'Clique', url: 'javascript:alert(1)' }],
+  }, LEAD);
+  assert.ok(!html.includes('<a href'), 'nenhum link perigoso no HTML');
+  assert.ok(html.includes('Clique'), 'texto permanece (honesto, sem link)');
+});

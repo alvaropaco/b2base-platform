@@ -48,8 +48,11 @@ function createComposer({ callLlm } = {}) {
         '',
         'Responda SOMENTE com JSON no formato:',
         '{"title":"...",',
-        ' "email":{"subject":"... usa {{companyName}}","preheader":"...","blocks":[{"type":"text","text":"... usa {{firstName}}"},{"type":"button","label":"...","url":"https://..."}]}}',
+        ' "email":{"subject":"... usa {{companyName}}","preheader":"...","blocks":[{"type":"text","text":"... usa {{firstName}}"},{"type":"button","label":"...","url":"https://...","color":"#25D366"}]}}',
         'Regras: e-mail estruturado e completo; Use apenas variáveis do catálogo: {{firstName}}, {{companyName}}, {{city}}, {{industry}}, {{state}}.',
+        'O CTA vai SEMPRE num bloco button (rótulo + url + color), NUNCA como link no meio do texto;',
+        'quando o botão abrir conversa no WhatsApp, use color "#25D366" (verde WhatsApp);',
+        'URL só http/https e vinda da BASE — NUNCA invente link, número ou endereço.',
         'Nunca invente números ou benefícios que não estejam na base.',
       ]
         .filter(Boolean)

@@ -69,25 +69,63 @@ function applyUtm(url, utmTemplate) {
   return `${base}?${params.toString()}`;
 }
 
+/**
+ * Sanitiza o DESTINO de qualquer link do e-mail (CTA e banner clicável —
+ * 2026-10-27, pedido do dono): só HTTP/HTTPS absoluto (wa.me incluído —
+ * parâmetros preservados); protocolo perigoso (javascript:, data:…), URL
+ * relativa ou inválada é BLOQUEADA (devolve '') e credenciais na URL
+ * (user:pass@host) NUNCA saem no HTML.
+ */
+function sanitizeLink(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch (_err) {
+    return ''; // relativa ou malformada → sem link
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+  if (parsed.username || parsed.password) {
+    parsed.username = '';
+    parsed.password = '';
+  }
+  return parsed.toString();
+}
+
+/** Aceita só #rgb/#rrggbb (letras ou números) — atributo style não vira vetor. */
+function normalizeHexColor(value) {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(value || '').trim());
+  return m ? m[0].toLowerCase() : null;
+}
+
 function blockToHtml(block, lead, utmTemplate, fallbacks) {
   const mergedFallbacks = { ...(fallbacks || {}), ...(block.fallbacks || {}) };
   const text = renderTemplate(block.text || '', lead, { fallbacks: mergedFallbacks, escapeHtml: true });
   switch (block.type) {
     case 'button': {
-      const url = applyUtm(renderTemplate(block.url || '#', lead), utmTemplate);
-      return `<a href="${escapeHtml(url)}" style="display:inline-block;background:#4f46e5;color:#ffffff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;">${escapeHtml(
-        renderTemplate(block.label || 'Saiba mais', lead)
-      )}</a>`;
+      // CTA REAL (2026-10-27): texto, cor e URL editáveis — o botão verde de
+      // WhatsApp é HTML estilizado (inline, sem JS/posicionamento absoluto),
+      // nunca desenho dentro da imagem. URL insegura → styled span SEM link.
+      const url = sanitizeLink(applyUtm(renderTemplate(block.url || '', lead), utmTemplate));
+      const bg = normalizeHexColor(block.color) || '#4f46e5';
+      const fg = normalizeHexColor(block.textColor) || '#ffffff';
+      const ctaStyles = `display:inline-block;background:${bg};color:${fg};padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;`;
+      const label = escapeHtml(renderTemplate(block.label || 'Saiba mais', lead));
+      return url
+        ? `<a href="${escapeHtml(url)}" style="${ctaStyles}">${label}</a>`
+        : `<span style="${ctaStyles}">${label}</span>`;
     }
     case 'image': {
       // Banner por link: src obrigatório, href opcional (banner clicável,
-      // UTM aplicada como em qualquer link — FR-037).
+      // UTM aplicada como em qualquer link — FR-037; href sanitizado como
+      // qualquer destino de clique).
       const src = escapeHtml(block.src || '');
       const alt = escapeHtml(block.alt || '');
       const img = `<img src="${src}" alt="${alt}" style="width:100%;max-width:100%;height:auto;display:block;border-radius:6px;" />`;
-      if (block.href) {
-        const url = applyUtm(renderTemplate(block.href, lead), utmTemplate);
-        return `<a href="${escapeHtml(url)}" target="_blank" style="text-decoration:none;">${img}</a>`;
+      const href = sanitizeLink(applyUtm(renderTemplate(block.href || '', lead), utmTemplate));
+      if (href) {
+        return `<a href="${escapeHtml(href)}" target="_blank" style="text-decoration:none;">${img}</a>`;
       }
       return img;
     }
@@ -106,8 +144,8 @@ function blocksToText(blocks, lead, utmTemplate, fallbacks) {
   return (blocks || [])
     .map((block) => {
       if (block.type === 'button') {
-        const url = applyUtm(block.url || '', utmTemplate);
-        return `${renderTemplate(block.label || '', lead)}: ${url}`;
+        const url = sanitizeLink(applyUtm(block.url || '', utmTemplate));
+        return url ? `${renderTemplate(block.label || '', lead)}: ${url}` : renderTemplate(block.label || '', lead);
       }
       if (block.type === 'divider') return '---';
       if (block.type === 'columns') {
@@ -151,4 +189,4 @@ function fallbackHtml(inner) {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width"/></head><body style="margin:0;background:#f4f4f7;"><div style="max-width:600px;margin:0 auto;padding:24px;font-family:Arial,sans-serif;">${inner}</div></body></html>`;
 }
 
-module.exports = { renderEmail, resolveConditions, matchesCondition, applyUtm };
+module.exports = { renderEmail, resolveConditions, matchesCondition, applyUtm, sanitizeLink, normalizeHexColor };
