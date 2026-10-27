@@ -769,9 +769,16 @@ async function processSend(job) {
     let inlineImages = [];
     try {
       const { extractInlineImages } = require('./studio/email-inline');
-      inlineImages = extractInlineImages(message.htmlBody, {
+      const extracted = extractInlineImages(message.htmlBody, {
         readGenerated: require('./studio/storage').readGenerated,
-      }).inlineImages;
+      });
+      inlineImages = extracted.inlineImages;
+      // Visibilidade (2026-10-27): html referencia /media mas o arquivo não
+      // existe mais no storage → o cliente do lead receberia imagem quebrada
+      // SEM aviso. Nomeia o arquivo no log para o dono restaurar/reanexar.
+      if (inlineImages.length === 0 && /\/media\/[a-f0-9]{32}/.test(message.htmlBody)) {
+        console.warn(`[send] ⚠ mensagem ${messageId} referencia imagem /media que NÃO está no storage — o e-mail sairá com a imagem quebrada. Restaure o arquivo em generated/ ou reanexe.`);
+      }
     } catch (inlineErr) {
       console.warn(`[send] banner inline indisponível na mensagem ${messageId} — sigo com src remoto:`, inlineErr.message);
     }
