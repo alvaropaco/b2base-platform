@@ -184,6 +184,11 @@ test('Studio: disparo com emailDoc sai com o botão/link REAL e o banner no HTML
   assert.ok(html.includes('<a href="https://wa.me/5512996399943"'), 'link do WhatsApp como <a> REAL');
   assert.ok(html.includes('display:inline-block'), 'estilo de BOTÃO (não texto plano)');
   assert.ok(html.includes('<img src="https://cdn.exemplo.com/banner.png"'), 'banner do emailDoc no HTML');
+  // Banner CLICÁVEL (2026-10-27): o bloco image NÃO tem href, mas herda a
+  // url do button — o clique na arte cai na mesma conversa do WhatsApp.
+  const bannerAnchor = html.match(/<a href="([^"]+)"[^>]*><img[^>]*banner\.png/);
+  assert.ok(bannerAnchor, 'banner embrulhado em <a>');
+  assert.ok(bannerAnchor[1].includes('wa.me/5512996399943'), 'clique no banner cai na conversa do WhatsApp');
   assert.ok(html.includes('Olá Mariana'), 'variáveis do emailDoc resolvidas POR LEAD');
   assert.ok(html.includes('use o link de descadastro'), 'rodapé de descadastro no HTML (FR-37)');
   // Pixel de tracking DENTRO do documento (antes do </body>).

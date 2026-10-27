@@ -909,10 +909,22 @@ function registerChatRoutes(router, context) {
               where: { campaignId: campaign.id, kind: 'base', stepIndex: 1, channel: 'email' },
             });
             if (rows.length > 0) {
-              const contents = rows.map((row) => ({
-                id: row.id,
-                emailDoc: { blocks: [{ type: 'image', src: imageUrl, alt: promptText.slice(0, 200) }, ...((row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [])] },
-              }));
+              const contents = rows.map((row) => {
+                const existingBlocks = (row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [];
+                // Banner CLICÁVEL (2026-10-27, pedido do dono): o botão
+                // desenhado na arte é só pixel — o clique no banner cai na
+                // MESMA conversa do botão do e-mail (wa.me do material).
+                const cta = existingBlocks.find((b) => b && b.type === 'button' && b.url);
+                return {
+                  id: row.id,
+                  emailDoc: {
+                    blocks: [
+                      { type: 'image', src: imageUrl, alt: promptText.slice(0, 200), ...(cta ? { href: cta.url } : {}) },
+                      ...existingBlocks,
+                    ],
+                  },
+                };
+              });
               await campaignService.flow.updateContents(prisma, { campaign, contents, userId });
               inserted = true;
             }
@@ -2126,15 +2138,21 @@ function registerChatRoutes(router, context) {
           if (rows.length === 0) {
             throw httpError('NO_CONTENT', 409, 'A campanha não tem conteúdo de e-mail para editar — me peça para gerar primeiro.');
           }
-          const imageBlock = {
-            type: 'image',
-            src: String(action.imageUrl),
-            alt: action.imageAlt ? String(action.imageAlt).slice(0, 200) : '',
-            ...(action.imageHref ? { href: String(action.imageHref) } : {}),
+          const imageBlockFor = (row) => {
+            // Banner CLICÁVEL (2026-10-27): sem href explícito, herda o link
+            // do botão do próprio e-mail — o clique cai na mesma conversa.
+            const existingBlocks = (row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [];
+            const cta = existingBlocks.find((b) => b && b.type === 'button' && b.url);
+            return {
+              type: 'image',
+              src: String(action.imageUrl),
+              alt: action.imageAlt ? String(action.imageAlt).slice(0, 200) : '',
+              ...(action.imageHref ? { href: String(action.imageHref) } : cta ? { href: cta.url } : {}),
+            };
           };
           contents = rows.map((row) => ({
             id: row.id,
-            emailDoc: { blocks: [imageBlock, ...((row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [])] },
+            emailDoc: { blocks: [imageBlockFor(row), ...((row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [])] },
           }));
         }
         // QA 2026-10-06: "troca a mensagem por <texto>" — o modelo NÃO tem o id

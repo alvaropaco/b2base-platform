@@ -87,7 +87,11 @@ function registerContentRoutes(router, context) {
       const campaign = await loadCampaign(prisma, orgId, req.params.id);
       const content = await loadContent(prisma, orgId, campaign.id, req.params.contentId);
       const utm = campaign.utmTemplate || {};
-      const rendered = renderEmail(content.emailDoc || { blocks: [] }, SAMPLE_LEAD, {
+      // Banner SEM href herda o link do botão (2026-10-27) — MESMA regra do
+      // envio (emailDocToHtml): prévia mostra o banner clicável que o lead
+      // vai receber (SC-006).
+      const { linkBannerToCta } = require('./channel-bridge');
+      const rendered = renderEmail(linkBannerToCta(content.emailDoc) || { blocks: [] }, SAMPLE_LEAD, {
         utmTemplate: utm,
         fallbacks: {},
       });

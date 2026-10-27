@@ -166,3 +166,57 @@ test('renderEmail: image com href → banner CLICÁVEL com UTM da campanha', () 
   assert.ok(anchor[1].startsWith('https://exemplo.com/cta?'), 'href do clique');
   assert.ok(anchor[1].includes('utm_campaign=dobradeiras'), 'UTM aplicada ao clique (FR-037)');
 });
+
+// ── 2026-10-27: banner SEM href herda o link do BOTÃO do próprio e-mail ─────
+// O botão desenhado dentro do banner gerado é só pixel — o clique no banner
+// tem que cair na MESMA conversa do WhatsApp (pedido do dono). A regra vale
+// para blocos salvos ANTES da correção: o default é no RENDER (envio/teste/
+// prévia), não só na inserção.
+
+const { linkBannerToCta, emailDocToHtml } = require('../studio/channel-bridge');
+
+test('linkBannerToCta: imagem sem href herda a url do bloco button', () => {
+  const doc = linkBannerToCta({
+    blocks: [
+      { type: 'image', src: 'https://cdn.exemplo.com/banner.png', alt: 'Banner' },
+      { type: 'text', text: 'Olá!' },
+      { type: 'button', label: 'Falar com a Arthur Company', url: 'https://wa.me/5512996399943' },
+    ],
+  });
+  assert.equal(doc.blocks[0].href, 'https://wa.me/5512996399943', 'banner clicável para o wa.me');
+  // O bloco button original permanece intacto.
+  assert.equal(doc.blocks[2].type, 'button');
+});
+
+test('linkBannerToCta: imagem COM href próprio não é sobrescrita; sem button nada muda', () => {
+  const comHref = linkBannerToCta({
+    blocks: [
+      { type: 'image', src: 'https://cdn.exemplo.com/a.png', href: 'https://exemplo.com/proprio' },
+      { type: 'button', label: 'B', url: 'https://wa.me/1' },
+    ],
+  });
+  assert.equal(comHref.blocks[0].href, 'https://exemplo.com/proprio', 'href explícito vence');
+  const semBotao = linkBannerToCta({ blocks: [{ type: 'image', src: 'https://cdn.exemplo.com/b.png' }] });
+  assert.equal(semBotao.blocks[0].href, undefined, 'sem button, sem href inventado');
+  assert.equal(linkBannerToCta(null), null, 'emailDoc ausente não quebra');
+});
+
+test('emailDocToHtml: banner salvo SEM href (campanha antiga) sai CLICÁVEL no HTML do envio', () => {
+  const html = emailDocToHtml({
+    blocks: [
+      { type: 'image', src: 'https://cdn.exemplo.com/banner-maquinas.png', alt: 'Banner' },
+      { type: 'text', text: 'Olá {{firstName}}, tudo bem?' },
+      { type: 'button', label: 'Falar com a Arthur Company', url: 'https://wa.me/5512996399943' },
+    ],
+  }, LEAD);
+  assert.ok(html, 'HTML gerado');
+  const anchor = html.match(/<a href="([^"]+)"[^>]*><img/);
+  assert.ok(anchor, 'banner embrulhado em <a>');
+  assert.ok(anchor[1].includes('wa.me/5512996399943'), 'clique do banner cai na conversa do WhatsApp');
+  assert.ok(html.includes('href="https://wa.me/5512996399943"'), 'botão de texto também linkado');
+});
+
+test('emailDocToHtml: sem blocos → null (chamador cai no texto plano)', () => {
+  assert.equal(emailDocToHtml(null, LEAD), null);
+  assert.equal(emailDocToHtml({ blocks: [] }, LEAD), null);
+});

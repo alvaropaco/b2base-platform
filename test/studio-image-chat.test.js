@@ -227,3 +227,54 @@ test('turno completo: card da imagem persiste no histórico (GET /chat) e o arqu
     world.close();
   }
 });
+
+// ── 5. banner CLICÁVEL (2026-10-27): o botão desenhado na arte é só pixel —
+// o bloco image nasce com href = link do botão do próprio e-mail (wa.me).
+
+test('generate_image com attachToEmail: banner herda o href do botão (clique cai no WhatsApp)', async () => {
+  const world = await startServer({
+    fetchImpl: async (u) => {
+      if (u.includes('/v1/images/generations')) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ b64_json: PNG.toString('base64') }] }) };
+      }
+      throw new Error('fetch inesperado: ' + u);
+    },
+  });
+  const { api, prisma } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Banner clicável', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-cta', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'Máquinas industriais', whatsappText: null,
+      emailDoc: {
+        blocks: [
+          { type: 'text', text: 'Olá {{firstName}}, tudo bem?' },
+          { type: 'button', label: 'Falar com a Arthur Company', url: 'https://wa.me/5512996399943' },
+        ],
+      },
+    });
+
+    const out = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'generate_image',
+      params: { prompt: 'banner de máquinas industriais com botão verde', attachToEmail: true },
+    });
+    assert.equal(out.res.status, 200);
+    const card = out.body.data.card;
+    assert.equal(card.type, 'image_generated');
+    assert.equal(card.insertedIntoEmail, true, 'banner inserido no e-mail');
+
+    const row = prisma.studioContent.rows.find((r) => r.id === 'ce-cta');
+    const [imageBlock] = row.emailDoc.blocks;
+    assert.equal(imageBlock.type, 'image');
+    assert.match(imageBlock.src, /^https:\/\/www\.b2base\.net\/media\//, 'src absoluto para o cliente de e-mail');
+    assert.equal(imageBlock.href, 'https://wa.me/5512996399943', 'banner nasce CLICÁVEL apontando para a conversa');
+    assert.ok(
+      row.emailDoc.blocks.some((b) => b.type === 'button' && b.url === 'https://wa.me/5512996399943'),
+      'bloco button original permanece (mesmo destino do clique)'
+    );
+  } finally {
+    world.restore();
+    world.close();
+  }
+});

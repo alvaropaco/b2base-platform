@@ -122,6 +122,25 @@ function waContactModel(prisma) {
 }
 
 /**
+ * Banner SEM href herda o link do botão do próprio e-mail (2026-10-27,
+ * pedido do dono): o botão desenhado DENTRO do banner gerado é só pixel —
+ * o clique no banner tem que cair na MESMA conversa do WhatsApp. Aplicado
+ * no envio (emailDocToHtml), no teste e na prévia do painel — assim blocos
+ * salvos ANTES desta correção (sem href) também saem clicáveis.
+ */
+function linkBannerToCta(emailDoc) {
+  const blocks = emailDoc && Array.isArray(emailDoc.blocks) ? emailDoc.blocks : [];
+  if (blocks.length === 0) return emailDoc;
+  const cta = blocks.find((b) => b && typeof b === 'object' && b.type === 'button' && b.url);
+  if (!cta) return emailDoc;
+  return {
+    blocks: blocks.map((b) =>
+      b && typeof b === 'object' && b.type === 'image' && !b.href ? { ...b, href: cta.url } : b
+    ),
+  };
+}
+
+/**
  * emailDoc.blocks → HTML FINAL do e-mail para um lead — o MESMO renderer da
  * prévia do painel (email-renderer.js, SC-006: preview ≡ envio) + rodapé de
  * descadastro (FR-37). Sem blocos (ou emailDoc ausente) devolve null e o
@@ -137,7 +156,7 @@ function emailDocToHtml(emailDoc, lead, { utmTemplate = {}, unsubscribeMailto = 
   if (blocks.length === 0) return null;
   const { renderEmail } = require('./email-renderer');
   const { escapeHtml } = require('./variables');
-  const rendered = renderEmail({ blocks }, lead, { utmTemplate });
+  const rendered = renderEmail(linkBannerToCta({ blocks }), lead, { utmTemplate });
   const mailto =
     unsubscribeMailto ||
     process.env.STUDIO_UNSUBSCRIBE_MAILTO ||
@@ -819,6 +838,7 @@ module.exports = {
   emailAttachmentCapBytes,
   emailDocToText,
   emailDocToHtml,
+  linkBannerToCta,
   compileSteps,
   enqueueBatch,
   waContactModel,
