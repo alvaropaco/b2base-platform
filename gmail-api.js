@@ -19,19 +19,23 @@ const _oauthState = new Map();
 
 /**
  * Generate Google OAuth2 authorization URL.
- * Stores state in memory to prevent CSRF.
+ * Stores state in memory to prevent CSRF (single-use: the callback removes it).
  *
  * @param {string} userId - internal user id
+ * @param {object} [opts] - { frontendOrigin?: string } — origem do FRONTEND no
+ *   clique (header Origin do fetch): em dev as origens são separadas (API 3001
+ *   / Vite 5173) e o callback precisa voltar para a origem certa; em produção
+ *   single-origin APP_URL já cobre.
  * @returns {string} authorization URL
  */
-function getAuthUrl(userId) {
+function getAuthUrl(userId, { frontendOrigin = '' } = {}) {
   const config = getGoogleConfig();
   if (!config.clientId || !config.clientSecret) {
     throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set');
   }
 
   const state = crypto.randomUUID();
-  _oauthState.set(state, { userId, createdAt: Date.now() });
+  _oauthState.set(state, { userId, createdAt: Date.now(), frontendOrigin });
 
   const oauth2Client = new google.auth.OAuth2(
     config.clientId,
@@ -403,4 +407,8 @@ module.exports = {
   buildMimeMessage,
   listHistory,
   getMessage,
+  // State anti-CSRF do OAuth — EXPORTADO porque o callback (server-prod.js)
+  // consome/invalida o state daqui. Sem isso era undefined: TODO callback
+  // caía no "invalid state" e o OAuth nunca completava.
+  _oauthState,
 };

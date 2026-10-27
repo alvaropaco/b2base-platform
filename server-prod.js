@@ -3534,9 +3534,18 @@ app.get('/api/gmail/auth-url', async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
-    const url = gmailApi.getAuthUrl(userId);
+    // Origem do FRONTEND no clique (Vite 5173 em dev; mesma origem em prod) —
+    // o callback do OAuth volta para ela (ver callback abaixo).
+    const url = gmailApi.getAuthUrl(userId, { frontendOrigin: req.headers.origin || '' });
     res.json({ success: true, authUrl: url, timestamp: new Date().toISOString() });
   } catch (err) {
+    if (/GOOGLE_CLIENT_ID/.test(err.message)) {
+      // Credenciais ausentes: instrução acionável, sem inglês cru na UI.
+      return res.status(400).json({
+        success: false,
+        error: 'Gmail não configurado neste ambiente: cadastre GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET no .env (Google Cloud → Credenciais → OAuth 2.0) e reinicie a API.',
+      });
+    }
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -3554,22 +3563,25 @@ app.get('/api/gmail/callback', async (req, res) => {
       return res.redirect('/'); // back to dashboard
     }
 
-    // Validate state (CSRF) — lookup in-memory store
+    // Validate state (CSRF, single-use) — lookup in-memory store
     const stateData = require('./gmail-api')._oauthState?.get(state);
     if (!stateData) {
       return res.redirect('/'); // invalid state, drop
     }
 
-    // Remove from store
+    // Remove from store (single-use: repetir o callback NÃO troca código 2×)
     require('./gmail-api')._oauthState?.delete(state);
 
     const { email } = await gmailApi.exchangeCodeForTokens(prisma, code, stateData.userId);
 
-    // Redirect back with success
-    res.redirect(`/settings?gmail_connected=${encodeURIComponent(email)}`);
+    // Volta para a origem do FRONTEND capturada no clique (Vite 5173 em dev;
+    // em produção single-origin APP_URL/origem é a própria API).
+    const frontend = stateData.frontendOrigin || process.env.APP_URL || '';
+    res.redirect(`${frontend}/settings?gmail_connected=${encodeURIComponent(email)}`);
   } catch (err) {
     console.error('[gmail] OAuth callback error:', err.message);
-    res.redirect('/settings?gmail_error=connection_failed');
+    const frontend = process.env.APP_URL || '';
+    res.redirect(`${frontend}/settings?gmail_error=connection_failed`);
   }
 });
 
@@ -3664,6 +3676,9 @@ app.post('/api/gmail/photos', gmailPhotosUpload.array('photos', gmailPhotos.MAX_
     }
     if (err.code === 'LIMIT_FILE_SIZE') {
       return res.status(413).json({ success: false, error: 'Foto maior que 10 MB — reduza antes de enviar.' });
+    }
+    if (err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.status(400).json({ success: false, error: `Máximo de ${gmailPhotos.MAX_PHOTOS} fotos por envio — separe em duas remessas.` });
     }
     res.status(status).json({ success: false, error: err.expose ? err.message : 'Não foi possível enviar agora — tente novamente em instantes.' });
   }
