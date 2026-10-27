@@ -92,7 +92,7 @@ function GmailApiProvider(prisma, account) {
     // multipart/mixed com as partes base64 — fotos chegam baixáveis.
     capabilities: { replySync: true, attachments: true },
 
-    async send({ to, subject, body, htmlBody, messageId, attachments }) {
+    async send({ to, subject, body, htmlBody, messageId, attachments, inlineImages }) {
       const result = await gmailApi.sendEmail(prisma, account.id, {
         to,
         subject,
@@ -100,6 +100,9 @@ function GmailApiProvider(prisma, account) {
         htmlBody,
         messageId,
         attachments,
+        // Banner do Studio EMBUTIDO (2026-10-27): src → `cid:` + partes
+        // related com Content-ID — a imagem viaja na própria mensagem.
+        inlineImages,
       });
       return { messageId: result.gmailMessageId, threadId: result.gmailThreadId };
     },

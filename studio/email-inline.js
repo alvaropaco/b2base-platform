@@ -16,10 +16,14 @@
  * envio por causa da embutida).
  */
 
-const INLINE_SRC_RE = /https?:\/\/[^"'\s>]*\/media\/([a-f0-9]{32}\.(?:png|jpe?g))/gi;
+const INLINE_SRC_RE = /https?:\/\/[^"'\s>]*\/media\/([a-f0-9]{32}\.(?:png|jpe?g|webp|gif))/gi;
 
 function contentTypeFor(fileName) {
-  return String(fileName || '').toLowerCase().endsWith('.jpg') ? 'image/jpeg' : 'image/png';
+  const name = String(fileName || '').toLowerCase();
+  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
+  if (name.endsWith('.webp')) return 'image/webp';
+  if (name.endsWith('.gif')) return 'image/gif';
+  return 'image/png';
 }
 
 /**

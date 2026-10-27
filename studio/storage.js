@@ -64,7 +64,7 @@ function removeFile(relativePath) {
 // LEAD busca a imagem sem sessão) — por isso a leitura é restrita a nomes
 // gerados por saveGenerated (hash SHA-256 de 32 hex + extensão whitelist).
 
-const GENERATED_NAME_RE = /^[a-f0-9]{32}\.(png|jpe?g)$/i;
+const GENERATED_NAME_RE = /^[a-f0-9]{32}\.(png|jpe?g|webp|gif)$/i;
 
 function generatedDir() {
   return path.join(ensureDir(), 'generated');

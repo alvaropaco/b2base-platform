@@ -81,3 +81,63 @@ test('filename com CR/LF não injeta headers (linhas do MIME permanecem íntegra
   const disposition = lines.find((line) => line.startsWith('Content-Disposition: attachment'));
   assert.ok(disposition && disposition.includes('mau'), 'filename preservado (com CR/LF virados espaço)');
 });
+
+// ── 2026-10-27: imagens INLINE (banner embutido por CID) — multipart/related ─
+
+test('com imagem INLINE: multipart/related com Content-ID batendo com o cid do HTML', () => {
+  const cid = 'banner-abcdefabcdefabcdefabcdefabcdef12';
+  const html = `<html><body><img src="cid:${cid}" alt="banner" /><a href="https://wa.me/5512996399943">Fale</a></body></html>`;
+  const mime = buildMimeMessage({
+    from: 'eu@gmail.com',
+    to: 'lead@empresa.com',
+    subject: 'S',
+    messageIdHeader: '<m@gmail.com>',
+    body: 'texto',
+    htmlBody: html,
+    attachments: [],
+    inlineImages: [
+      { cid, fileName: 'banner.png', embedFileName: 'banner.png', content: PNG_B64, contentType: 'image/png' },
+    ],
+  });
+  assert.ok(mime.includes('multipart/related'), 'related direto (sem anexos comuns)');
+  assert.ok(mime.includes(`Content-ID: <${cid}>`), 'Content-ID da imagem');
+  assert.ok(mime.includes(`src="cid:${cid}"`), 'HTML referencia o MESMO cid');
+  assert.ok(mime.includes('Content-Disposition: inline'), 'disposição inline');
+  assert.ok(!mime.includes('multipart/mixed'), 'sem anexos comuns, sem mixed');
+  assert.ok(mime.includes('https://wa.me/5512996399943'), 'CTA preservado no html');
+});
+
+test('imagem inline + anexo comum → mixed contendo related (os dois convivem)', () => {
+  const mime = buildMimeMessage({
+    from: 'eu@gmail.com',
+    to: 'lead@empresa.com',
+    subject: 'S',
+    body: 'texto',
+    htmlBody: '<img src="cid:banner-x" />',
+    attachments: [{ fileName: 'catalogo.pdf', content: PNG_B64, contentType: 'application/pdf' }],
+    inlineImages: [{ cid: 'banner-x', fileName: 'b.png', embedFileName: 'b.png', content: PNG_B64, contentType: 'image/png' }],
+  });
+  assert.ok(mime.includes('multipart/mixed'));
+  assert.ok(mime.includes('multipart/related'), 'related dentro do mixed');
+  assert.ok(mime.includes('Content-ID: <banner-x>'));
+  assert.ok(mime.includes('filename="catalogo.pdf"'), 'anexo comum preservado');
+});
+
+test('Content-ID do MIME corresponde 1:1 aos src cid: do HTML (contra desencontro)', () => {
+  const cid = 'banner-11112222333344445555666677778888';
+  const html = `<img src="cid:${cid}" /><img src="cid:outro-id" />`;
+  const mime = buildMimeMessage({
+    from: 'eu@gmail.com',
+    to: 'a@b.com',
+    subject: 'S',
+    body: 'x',
+    htmlBody: html,
+    attachments: [],
+    inlineImages: [
+      { cid, fileName: 'a.png', embedFileName: 'a.png', content: PNG_B64, contentType: 'image/png' },
+      { cid: 'outro-id', fileName: 'b.png', embedFileName: 'b.png', content: PNG_B64, contentType: 'image/png' },
+    ],
+  });
+  const idsNoMime = (mime.match(/Content-ID: <([^>]+)>/g) || []).sort();
+  assert.deepEqual(idsNoMime, [`Content-ID: <${cid}>`, 'Content-ID: <outro-id>'], 'todo cid do HTML tem parte related');
+});

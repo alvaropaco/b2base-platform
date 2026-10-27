@@ -13,6 +13,7 @@
 const crypto = require('crypto');
 const { google } = require('googleapis');
 const { encrypt, decrypt, getGoogleConfig } = require('./gmail-auth');
+const { applyCid } = require('./studio/email-inline');
 
 // OAuth2 state tracker (short-lived, in-memory)
 const _oauthState = new Map();
@@ -199,7 +200,7 @@ async function getValidOAuth2Client(prisma, emailAccount_id) {
  *   attachments?: [{fileName, content(base64), contentType}] }
  * @returns {object} { gmailMessageId, gmailThreadId }
  */
-async function sendEmail(prisma, emailAccount_id, { to, subject, body, htmlBody, messageId, attachments }) {
+async function sendEmail(prisma, emailAccount_id, { to, subject, body, htmlBody, messageId, attachments, inlineImages }) {
   const oauth2Client = await getValidOAuth2Client(prisma, emailAccount_id);
   const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
@@ -210,14 +211,21 @@ async function sendEmail(prisma, emailAccount_id, { to, subject, body, htmlBody,
   const { formatMessageId } = require('./email-provider');
   const midHeader = formatMessageId(messageId, senderEmail);
 
+  // Imagens INLINE (banner do Studio): os bytes viajam DENTRO da mensagem —
+  // o src remoto (localhost em dev) vira `cid:` e a parte related leva a
+  // imagem. Sem inlineImages, o html segue intocado (comportamento antigo).
+  const images = Array.isArray(inlineImages) ? inlineImages : [];
+  const finalHtmlBody = images.length > 0 ? applyCid(htmlBody, images) : htmlBody;
+
   const mimeMessage = buildMimeMessage({
     from: senderEmail,
     to,
     subject,
     messageIdHeader: midHeader,
     body,
-    htmlBody,
+    htmlBody: finalHtmlBody,
     attachments: Array.isArray(attachments) ? attachments : [],
+    inlineImages: images,
   });
 
   // Gmail API expects base64url encoding
@@ -241,10 +249,14 @@ async function sendEmail(prisma, emailAccount_id, { to, subject, body, htmlBody,
 }
 
 /**
- * Monta a mensagem RFC 2822 do Gmail — texto/HTML (+ anexos base64 em
- * multipart/mixed). Exportada para teste (estrutura MIME é contrato).
+ * Monta a mensagem RFC 2822 do Gmail:
+ *   - texto/HTML simples (como sempre);
+ *   - + imagens INLINE (banner do Studio): multipart/related com as partes
+ *     base64 e Content-ID — o HTML referencia por `cid:` (applyCid no send);
+ *   - + anexos comuns: multipart/mixed por cima (fotos/anexos baixáveis).
+ * Exportada para teste (estrutura MIME é contrato).
  */
-function buildMimeMessage({ from, to, subject, messageIdHeader, body, htmlBody, attachments = [] }) {
+function buildMimeMessage({ from, to, subject, messageIdHeader, body, htmlBody, attachments = [], inlineImages = [] }) {
   const headers = [
     `From: ${from}`,
     `To: ${to}`,
@@ -253,64 +265,94 @@ function buildMimeMessage({ from, to, subject, messageIdHeader, body, htmlBody, 
     'MIME-Version: 1.0',
   ].filter(Boolean);
 
-  if (!attachments || attachments.length === 0) {
-    const boundary = `_boundary_${Date.now()}`;
-    if (htmlBody) {
-      return headers
-        .concat([
-          `Content-Type: multipart/alternative; boundary="${boundary}"`,
-          '',
-          `--${boundary}`,
-          'Content-Type: text/plain; charset=UTF-8',
-          'Content-Transfer-Encoding: 7bit',
-          '',
-          body,
-          '',
-          `--${boundary}`,
-          'Content-Type: text/html; charset=UTF-8',
-          'Content-Transfer-Encoding: 7bit',
-          '',
-          htmlBody,
-          '',
-          `--${boundary}--`,
-          '',
-        ])
-        .join('\r\n');
-    }
-    return headers
-      .concat([
+  const alternativeBoundary = `_alt_${Date.now()}`;
+  const alternative = htmlBody
+    ? [
+        `Content-Type: multipart/alternative; boundary="${alternativeBoundary}"`,
+        '',
+        `--${alternativeBoundary}`,
         'Content-Type: text/plain; charset=UTF-8',
         'Content-Transfer-Encoding: 7bit',
         '',
         body,
         '',
+        `--${alternativeBoundary}`,
+        'Content-Type: text/html; charset=UTF-8',
+        'Content-Transfer-Encoding: 7bit',
+        '',
+        htmlBody,
+        '',
+        `--${alternativeBoundary}--`,
+        '',
+      ]
+    : [
+        'Content-Type: text/plain; charset=UTF-8',
+        'Content-Transfer-Encoding: 7bit',
+        '',
+        body,
+        '',
+      ];
+
+  // Partes de imagem INLINE (banner): Content-ID deve bater EXATAMENTE com o
+  // `cid:` referenciado no HTML (applyCid faz a troca no send). A função
+  // recebe o boundary do container (related direto ou dentro do mixed).
+  const safeName = (name) => String(name || 'imagem').replace(/"/g, '').replace(/\r\n?|\n/g, ' ');
+  const inlinePartsFor = (boundary) =>
+    (inlineImages || []).map((img) =>
+      [
+        `--${boundary}`,
+        `Content-Type: ${img.contentType || 'image/png'}; name="${safeName(img.embedFileName || img.fileName)}"`,
+        'Content-Transfer-Encoding: base64',
+        `Content-ID: <${img.cid}>`,
+        'Content-Disposition: inline; filename="' + safeName(img.embedFileName || img.fileName) + '"',
+        '',
+        String(img.content || '').replace(/(.{76})/g, '$1\r\n'),
+        '',
+      ].join('\r\n')
+    );
+
+  // 1) Imagens inline sem anexos comuns → multipart/related direto.
+  if (inlineImages && inlineImages.length > 0 && (!attachments || attachments.length === 0)) {
+    const relatedBoundary = `_related_${Date.now()}`;
+    return headers
+      .concat([
+        `Content-Type: multipart/related; boundary="${relatedBoundary}"; type="multipart/alternative"`,
+        '',
+        `--${relatedBoundary}`,
+        ...alternative,
+        ...inlinePartsFor(relatedBoundary),
+        `--${relatedBoundary}--`,
+        '',
       ])
       .join('\r\n');
   }
 
-  // Com anexos: multipart/mixed [ texto/alternative + anexos ]
+  // 2) Sem anexos e sem imagens inline → formato simples de sempre.
+  if (!attachments || attachments.length === 0) {
+    return headers.concat(alternative).join('\r\n');
+  }
+
+  // 3) Anexos comuns (+ imagens inline, se houver) → multipart/mixed.
   const mixedBoundary = `_mixed_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const altBoundary = `_alt_${Date.now()}`;
   let bodyPart;
-  if (htmlBody) {
+  if (inlineImages && inlineImages.length > 0) {
+    const relatedBoundary = `_related_${Date.now()}`;
     bodyPart = [
       `--${mixedBoundary}`,
-      `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+      `Content-Type: multipart/related; boundary="${relatedBoundary}"; type="multipart/alternative"`,
       '',
-      `--${altBoundary}`,
-      'Content-Type: text/plain; charset=UTF-8',
-      'Content-Transfer-Encoding: 7bit',
+      `--${relatedBoundary}`,
+      ...alternative,
+      ...inlinePartsFor(relatedBoundary),
+      `--${relatedBoundary}--`,
       '',
-      body,
+    ];
+  } else if (htmlBody) {
+    bodyPart = [
+      `--${mixedBoundary}`,
+      `Content-Type: multipart/alternative; boundary="${alternativeBoundary}"`,
       '',
-      `--${altBoundary}`,
-      'Content-Type: text/html; charset=UTF-8',
-      'Content-Transfer-Encoding: 7bit',
-      '',
-      htmlBody,
-      '',
-      `--${altBoundary}--`,
-      '',
+      ...alternative,
     ];
   } else {
     bodyPart = [
@@ -323,7 +365,6 @@ function buildMimeMessage({ from, to, subject, messageIdHeader, body, htmlBody, 
     ];
   }
 
-  const safeName = (name) => String(name || 'anexo').replace(/"/g, '').replace(/\r\n?|\n/g, ' ');
   const parts = attachments.map((a) =>
     [
       `--${mixedBoundary}`,
