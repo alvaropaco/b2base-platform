@@ -243,6 +243,9 @@ function actionParams(action) {
       // Anexo promovido a banner (2026-10-27): o id do anexo identifica o
       // conteúdo (a URL pública é derivada dele).
       if (action.attachmentId != null) params.attachmentId = String(action.attachmentId);
+      // Material de imagem promovido a banner: o id do material identifica o
+      // conteúdo (a URL pública é derivada dele no handler).
+      if (action.materialId != null) params.materialId = String(action.materialId);
       return params;
     }
     default:
@@ -2189,6 +2192,38 @@ function registerChatRoutes(router, context) {
         // Story 3.3/D9: a edição pelo chat REUSA o mesmo serviço do PATCH da
         // UI (validação, sync em voo, contentEdits — AD-6/AD-13).
         let contents = Array.isArray(action.contents) ? action.contents : [];
+        // IMAGEM como MATERIAL no topo do e-mail (2026-10-27, pedido do dono:
+        // "a imagem está como anexo extracted sem imageUrl"). {channel:'email',
+        // materialId} PROMOVE o arquivo do material para a pasta pública
+        // (generated/ → rota /media) e cai no MESMO caminho do imageUrl —
+        // banner no topo, clicável para o CTA do botão. `extracted` é o
+        // status da EXTRAÇÃO de contexto (visão) e NÃO impede o uso do
+        // arquivo — os bytes estão no storage independente dela.
+        if (contents.length === 0 && action.materialId) {
+          const storage = require('./storage');
+          const material = await prisma.studioMaterial.findUnique({ where: { id: String(action.materialId) } });
+          if (!material || material.orgId !== orgId) {
+            throw httpError('NOT_FOUND', 404, 'Material não encontrado nesta organização — me diga qual imagem usar (ou anexe de novo).');
+          }
+          if (material.kind === 'url' && /^https?:\/\//i.test(String(material.sourceRef || ''))) {
+            // Material por LINK: a URL já é o imageUrl (sem bytes locais).
+            action.imageUrl = String(material.sourceRef);
+          } else {
+            const ext = storage.extFromMime(material.mimeType, material.sourceRef);
+            if (!['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) {
+              throw httpError('NOT_AN_IMAGE', 400, 'Esse material não é imagem (png/jpg/webp/gif) — não vira banner de e-mail.');
+            }
+            const base = publicBaseUrl(req);
+            if (!base) {
+              throw httpError('NO_PUBLIC_BASE', 409, 'Sem APP_URL/origem eu NÃO consigo publicar a imagem para o cliente de e-mail do lead. Configure APP_URL e tente de novo.');
+            }
+            const buffer = storage.readBuffer(material.sourceRef);
+            const promoted = storage.saveGenerated(buffer, ext);
+            action.imageUrl = `${base}/media/${promoted}`;
+            if (!action.imageAlt) action.imageAlt = `Material ${material.id.slice(-6)}`;
+          }
+          action.imageAlt = action.imageAlt || 'Banner da campanha';
+        }
         // IMAGEM ANEXADA como banner (2026-10-27, pedido do dono: "a imagem
         // que anexei não vai no e-mail"): {channel:'email', attachmentId}
         // PROMOVE o anexo para a pasta pública (generated/ — mesma rota

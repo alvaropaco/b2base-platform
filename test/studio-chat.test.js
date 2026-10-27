@@ -2705,3 +2705,151 @@ test('QA: banner do e-mail de TESTE sai EMBUTIDO (inlineImages com cid e bytes)'
     server.close();
   }
 });
+
+// ── 2026-10-27: MATERIAL de imagem (status extracted) vira banner do e-mail ──
+// O material é o fluxo do upload no Cockpit: os bytes estão no storage desde
+// o upload e `extracted` é o status da EXTRAÇÃO de contexto (visão) — não tem
+// nada a ver com a validade do arquivo. O usuário NÃO deve gerar de novo nem
+// hospedar em lugar nenhum.
+
+test('QA: edit_content com materialId PROMOVE o material de imagem para banner (com CTA herdado)', async () => {
+  const os = require('node:os');
+  const path = require('node:path');
+  const fs = require('node:fs');
+  const storage = require('../studio/storage');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-material-'));
+  const prevStorageDir = process.env.STUDIO_STORAGE_DIR;
+  process.env.STUDIO_STORAGE_DIR = tmpDir;
+  // PNG real do USUÁRIO (banner 1248×832 baixado da prévia — bytes reais).
+  const userBanner = '/Users/arthur/Downloads/b1b48a6db287959f651fe012ccf57942.png';
+  if (!fs.existsSync(userBanner)) {
+    if (prevStorageDir === undefined) delete process.env.STUDIO_STORAGE_DIR;
+    else process.env.STUDIO_STORAGE_DIR = prevStorageDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    return; // ambiente sem o arquivo do dono → nada a validar aqui
+  }
+  const bannerBytes = fs.readFileSync(userBanner);
+
+  const impl = async ({ user }) => {
+    const m = String(user || '');
+    const markers = m.match(/NOVA MENSAGEM DO USUÁRIO:[^\n]*/g) || [];
+    const last = markers.length ? markers[markers.length - 1] : '';
+    if (last.includes('usa a imagem do material')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Vou colocar no topo.',
+          actions: [{ type: 'edit_content', channel: 'email', materialId: 'mat-img-1' }],
+        }),
+      };
+    }
+    if (/pode/i.test(last.trim()) && m.includes('usa a imagem do material')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Colocando.',
+          actions: [{ type: 'edit_content', channel: 'email', materialId: 'mat-img-1' }],
+        }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Banner do material', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-mat', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'Máquinas', whatsappText: null,
+      emailDoc: {
+        blocks: [
+          { type: 'text', text: 'Olá {{firstName}}, tudo bem?' },
+          { type: 'button', label: 'Falar com a Arthur Company', url: 'https://wa.me/5512996399943', color: '#25D366' },
+        ],
+      },
+    });
+    // Material de imagem EXTRACTED (visão já rodou) — bytes reais do storage.
+    const saved = storage.saveBuffer(bannerBytes, 'png');
+    prisma.studioMaterial.rows.push({
+      id: 'mat-img-1', orgId: 'org-1', campaignId: c.data.id, kind: 'image',
+      sourceRef: saved.fileName, mimeType: 'image/png', sizeBytes: bannerBytes.length,
+      extractionStatus: 'extracted', uploadedById: 'user-1',
+    });
+
+    // 1ª volta: gate.
+    const first = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'usa a imagem do material no topo do email' });
+    assert.ok(first.body.data.cards.find((card) => card.type === 'confirm_change'), 'gate pede confirmação');
+
+    // 2ª volta: aprovação → material PROMOVIDO para banner com CTA herdado.
+    const second = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'pode' });
+    assert.equal(second.res.status, 200);
+    const row = prisma.studioContent.rows.find((r) => r.id === 'ce-mat');
+    const [imageBlock] = row.emailDoc.blocks;
+    assert.equal(imageBlock.type, 'image', 'banner no topo');
+    assert.match(imageBlock.src, /^https?:\/\/[^/]+\/media\/[a-f0-9]{32}\.png$/, 'material publicado na rota /media');
+    const promoted = imageBlock.src.split('/media/')[1];
+    assert.deepEqual(storage.readGenerated(promoted), bannerBytes, 'BYTES REAIS do banner preservados');
+    assert.equal(imageBlock.href, 'https://wa.me/5512996399943', 'banner clicável com o CTA herdado');
+    assert.ok(storage.generatedExists(promoted), 'arquivo servível sem sessão');
+  } finally {
+    emailProviderCleanup();
+    if (prevStorageDir === undefined) delete process.env.STUDIO_STORAGE_DIR;
+    else process.env.STUDIO_STORAGE_DIR = prevStorageDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    server.close();
+  }
+  function emailProviderCleanup() { /* nenhum stub necessário neste teste */ }
+});
+
+test('QA: material NÃO-imagem (pdf) é recusado com erro honesto — nunca vira banner', async () => {
+  const impl = async ({ user }) => {
+    const m = String(user || '');
+    const markers = m.match(/NOVA MENSAGEM DO USUÁRIO:[^\n]*/g) || [];
+    const last = markers.length ? markers[markers.length - 1] : '';
+    if (last.includes('usa o material pdf como banner')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Vou tentar.',
+          actions: [{ type: 'edit_content', channel: 'email', materialId: 'mat-pdf-1' }],
+        }),
+      };
+    }
+    // Aprovação textual: o agente REAL reemite a action pendente (o fluxo
+    // adiciona o selo confirmed) — sem isso o turno não executa nada.
+    if (/pode/i.test(last) && m.includes('usa o material pdf')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Tentando de novo.',
+          actions: [{ type: 'edit_content', channel: 'email', materialId: 'mat-pdf-1' }],
+        }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Material pdf', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-pdf2', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'S', whatsappText: null,
+      emailDoc: { blocks: [{ type: 'text', text: 'Olá' }] },
+    });
+    prisma.studioMaterial.rows.push({
+      id: 'mat-pdf-1', orgId: 'org-1', campaignId: c.data.id, kind: 'pdf',
+      sourceRef: 'catalogo-fake.pdf', mimeType: 'application/pdf', sizeBytes: 13,
+      extractionStatus: 'extracted', uploadedById: 'user-1',
+    });
+
+    // 1ª volta: gate (a recusa de não-imagem é no handler, DEPOIS do gate);
+    // 2ª volta: aprovação → erro honesto em card.
+    await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'usa o material pdf como banner do email' });
+    const res = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'pode' });
+    assert.equal(res.res.status, 200);
+    const errCard = res.body.data.cards.find((card) => card.type === 'error');
+    assert.ok(errCard, 'card de erro honesto');
+    assert.match(errCard.detail, /não é imagem/i, 'explica que PDF não vira banner');
+    const row = prisma.studioContent.rows.find((r) => r.id === 'ce-pdf2');
+    assert.ok(!row.emailDoc.blocks.some((b) => b.type === 'image'), 'nenhum bloco de imagem criado');
+  } finally {
+    server.close();
+  }
+});

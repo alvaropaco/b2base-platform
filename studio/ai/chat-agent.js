@@ -272,6 +272,7 @@ const SYSTEM_PROMPT = [
   'edit_content {channel, whatsappText?|text?|subject?} — TROCA o texto do canal pelo texto EXATO que o usuário pediu (sem ids);',
   'edit_content {channel:"email", imageUrl:"https://…"} — ANEXA IMAGEM POR LINK no TOPO do e-mail (banner de produto); imageHref opcional = para onde o clique leva, imageAlt = descrição;',
   'edit_content {channel:"email", attachmentId:"<id>"} — usa uma IMAGEM JÁ ANEXADA (id real do anexo no estado) como banner NO TOPO do e-mail — o servidor publica e o banner fica clicável com o link do botão;',
+  'edit_content {channel:"email", materialId:"<id>"} — usa uma IMAGEM que está como MATERIAL da campanha (id real em materiais[] no estado; status "extracted" NÃO impede) como banner NO TOPO do e-mail — o servidor publica e o banner fica clicável com o link do botão; NUNCA peça URL pública para esses casos nem diga que a imagem "não vira endereço público" — ela vira;',
   'edit_content {ctaUrl:"https://…", ctaLabel?, ctaColor?} — TROCA o BOTÃO do e-mail (texto, cor e URL editáveis, ex.: ctaColor:"#25D366" verde WhatsApp). REGRA: o usuário pediu botão/CTA SEM informar o link? PEÇA o endereço antes — NUNCA invente URL, número de telefone ou reuse um link que só apareceu num print/anexo sem confirmação; URL só http/https;',
   'generate_image {prompt, attachToEmail?} — GERA uma IMAGEM por IA a partir da descrição (ex.: "banner de dobradeira industrial azul com o texto QUAL DOBRADEIRA…") e devolve o link público; attachToEmail:true já insere no TOPO do e-mail. Prompt em português, descrevendo cena, produto, texto do banner e estilo. Quando for para o E-MAIL com botão/CTA, a arte sai SEM botão desenhado (o servidor força isso) — o botão de verdade é HTML verde ao lado; não descreva botões no prompt de arte de e-mail;',
   'grant_whatsapp_consent {name} — registra o consentimento WhatsApp de um lead (atesto do dono);',
@@ -727,13 +728,15 @@ function pendingMaterialHint(userMessage, extras) {
 function editContentHint(userMessage) {
   const msg = String(userMessage || '');  if (EMAIL_IMAGE_RE.test(msg)) {
     return [
-      'IMAGEM NO E-MAIL — a action edit_content EXISTE para isso, em TRÊS formas:',
-      '1) imagem JÁ ANEXADA pelo usuário (arquivo no chat): {"type":"edit_content","channel":"email","attachmentId":"<id do anexo>"} — o servidor publica a imagem e coloca NO TOPO;',
-      '2) imagem por LINK: {"type":"edit_content","channel":"email","imageUrl":"<link EXATO da imagem que o usuário passou>"} — copie o link ITERALMENTE;',
-      '3) GERAR/CRIAR a imagem: {"type":"generate_image","prompt":"<descrição detalhada>","attachToEmail":true}.',
-      'imageHref opcional = link do clique no banner; imageAlt = descrição. O banner entra NO TOPO do e-mail e',
-      'fica clicável apontando para o link do BOTÃO do e-mail (CTA). NUNCA diga que não dá para colocar imagem',
-      'no e-mail e NUNCA invente imageUrl/attachmentId — para anexos, use o id REAL do anexo no estado.',
+      'IMAGEM NO E-MAIL — a action edit_content EXISTE para isso, em QUATRO formas:',
+      '1) imagem que está como MATERIAL da campanha (materiais[] no estado, id REAL): {"type":"edit_content","channel":"email","materialId":"<id do material>"} — status "extracted" NÃO impede; o servidor publica a imagem e coloca NO TOPO;',
+      '2) imagem JÁ ANEXADA pelo usuário (arquivo no chat): {"type":"edit_content","channel":"email","attachmentId":"<id do anexo>"} — o servidor publica a imagem e coloca NO TOPO;',
+      '3) imagem por LINK: {"type":"edit_content","channel":"email","imageUrl":"<link EXATO da imagem que o usuário passou>"} — copie o link ITERALMENTE;',
+      '4) GERAR/CRIAR a imagem: {"type":"generate_image","prompt":"<descrição detalhada>","attachToEmail":true}.',
+      'PRIORIZE 1 e 2 (a imagem que o usuário JÁ TEM) — NUNCA exija URL pública para elas e NUNCA diga que a imagem',
+      '"não vira endereço público" ou que é preciso gerar de novo. imageHref opcional = link do clique no banner;',
+      'imageAlt = descrição. O banner entra NO TOPO do e-mail e fica clicável apontando para o link do BOTÃO do',
+      'e-mail (CTA). NUNCA invente imageUrl/attachmentId/materialId — use os ids REAIS que aparecem no estado.',
     ].join('\n');
   }
   if (!EDIT_CONTENT_RE.test(msg)) return null;
