@@ -185,13 +185,17 @@ async function getValidOAuth2Client(prisma, emailAccount_id) {
  * Send a single email via Gmail API.
  *
  * Builds an RFC2822 MIME message and calls users.messages.send.
+ * Com anexos (2026-10-27, envio de fotos): corpo em multipart/alternative
+ * dentro de um multipart/mixed com as partes base64 (anexos REAIS e
+ * baixáveis — não links, não imagens no texto).
  *
  * @param {object} prisma - Prisma client
  * @param {string} emailAccount_id - EmailAccount.id to send from
- * @param {object} params - { to, subject, body, htmlBody, messageId }
+ * @param {object} params - { to, subject, body, htmlBody, messageId,
+ *   attachments?: [{fileName, content(base64), contentType}] }
  * @returns {object} { gmailMessageId, gmailThreadId }
  */
-async function sendEmail(prisma, emailAccount_id, { to, subject, body, htmlBody, messageId }) {
+async function sendEmail(prisma, emailAccount_id, { to, subject, body, htmlBody, messageId, attachments }) {
   const oauth2Client = await getValidOAuth2Client(prisma, emailAccount_id);
   const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
@@ -202,47 +206,15 @@ async function sendEmail(prisma, emailAccount_id, { to, subject, body, htmlBody,
   const { formatMessageId } = require('./email-provider');
   const midHeader = formatMessageId(messageId, senderEmail);
 
-  // Build MIME message
-  const boundary = `_boundary_${Date.now()}`;
-  let mimeMessage;
-
-  if (htmlBody) {
-    mimeMessage = [
-      `From: ${senderEmail}`,
-      `To: ${to}`,
-      `Subject: ${subject}`,
-      midHeader ? `Message-ID: ${midHeader}` : '',
-      'MIME-Version: 1.0',
-      `Content-Type: multipart/alternative; boundary="${boundary}"`,
-      '',
-      `--${boundary}`,
-      'Content-Type: text/plain; charset=UTF-8',
-      'Content-Transfer-Encoding: 7bit',
-      '',
-      body,
-      '',
-      `--${boundary}`,
-      'Content-Type: text/html; charset=UTF-8',
-      'Content-Transfer-Encoding: 7bit',
-      '',
-      htmlBody,
-      '',
-      `--${boundary}--`,
-      '',
-    ].join('\r\n');
-  } else {
-    mimeMessage = [
-      `From: ${senderEmail}`,
-      `To: ${to}`,
-      `Subject: ${subject}`,
-      midHeader ? `Message-ID: ${midHeader}` : '',
-      'Content-Type: text/plain; charset=UTF-8',
-      'Content-Transfer-Encoding: 7bit',
-      '',
-      body,
-      '',
-    ].join('\r\n');
-  }
+  const mimeMessage = buildMimeMessage({
+    from: senderEmail,
+    to,
+    subject,
+    messageIdHeader: midHeader,
+    body,
+    htmlBody,
+    attachments: Array.isArray(attachments) ? attachments : [],
+  });
 
   // Gmail API expects base64url encoding
   const encoded = Buffer.from(mimeMessage)
@@ -262,6 +234,107 @@ async function sendEmail(prisma, emailAccount_id, { to, subject, body, htmlBody,
     gmailMessageId: response.data.id,
     gmailThreadId: response.data.threadId,
   };
+}
+
+/**
+ * Monta a mensagem RFC 2822 do Gmail — texto/HTML (+ anexos base64 em
+ * multipart/mixed). Exportada para teste (estrutura MIME é contrato).
+ */
+function buildMimeMessage({ from, to, subject, messageIdHeader, body, htmlBody, attachments = [] }) {
+  const headers = [
+    `From: ${from}`,
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    messageIdHeader ? `Message-ID: ${messageIdHeader}` : '',
+    'MIME-Version: 1.0',
+  ].filter(Boolean);
+
+  if (!attachments || attachments.length === 0) {
+    const boundary = `_boundary_${Date.now()}`;
+    if (htmlBody) {
+      return headers
+        .concat([
+          `Content-Type: multipart/alternative; boundary="${boundary}"`,
+          '',
+          `--${boundary}`,
+          'Content-Type: text/plain; charset=UTF-8',
+          'Content-Transfer-Encoding: 7bit',
+          '',
+          body,
+          '',
+          `--${boundary}`,
+          'Content-Type: text/html; charset=UTF-8',
+          'Content-Transfer-Encoding: 7bit',
+          '',
+          htmlBody,
+          '',
+          `--${boundary}--`,
+          '',
+        ])
+        .join('\r\n');
+    }
+    return headers
+      .concat([
+        'Content-Type: text/plain; charset=UTF-8',
+        'Content-Transfer-Encoding: 7bit',
+        '',
+        body,
+        '',
+      ])
+      .join('\r\n');
+  }
+
+  // Com anexos: multipart/mixed [ texto/alternative + anexos ]
+  const mixedBoundary = `_mixed_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const altBoundary = `_alt_${Date.now()}`;
+  let bodyPart;
+  if (htmlBody) {
+    bodyPart = [
+      `--${mixedBoundary}`,
+      `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+      '',
+      `--${altBoundary}`,
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: 7bit',
+      '',
+      body,
+      '',
+      `--${altBoundary}`,
+      'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: 7bit',
+      '',
+      htmlBody,
+      '',
+      `--${altBoundary}--`,
+      '',
+    ];
+  } else {
+    bodyPart = [
+      `--${mixedBoundary}`,
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: 7bit',
+      '',
+      body,
+      '',
+    ];
+  }
+
+  const safeName = (name) => String(name || 'anexo').replace(/"/g, '').replace(/\r\n?|\n/g, ' ');
+  const parts = attachments.map((a) =>
+    [
+      `--${mixedBoundary}`,
+      `Content-Type: ${a.contentType || 'application/octet-stream'}; name="${safeName(a.fileName)}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${safeName(a.fileName)}"`,
+      '',
+      String(a.content || '').replace(/(.{76})/g, '$1\r\n'),
+      '',
+    ].join('\r\n')
+  );
+
+  return headers
+    .concat([`Content-Type: multipart/mixed; boundary="${mixedBoundary}"`, '', ...bodyPart, ...parts, `--${mixedBoundary}--`, ''])
+    .join('\r\n');
 }
 
 /**
@@ -327,6 +400,7 @@ module.exports = {
   exchangeCodeForTokens,
   getValidOAuth2Client,
   sendEmail,
+  buildMimeMessage,
   listHistory,
   getMessage,
 };

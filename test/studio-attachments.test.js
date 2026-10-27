@@ -272,7 +272,8 @@ test('V2: bytes chegam ao provider no send; Gmail (sem suporte) degrada explicá
     assert.equal(Buffer.from(resendPayload.attachments[0].content, 'base64').toString(), fileContent.toString(), 'bytes reais do storage');
     assert.equal(resendPayload.attachments[0].content_type, 'application/pdf');
 
-    // Gmail não monta MIME multipart → degrada EXPLICÁVEL (mensagem sai sem anexo).
+    // Gmail monta MIME multipart COM anexos (2026-10-27): os anexos passam
+    // inteiros para a camada da API — fotos/anexos chegam baixáveis via Gmail.
     const gmailAccount = { ...prisma.emailAccount.rows[0], provider: 'gmail' };
     const gmailPrisma = { emailAccount: { findUnique: async () => gmailAccount, update: async () => {} } };
     const gmailApi = require('../gmail-api');
@@ -283,13 +284,17 @@ test('V2: bytes chegam ao provider no send; Gmail (sem suporte) degrada explicá
       return { gmailMessageId: 'g-1', gmailThreadId: null };
     };
     try {
-      const degraded = await require('../email-provider').sendEmailForAccount(gmailPrisma, 'ea-1', {
+      const delivered = await require('../email-provider').sendEmailForAccount(gmailPrisma, 'ea-1', {
         to: 'lead@e.com', subject: 'Oi', body: 'corpo', messageId: 'mid-1',
         attachments: [{ fileName: 'um.pdf', content: Buffer.from('x').toString('base64'), contentType: 'application/pdf' }],
       });
       assert.ok(gmailParams, 'gmail sendEmail chamado');
-      assert.equal(gmailParams.attachments, undefined, 'anexo NÃO passado ao transport sem suporte');
-      assert.deepEqual(degraded.attachmentsSkipped, [{ fileName: 'um.pdf', reason: 'provider_sem_suporte' }], 'fato registrado');
+      assert.deepEqual(
+        gmailParams.attachments,
+        [{ fileName: 'um.pdf', content: Buffer.from('x').toString('base64'), contentType: 'application/pdf' }],
+        'anexo passado INTEIRO à camada Gmail API (MIME multipart)'
+      );
+      assert.equal(delivered.attachmentsSkipped, undefined, 'sem degradação — Gmail suporta anexos');
     } finally {
       gmailApi.sendEmail = originalSendEmail;
     }

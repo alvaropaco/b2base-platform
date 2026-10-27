@@ -3630,6 +3630,45 @@ app.delete('/api/gmail/accounts/:id', async (req, res) => {
   }
 });
 
+// POST /api/gmail/photos — envio de FOTOS como anexos reais pela conta Gmail
+// conectada do usuário (2026-10-27). Multipart com memoryStorage (bytes só
+// na request); validação de tipo/tamanho/quantidade NO SERVIDOR; "enviado"
+// só após a confirmação da Gmail API (messageId no resultado). Tokens ficam
+// cifrados no banco e nunca aparecem em logs.
+const gmailPhotos = require('./gmail-photos');
+const gmailPhotosUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { files: gmailPhotos.MAX_PHOTOS, fileSize: gmailPhotos.MAX_FILE_BYTES, fields: 6 },
+});
+
+app.post('/api/gmail/photos', gmailPhotosUpload.array('photos', gmailPhotos.MAX_PHOTOS), async (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+  try {
+    const result = await gmailPhotos.sendPhotos(
+      { prisma, emailProvider: require('./email-provider') },
+      {
+        userId,
+        to: req.body?.to,
+        subject: req.body?.subject,
+        message: req.body?.message,
+        photos: Array.isArray(req.files) ? req.files : [],
+      }
+    );
+    res.json({ success: true, data: result, timestamp: new Date().toISOString() });
+  } catch (err) {
+    const status = err.status || 500;
+    if (status >= 500) {
+      // Falha nossa/provedor: detalhe técnico fica no log, mensagem amigável ao usuário.
+      console.error('[gmail-photos] falha no envio:', err.message);
+    }
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ success: false, error: 'Foto maior que 10 MB — reduza antes de enviar.' });
+    }
+    res.status(status).json({ success: false, error: err.expose ? err.message : 'Não foi possível enviar agora — tente novamente em instantes.' });
+  }
+});
+
 // ─── Conexão de contas SMTP / Resend (alternativas ao Gmail OAuth) ──
 
 // POST /api/email/connect — conectar conta via SMTP (ex.: Gmail App Password)

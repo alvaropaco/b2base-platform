@@ -88,18 +88,18 @@ function formatMessageId(messageId, fromEmail) {
 function GmailApiProvider(prisma, account) {
   return {
     provider: 'gmail',
-    // Onda 2026-09-29 (Story 2.2): gmail-api não monta MIME multipart —
-    // sem suporte a anexo; a degradação é EXPLICÁVEL (mensagem sai sem o
-    // anexo e o fato é registrado — nunca falha o lote).
-    capabilities: { replySync: true, attachments: false },
+    // Anexos REAIS via Gmail API (2026-10-27): sendEmail monta MIME
+    // multipart/mixed com as partes base64 — fotos chegam baixáveis.
+    capabilities: { replySync: true, attachments: true },
 
-    async send({ to, subject, body, htmlBody, messageId }) {
+    async send({ to, subject, body, htmlBody, messageId, attachments }) {
       const result = await gmailApi.sendEmail(prisma, account.id, {
         to,
         subject,
         body,
         htmlBody,
         messageId,
+        attachments,
       });
       return { messageId: result.gmailMessageId, threadId: result.gmailThreadId };
     },

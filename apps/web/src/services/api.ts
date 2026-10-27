@@ -711,6 +711,60 @@ export async function connectEmailAccount(payload: ConnectEmailPayload): Promise
   return json.data;
 }
 
+// ── Envio de FOTOS por Gmail (2026-10-27) ──────────────────────────────────
+
+export interface SendPhotosResult {
+  to: string;
+  from: string;
+  count: number;
+  messageId: string | null;
+  attachmentsSkipped?: Array<{ fileName: string; reason: string }>;
+}
+
+/**
+ * Envia fotos como anexos reais pela conta Gmail conectada do usuário.
+ * XHR (não fetch) para progresso de upload — o navegador não expõe progresso
+ * de request no fetch. Confirmação: só é "enviado" com o messageId da API.
+ */
+export function sendPhotosByEmail(
+  files: File[],
+  to: string,
+  subject: string,
+  message: string,
+  onProgress?: (percent: number) => void
+): Promise<SendPhotosResult> {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append('to', to);
+    form.append('subject', subject);
+    form.append('message', message);
+    for (const file of files) form.append('photos', file, file.name);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/gmail/photos`);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && onProgress) {
+        onProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      let json: { success?: boolean; data?: SendPhotosResult; error?: string } = {};
+      try {
+        json = JSON.parse(xhr.responseText || '{}');
+      } catch {
+        /* resposta não-JSON (proxy/erro HTML) */
+      }
+      if (xhr.status >= 200 && xhr.status < 300 && json.success && json.data) {
+        resolve(json.data);
+      } else {
+        reject(new Error(json.error || `Erro ${xhr.status} ao enviar as fotos`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Falha de conexão com o servidor — verifique sua internet e tente de novo.'));
+    xhr.send(form);
+  });
+}
+
 export interface EmailProviderOptions {
   gmailOAuth: boolean;
   resendPlatformKey: boolean;

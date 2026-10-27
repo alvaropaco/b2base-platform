@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { CommercialProfile, EmailAccount, PlanInfo } from '@/types';
 import { CommercialProfileForm } from '@/components/settings/CommercialProfileForm';
+import { PhotoSendCard } from '@/components/settings/PhotoSendCard';
 import {
   fetchGmailAuthUrl,
   fetchGmailAccounts,
@@ -475,6 +476,13 @@ export function SettingsView({
           )}
         </CardContent>
       </Card>
+
+      {/* Envio de fotos por Gmail (anexos reais) */}
+      <PhotoSendCard
+        gmailConnected={connectedAccounts.some((acct) => acct.provider === 'gmail' && acct.status === 'connected')}
+        onConnectGmail={handleConnectGmail}
+        connecting={connecting}
+      />
 
       <div className="rounded-[1.5rem] border border-indigo-100 bg-indigo-50 p-4 text-sm text-indigo-900 dark:border-indigo-500/20 dark:bg-indigo-500/10 dark:text-indigo-100">
         <div className="flex items-start gap-3">
