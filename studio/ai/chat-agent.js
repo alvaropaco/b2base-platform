@@ -271,6 +271,7 @@ const SYSTEM_PROMPT = [
   'send_test_message {phone?|email?} — mensagem de TESTE da campanha para um destino, com dados de exemplo;',
   'edit_content {channel, whatsappText?|text?|subject?} — TROCA o texto do canal pelo texto EXATO que o usuário pediu (sem ids);',
   'edit_content {channel:"email", imageUrl:"https://…"} — ANEXA IMAGEM POR LINK no TOPO do e-mail (banner de produto); imageHref opcional = para onde o clique leva, imageAlt = descrição;',
+  'edit_content {channel:"email", attachmentId:"<id>"} — usa uma IMAGEM JÁ ANEXADA (id real do anexo no estado) como banner NO TOPO do e-mail — o servidor publica e o banner fica clicável com o link do botão;',
   'edit_content {ctaUrl:"https://…", ctaLabel?, ctaColor?} — TROCA o BOTÃO do e-mail (texto, cor e URL editáveis, ex.: ctaColor:"#25D366" verde WhatsApp). REGRA: o usuário pediu botão/CTA SEM informar o link? PEÇA o endereço antes — NUNCA invente URL, número de telefone ou reuse um link que só apareceu num print/anexo sem confirmação; URL só http/https;',
   'generate_image {prompt, attachToEmail?} — GERA uma IMAGEM por IA a partir da descrição (ex.: "banner de dobradeira industrial azul com o texto QUAL DOBRADEIRA…") e devolve o link público; attachToEmail:true já insere no TOPO do e-mail. Prompt em português, descrevendo cena, produto, texto do banner e estilo. Quando for para o E-MAIL com botão/CTA, a arte sai SEM botão desenhado (o servidor força isso) — o botão de verdade é HTML verde ao lado; não descreva botões no prompt de arte de e-mail;',
   'grant_whatsapp_consent {name} — registra o consentimento WhatsApp de um lead (atesto do dono);',
@@ -299,6 +300,9 @@ function buildStateBlock(campaign, extras = {}) {
       conteudos: extras.contentSummary || [],
       agenda: campaign.schedule || {},
       materiais: extras.materials || [],
+      // Anexos da campanha (2026-10-27): id REAL para emitir
+      // edit_content {attachmentId} — imagem anexada vira banner do e-mail.
+      anexos: extras.anexos || [],
       // Jornada explícita (Epic 3): fase corrente + fases concluídas — o
       // modelo avança a próxima fase pendente; atalho é recusado server-side.
       jornada: extras.journey || null,
@@ -723,12 +727,13 @@ function pendingMaterialHint(userMessage, extras) {
 function editContentHint(userMessage) {
   const msg = String(userMessage || '');  if (EMAIL_IMAGE_RE.test(msg)) {
     return [
-      'IMAGEM NO E-MAIL POR LINK — a action edit_content EXISTE para isso:',
-      '{"type":"edit_content","channel":"email","imageUrl":"<link EXATO da imagem que o usuário passou>"}',
-      'imageHref opcional = link do clique no banner; imageAlt = descrição. A imagem entra NO TOPO do e-mail',
-      '(banner). Copie o link do usuário ITERALMENTE. NUNCA diga que não dá para colocar imagem no e-mail.',
-      'SE o usuário NÃO tiver um link e pediu para GERAR/CRIAR a imagem, EMITA generate_image no lugar:',
-      '{"type":"generate_image","prompt":"<descrição detalhada>","attachToEmail":true}',
+      'IMAGEM NO E-MAIL — a action edit_content EXISTE para isso, em TRÊS formas:',
+      '1) imagem JÁ ANEXADA pelo usuário (arquivo no chat): {"type":"edit_content","channel":"email","attachmentId":"<id do anexo>"} — o servidor publica a imagem e coloca NO TOPO;',
+      '2) imagem por LINK: {"type":"edit_content","channel":"email","imageUrl":"<link EXATO da imagem que o usuário passou>"} — copie o link ITERALMENTE;',
+      '3) GERAR/CRIAR a imagem: {"type":"generate_image","prompt":"<descrição detalhada>","attachToEmail":true}.',
+      'imageHref opcional = link do clique no banner; imageAlt = descrição. O banner entra NO TOPO do e-mail e',
+      'fica clicável apontando para o link do BOTÃO do e-mail (CTA). NUNCA diga que não dá para colocar imagem',
+      'no e-mail e NUNCA invente imageUrl/attachmentId — para anexos, use o id REAL do anexo no estado.',
     ].join('\n');
   }
   if (!EDIT_CONTENT_RE.test(msg)) return null;

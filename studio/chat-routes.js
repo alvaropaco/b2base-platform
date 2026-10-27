@@ -240,6 +240,9 @@ function actionParams(action) {
       if (action.ctaUrl != null) params.ctaUrl = String(action.ctaUrl);
       if (action.ctaLabel != null) params.ctaLabel = String(action.ctaLabel);
       if (action.ctaColor != null) params.ctaColor = String(action.ctaColor);
+      // Anexo promovido a banner (2026-10-27): o id do anexo identifica o
+      // conteúdo (a URL pública é derivada dele).
+      if (action.attachmentId != null) params.attachmentId = String(action.attachmentId);
       return params;
     }
     default:
@@ -282,6 +285,24 @@ async function currentExtras(prisma, campaign) {
       ...(m.extractionError && UNRESOLVED.includes(m.extractionStatus) ? { error: String(m.extractionError).slice(0, 80) } : {}),
     })),
   };
+
+  // Anexos da campanha no ESTADO (2026-10-27): sem o id REAL no estado o
+  // modelo não consegue emitir edit_content {attachmentId} — a imagem anexada
+  // nunca virava banner do e-mail ("anexo não vira endereço público").
+  try {
+    const attachments = await prisma.studioAttachment.findMany({
+      where: { orgId: campaign.orgId, campaignId: campaign.id },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    });
+    extras.anexos = attachments.map((a) => ({
+      id: a.id,
+      nome: a.originalName,
+      imagem: /^image\//i.test(String(a.mimeType || '')) || ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(String(a.originalName || '').split('.').pop().toLowerCase()),
+    }));
+  } catch (_err) {
+    /* estado sem anexos não bloqueia o turno */
+  }
 
   // Onda "IA com a plataforma inteira" (QA 2026-10-02, bugs 1/2 do dono): o
   // agente enxerga a ORGANIZAÇÃO — as outras campanhas (nome/status) e o
@@ -2153,6 +2174,35 @@ function registerChatRoutes(router, context) {
         // Story 3.3/D9: a edição pelo chat REUSA o mesmo serviço do PATCH da
         // UI (validação, sync em voo, contentEdits — AD-6/AD-13).
         let contents = Array.isArray(action.contents) ? action.contents : [];
+        // IMAGEM ANEXADA como banner (2026-10-27, pedido do dono: "a imagem
+        // que anexei não vai no e-mail"): {channel:'email', attachmentId}
+        // PROMOVE o anexo para a pasta pública (generated/ — mesma rota
+        // /media das imagens geradas) e cai no MESMO caminho do imageUrl —
+        // banner no topo, clicável para o link do botão (CTA herdado).
+        if (contents.length === 0 && action.attachmentId) {
+          const storage = require('./storage');
+          const attachment = await prisma.studioAttachment.findUnique({ where: { id: String(action.attachmentId) } });
+          if (!attachment || attachment.orgId !== orgId) {
+            throw httpError('NOT_FOUND', 404, 'Anexo não encontrado nesta organização — me diga qual imagem quer usar (ou anexe de novo).');
+          }
+          if (attachment.campaignId && attachment.campaignId !== campaign.id) {
+            throw httpError('ATTACHMENT_IN_OTHER_CAMPAIGN', 409, `Anexo "${attachment.originalName}" já pertence a outra campanha — remova-o de lá antes de reutilizar.`);
+          }
+          const ext = storage.extFromMime(attachment.mimeType, attachment.originalName);
+          if (!['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) {
+            throw httpError('NOT_AN_IMAGE', 400, `"${attachment.originalName}" não é imagem (png/jpg/webp/gif) — não vira banner de e-mail.`);
+          }
+          const base = publicBaseUrl(req);
+          if (!base) {
+            throw httpError('NO_PUBLIC_BASE', 409, 'Sem APP_URL/origem eu NÃO consigo publicar a imagem para o cliente de e-mail do lead. Configure APP_URL e tente de novo.');
+          }
+          const buffer = storage.readBuffer(attachment.fileName);
+          const publicName = storage.saveGenerated(buffer, ext);
+          // Segue no fluxo do imageUrl: banner no topo + CTA herdado, em TODAS
+          // as variantes de e-mail (alt = nome original do arquivo).
+          action.imageUrl = `${base}/media/${publicName}`;
+          if (!action.imageAlt) action.imageAlt = attachment.originalName.slice(0, 200);
+        }
         // IMAGEM POR LINK no e-mail (2026-10-16, pedido do dono: e-mail com
         // banner de produto como no exemplo): {channel:'email', imageUrl}
         // insere o banner NO TOPO do emailDoc (href opcional = banner

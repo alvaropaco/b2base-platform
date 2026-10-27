@@ -2503,3 +2503,131 @@ test('QA: ctaUrl PERIGOSO (javascript:) é recusado com erro honesto; botão sem
     server.close();
   }
 });
+
+// ── 2026-10-27: IMAGEM ANEXADA vira banner do e-mail (com o link do botão) ──
+
+test('QA: edit_content com attachmentId PROMOVE o anexo para banner público com o CTA herdado', async () => {
+  const impl = async ({ user }) => {
+    const m = String(user || '');
+    const markers = m.match(/NOVA MENSAGEM DO USUÁRIO:[^\n]*/g) || [];
+    const last = markers.length ? markers[markers.length - 1] : '';
+    if (last.includes('usa a imagem que anexei')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Vou colocar a imagem anexada no topo.',
+          actions: [{ type: 'edit_content', channel: 'email', attachmentId: 'att-img-1' }],
+        }),
+      };
+    }
+    if (/pode/i.test(last) && m.includes('usa a imagem que anexei')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Colocando a imagem.',
+          actions: [{ type: 'edit_content', channel: 'email', attachmentId: 'att-img-1' }],
+        }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  const storage = require('../studio/storage');
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Banner do anexo', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-att', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'S', whatsappText: null,
+      emailDoc: {
+        blocks: [
+          { type: 'text', text: 'Olá {{firstName}}, tudo bem?' },
+          { type: 'button', label: 'Falar com a Arthur Company', url: 'https://wa.me/5512996399943' },
+        ],
+      },
+    });
+    // Anexo REAL no storage (mesmo pipeline do upload do chat).
+    const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63fcffff3f030005fe02fea72d8b300000000049454e44ae426082', 'hex');
+    const saved = storage.saveBuffer(PNG, 'png');
+    prisma.studioAttachment.rows.push({
+      id: 'att-img-1', orgId: 'org-1', campaignId: c.data.id, fileName: saved.fileName,
+      originalName: 'banner-maquinas.png', mimeType: 'image/png', sizeBytes: PNG.length,
+      channels: 'both', uploadedById: 'user-1',
+    });
+
+    // 1ª volta: gate de confirmação.
+    const first = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'usa a imagem que anexei no topo do email' });
+    const gate = first.body.data.cards.find((card) => card.type === 'confirm_change');
+    assert.ok(gate, 'gate pede confirmação');
+
+    // 2ª volta: aprovação → anexo PROMOVIDO para generated/ (URL pública).
+    const second = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'pode' });
+    assert.equal(second.res.status, 200);
+    const row = prisma.studioContent.rows.find((r) => r.id === 'ce-att');
+    const [imageBlock] = row.emailDoc.blocks;
+    assert.equal(imageBlock.type, 'image', 'banner no topo');
+    assert.match(imageBlock.src, /^https?:\/\/[^/]+\/media\/[a-f0-9]{32}\.png$/, 'anexo publicado na MESMA rota das imagens geradas (origem do app)');
+    const publicName = imageBlock.src.split('/media/')[1];
+    assert.ok(storage.generatedExists(publicName), 'arquivo servível por /media (cliente de e-mail do lead busca sem sessão)');
+    assert.deepEqual([...storage.readGenerated(publicName)], [...PNG], 'bytes preservados na promoção');
+    assert.equal(imageBlock.href, 'https://wa.me/5512996399943', 'banner clicável com o link do BOTÃO (CTA herdado)');
+    assert.equal(imageBlock.alt, 'banner-maquinas.png');
+  } finally {
+    server.close();
+  }
+});
+
+test('QA: attachmentId de NÃO-imagem é recusado com erro honesto (nada de banner quebrado)', async () => {
+  const impl = async ({ user }) => {
+    const m = String(user || '');
+    const markers = m.match(/NOVA MENSAGEM DO USUÁRIO:[^\n]*/g) || [];
+    const last = markers.length ? markers[markers.length - 1] : '';
+    if (last.includes('usa o pdf como banner')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Vou tentar.',
+          actions: [{ type: 'edit_content', channel: 'email', attachmentId: 'att-pdf-1' }],
+        }),
+      };
+    }
+    // Aprovação textual: reemite a action pendente (o fluxo adiciona o selo).
+    if (/pode/i.test(last) && m.includes('usa o pdf como banner')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Tentando de novo.',
+          actions: [{ type: 'edit_content', channel: 'email', attachmentId: 'att-pdf-1' }],
+        }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  const storage = require('../studio/storage');
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'PDF não é banner', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-pdf', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'S', whatsappText: null,
+      emailDoc: { blocks: [{ type: 'text', text: 'Olá' }] },
+    });
+    const saved = storage.saveBuffer(Buffer.from('%PDF-1.4 fake'), 'pdf');
+    prisma.studioAttachment.rows.push({
+      id: 'att-pdf-1', orgId: 'org-1', campaignId: c.data.id, fileName: saved.fileName,
+      originalName: 'catalogo.pdf', mimeType: 'application/pdf', sizeBytes: 14,
+      channels: 'email', uploadedById: 'user-1',
+    });
+
+    // 1ª volta: gate (a recusa de não-imagem é no handler, DEPOIS do gate).
+    const first = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'usa o pdf como banner do email' });
+    assert.ok(first.body.data.cards.find((card) => card.type === 'confirm_change'), 'gate pede confirmação');
+    // 2ª volta: aprovação → handler recusa com card honesto.
+    const res = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'pode' });
+    assert.equal(res.res.status, 200);
+    const errCard = res.body.data.cards.find((card) => card.type === 'error');
+    assert.ok(errCard, 'card de erro honesto');
+    assert.match(errCard.detail, /não é imagem/i, 'explica que PDF não vira banner');
+    const row = prisma.studioContent.rows.find((r) => r.id === 'ce-pdf');
+    assert.ok(!row.emailDoc.blocks.some((b) => b.type === 'image'), 'nenhum bloco de imagem criado');
+  } finally {
+    server.close();
+  }
+});
