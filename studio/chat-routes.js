@@ -25,6 +25,7 @@ const { createMaterialService } = require('./material-service');
 const scheduleService = require('./schedule-service');
 const manifest = require('./actions/manifest.v1');
 const { normalizeText } = require('../search-text');
+const { emailDocToHtml, emailDocToText } = require('./channel-bridge');
 
 const URL_RE = /(https?:\/\/[^\s,;)"]+)/g;
 
@@ -1655,16 +1656,24 @@ function registerChatRoutes(router, context) {
             where: { OR: [{ tenantId: orgId }, { userId }], status: 'connected' },
           });
           if (!account) throw httpError('NO_CHANNEL', 409, 'Nenhuma conta de e-mail de disparo conectada — me peça para conectar.');
-          const renderedBody = renderTemplate(emailBlocksToText(emailContent.emailDoc), SAMPLE);
+          // TEXTO do teste = mesmo achatamento do disparo real (emailDocToText
+          // do bridge, "label: url") — o markdown do card de revisão não vaza
+          // para o e-mail (SC-006: teste ≡ disparo).
+          const renderedBody = renderTemplate(emailDocToText(emailContent.emailDoc), SAMPLE);
           const emailProvider = require('../email-provider');
           await emailProvider.sendEmailForAccount(prisma, account.id, {
             to,
             subject: `[TESTE] ${renderTemplate(emailContent.subject || campaign.name, SAMPLE)}`,
             body: renderedBody,
-            htmlBody: `<p>${renderedBody
-              .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-              .replace(/\n{2,}/g, '</p><p>')
-              .replace(/\n/g, '<br/>')}</p>`,
+            // O teste tem que mostrar o MESMO e-mail do disparo (SC-006): com
+            // emailDoc o HTML sai do renderer da prévia — botão com link e
+            // banner reais; sem emailDoc, texto plano escapado como antes.
+            htmlBody:
+              emailDocToHtml(emailContent.emailDoc, SAMPLE, { utmTemplate: campaign.utmTemplate || {} }) ||
+              `<p>${renderedBody
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/\n{2,}/g, '</p><p>')
+                .replace(/\n/g, '<br/>')}</p>`,
             messageId: `teste-${crypto.randomUUID()}`,
           });
           parts.push(`✉️ E-mail para ${to}`);
@@ -1716,22 +1725,25 @@ function registerChatRoutes(router, context) {
               where: { OR: [{ tenantId: orgId }, { userId }], status: 'connected' },
             });
             if (emailAccountLead) {
-              const renderedLead = renderTemplate(emailBlocksToText(emailContentForLead.emailDoc), lead);
+              const renderedLead = renderTemplate(emailDocToText(emailContentForLead.emailDoc), lead);
               const emailProviderLead = require('../email-provider');
               await emailProviderLead.sendEmailForAccount(prisma, emailAccountLead.id, {
                 to: emailTarget,
                 subject: renderTemplate(emailContentForLead.subject || campaign.name, lead),
                 body: renderedLead,
-                htmlBody: `<p>${renderedLead
-                  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                  .replace(/\n{2,}/g, '</p><p>')
-                  .replace(/\n/g, '<br/>')}</p>`,
+                // Mesma regra do destino manual: prévia ≡ disparo (SC-006).
+                htmlBody:
+                  emailDocToHtml(emailContentForLead.emailDoc, lead, { utmTemplate: campaign.utmTemplate || {} }) ||
+                  `<p>${renderedLead
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/\n{2,}/g, '</p><p>')
+                    .replace(/\n/g, '<br/>')}</p>`,
                 messageId: `teste-${crypto.randomUUID()}`,
               });
               sentVia.push('e-mail');
             }
           }
-          const renderedForReport = renderedLead || (emailContentForLead ? renderTemplate(emailBlocksToText(emailContentForLead.emailDoc), lead) : '');
+          const renderedForReport = renderedLead || (emailContentForLead ? renderTemplate(emailDocToText(emailContentForLead.emailDoc), lead) : '');
           const destinoLabel = (previewPhone || previewEmail)
             ? `prévia com os DADOS DESTE LEAD entregue em ${[previewPhone ? `WhatsApp ${previewPhone}` : null, previewEmail ? `e-mail ${previewEmail}` : null].filter(Boolean).join(' e ')}`
             : 'nos contatos do cadastro dele';

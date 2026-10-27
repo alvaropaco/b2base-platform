@@ -305,6 +305,32 @@ async function processPrepare(job) {
         .replace(/\n/g, '<br/>')}</p>`,
       reasoningFacts: ['campaign_template'],
     };
+    // BOTÃO e banner do Studio no e-mail REAL (2026-10-26, pedido do dono):
+    // o template do motor guarda só o TEXTO achatado do emailDoc — o bloco
+    // `button` (link do WhatsApp) saía como "label: url" plano, nunca
+    // clicável, e o banner nem saía. Com emailDoc, o HTML do disparo usa o
+    // MESMO renderer da prévia (preview ≡ envio, SC-006). À prova de falha:
+    // sem Studio/emailDoc/erro, fica o texto plano escapado de sempre.
+    if (campaign.studioCampaignId) {
+      try {
+        const studioContent = await prisma.studioContent.findFirst({
+          where: { campaignId: campaign.studioCampaignId, channel: 'email', kind: 'base', stepIndex: 1 },
+        });
+        const doc = studioContent && studioContent.emailDoc;
+        if (doc && Array.isArray(doc.blocks) && doc.blocks.length > 0) {
+          const studioCampaign = await prisma.studioCampaign.findUnique({
+            where: { id: campaign.studioCampaignId },
+            select: { utmTemplate: true },
+          });
+          const htmlFromDoc = require('./studio/channel-bridge').emailDocToHtml(doc, lead, {
+            utmTemplate: (studioCampaign && studioCampaign.utmTemplate) || {},
+          });
+          if (htmlFromDoc) generated.htmlBody = htmlFromDoc;
+        }
+      } catch (err) {
+        console.warn(`[prepare] prospect ${prospectId}: render do emailDoc indisponível — sigo com o texto plano:`, err.message);
+      }
+    }
     compositionOrigin = campaign.source === 'ai' ? 'profile_base' : 'tenant_template';
   } else {
     const ai = await generateOutreachMessage(prisma, {
@@ -374,11 +400,15 @@ async function processPrepare(job) {
     console.error('[studio:personalize] override indisponível (ignorado):', err.message);
   }
 
-  // Add tracking pixel
+  // Add tracking pixel (documento completo do renderer: pixel ANTES do
+  // </body> — anexado depois de </html> o cliente de e-mail pode descartar)
   const trackingToken = crypto.randomUUID();
+  const pixelImg = `<img src="https://b2base.net/t/o/${trackingToken}.gif" width="1" height="1" alt="" />`;
   const htmlWithPixel = generated.htmlBody.includes('{tracking-token}')
     ? generated.htmlBody.replace('{tracking-token}', trackingToken)
-    : `${generated.htmlBody}<img src="https://b2base.net/t/o/${trackingToken}.gif" width="1" height="1" alt="" />`;
+    : generated.htmlBody.includes('</body>')
+      ? generated.htmlBody.replace('</body>', `${pixelImg}</body>`)
+      : `${generated.htmlBody}${pixelImg}`;
 
   // Create outreach_message (calculateDelay retorna segundos)
   const delaySeconds = calculateDelay(getRateConfig());

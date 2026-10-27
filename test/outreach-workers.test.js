@@ -67,6 +67,21 @@ function makeFakePrisma({ campaign, prospect, settings }) {
         return { id: id('ev'), ...data };
       },
     },
+    // Modelos do Studio (2026-10-26: HTML do disparo vem do emailDoc) —
+    // populados via db.studioContentRow / db.studioCampaignRow.
+    studioContent: {
+      async findFirst({ where }) {
+        const row = db.studioContentRow;
+        if (!row) return null;
+        return Object.entries(where).every(([k, v]) => row[k] === v) ? row : null;
+      },
+    },
+    studioCampaign: {
+      async findUnique() { return db.studioCampaignRow || null; },
+    },
+    studioPersonalization: {
+      async findMany() { return []; },
+    },
   };
   prisma.db.prospectRow = prospect;
   prisma.db.campaignRow = campaign;
@@ -133,6 +148,69 @@ test('US3 email: template do tenant renderizado com origin "tenant_template"', a
   assert.ok(message.body.includes('Mensagem configurada pelo TENANT'));
   assert.strictEqual(message.compositionOrigin, 'tenant_template');
   assert.strictEqual(queues[0].adds.length, 1, 'envio enfileirado');
+});
+
+// ── 2026-10-26: BOTÃO com link no e-mail REAL (pedido do dono) ──────────────
+// O template do motor guarda o emailDoc achatado em TEXTO — o bloco button
+// (wa.me) saía como "label: url" plano e o banner nem saía. Com emailDoc, o
+// HTML do disparo usa o MESMO renderer da prévia (SC-006: preview ≡ envio).
+
+test('Studio: disparo com emailDoc sai com o botão/link REAL e o banner no HTML', async () => {
+  const { prisma, job } = baseFixture({
+    campaignOverrides: {
+      emailTemplateSubject: 'Olá {{firstName}}, sobre a {{companyName}}',
+      emailTemplateBody: 'Olá {{firstName}}, tudo bem?\n\nFalar com a Arthur Company: https://wa.me/5512996399943',
+      studioCampaignId: 'sc_1',
+    },
+  });
+  prisma.db.studioContentRow = {
+    campaignId: 'sc_1', channel: 'email', kind: 'base', stepIndex: 1,
+    emailDoc: {
+      blocks: [
+        { type: 'text', text: 'Olá {{firstName}}, tudo bem?' },
+        { type: 'button', label: 'Falar com a Arthur Company', url: 'https://wa.me/5512996399943' },
+        { type: 'image', src: 'https://cdn.exemplo.com/banner.png', alt: 'Banner' },
+      ],
+    },
+  };
+  prisma.db.studioCampaignRow = { id: 'sc_1', utmTemplate: {} };
+
+  const result = await workers.processPrepare(job);
+
+  assert.ok(result.messageId, 'mensagem criada');
+  const message = prisma.db.messages[0];
+  assert.strictEqual(message.compositionOrigin, 'tenant_template');
+  const html = String(message.htmlBody);
+  assert.ok(html.includes('<a href="https://wa.me/5512996399943"'), 'link do WhatsApp como <a> REAL');
+  assert.ok(html.includes('display:inline-block'), 'estilo de BOTÃO (não texto plano)');
+  assert.ok(html.includes('<img src="https://cdn.exemplo.com/banner.png"'), 'banner do emailDoc no HTML');
+  assert.ok(html.includes('Olá Mariana'), 'variáveis do emailDoc resolvidas POR LEAD');
+  assert.ok(html.includes('use o link de descadastro'), 'rodapé de descadastro no HTML (FR-37)');
+  // Pixel de tracking DENTRO do documento (antes do </body>).
+  const pixelAt = html.indexOf('t/o/');
+  const bodyCloseAt = html.indexOf('</body>');
+  assert.ok(pixelAt > -1 && bodyCloseAt > -1 && pixelAt < bodyCloseAt, 'pixel antes do </body>');
+  assert.ok(!html.includes('{{'), 'nenhuma placeholder crua');
+  // Parte TEXTO continua a forma achatada (fallback de cliente sem HTML).
+  assert.ok(message.body.includes('Falar com a Arthur Company: https://wa.me/5512996399943'));
+});
+
+test('Studio: sem emailDoc o disparo mantém o HTML de texto plano (fallback)', async () => {
+  const { prisma, job } = baseFixture({
+    campaignOverrides: {
+      emailTemplateSubject: 'S {{firstName}}',
+      emailTemplateBody: 'Corpo em texto simples.',
+      studioCampaignId: 'sc_2',
+    },
+  });
+  prisma.db.studioCampaignRow = { id: 'sc_2', utmTemplate: {} };
+  // Sem db.studioContentRow → findFirst null → fallback atual.
+
+  await workers.processPrepare(job);
+
+  const message = prisma.db.messages[0];
+  assert.ok(String(message.htmlBody).startsWith('<p>'), 'HTML segue o parágrafo escapado de sempre');
+  assert.ok(!String(message.htmlBody).includes('<a href='), 'nenhum link inventado sem emailDoc');
 });
 
 test('US3 email: sem template + IA falha + perfil configurado → base por perfil', async () => {

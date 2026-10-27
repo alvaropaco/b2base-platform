@@ -1240,6 +1240,68 @@ test('QA: "manda a mensagem para a ANGULAR" envia TESTE ao LEAD REAL com os dado
   }
 });
 
+// ── 2026-10-26: BOTÃO com link no e-mail (pedido do dono) — teste ≡ disparo ──
+
+test('QA: e-mail de TESTE sai com o botão/link REAL do emailDoc (não texto plano)', async () => {
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Enviando o teste.',
+          actions: [{ type: 'send_test_message', email: 'dono@empresa.com' }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  const emailProvider = require('../email-provider');
+  const emailsSent = [];
+  const realSendEmail = emailProvider.sendEmailForAccount;
+  emailProvider.sendEmailForAccount = async (_prisma, _accountId, payload) => {
+    emailsSent.push(payload);
+    return { messageId: 'pm-btn', threadId: 'th-btn' };
+  };
+  try {
+    prisma.user.rows.push({ id: 'user-1', name: 'Alvaro Paco', email: 'alvaro@empresa.com' });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Botão no teste', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-btn', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'Teste {{firstName}}',
+      emailDoc: {
+        blocks: [
+          { type: 'text', text: 'Olá {{firstName}}, tudo bem?' },
+          { type: 'button', label: 'Falar com a Arthur Company', url: 'https://wa.me/5512996399943' },
+        ],
+      },
+    });
+    prisma.emailAccount.rows.push({ id: 'ea-btn', orgId: 'org-1', userId: 'user-1', provider: 'resend', email: 'venda@empresa.com', status: 'connected' });
+
+    const { res, body } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'envia um teste para dono@empresa.com',
+    });
+    assert.equal(res.status, 200);
+    const card = body.data.cards.find((card) => card.type === 'test_message_sent');
+    assert.ok(card, 'card de teste enviado');
+    assert.equal(emailsSent.length, 1, 'UM e-mail de teste');
+    const html = String(emailsSent[0].htmlBody);
+    assert.ok(html.includes('<a href="https://wa.me/5512996399943"'), 'link do WhatsApp como <a> REAL');
+    assert.ok(html.includes('display:inline-block'), 'estilo de BOTÃO (não parágrafo escapado)');
+    assert.ok(html.includes('Falar com a Arthur Company'), 'rótulo do botão');
+    assert.ok(html.includes('Olá Alvaro'), 'variável resolve com o nome do dono');
+    assert.ok(html.includes('use o link de descadastro'), 'rodapé de descadastro no HTML (FR-37)');
+    assert.ok(!html.includes('{{'), 'nenhuma placeholder crua no HTML');
+    assert.ok(
+      String(emailsSent[0].body).includes('Falar com a Arthur Company: https://wa.me/5512996399943'),
+      'texto plano mantém a forma label: url (fallback de cliente sem HTML)'
+    );
+  } finally {
+    emailProvider.sendEmailForAccount = realSendEmail;
+    server.close();
+  }
+});
+
 // ── QA 2026-10-06: troca de mensagem pelo chat sem ids (canal + texto) ──────
 
 test('QA: "troca a mensagem de whatsapp por X" edita o conteúdo (gate confirma, texto exato)', async () => {

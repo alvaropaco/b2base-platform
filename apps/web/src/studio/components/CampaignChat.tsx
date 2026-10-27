@@ -238,6 +238,53 @@ export function imageDownloadName(src: string): string {
   return /^[\w.-]+\.(png|jpe?g)$/i.test(base) ? base : 'imagem.png';
 }
 
+/**
+ * Botão com link no card de revisão (2026-10-26, pedido do dono): o backend
+ * serializa o bloco `button` do e-mail como `[label](url)` no detail —
+ * renderiza como BOTÃO clicável (mesmo destino que sai no e-mail), não como
+ * markdown cru. Linha que não é botão volta como texto (com **negrito**
+ * resolvido, sem asterisco cru).
+ */
+export function contentReviewButton(line: string): { label: string; url: string } | null {
+  const match = String(line || '').match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
+  return match ? { label: match[1], url: match[2] } : null;
+}
+
+/** Parágrafo do card de revisão: botão (quando a linha é um) ou texto. */
+export function ContentReviewDetail({ text }: { text: string }) {
+  return (
+    <div className="mt-0.5 space-y-1">
+      {String(text || '').split('\n').map((line, i) => {
+        const button = contentReviewButton(line);
+        if (button) {
+          return (
+            <a
+              key={i}
+              href={button.url}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1 inline-block rounded-full bg-[#160211] px-4 py-2 text-[11px] font-semibold text-white shadow-md transition-transform hover:brightness-110"
+            >
+              {button.label}
+            </a>
+          );
+        }
+        return (
+          <p key={i} className="whitespace-pre-wrap leading-relaxed text-muted-foreground">
+            {line.split(/(\*\*[^*]+\*\*)/g).map((part, k) =>
+              part.startsWith('**') && part.endsWith('**') ? (
+                <strong key={k} className="text-foreground">{part.slice(2, -2)}</strong>
+              ) : (
+                <span key={k}>{part}</span>
+              )
+            )}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -745,7 +792,11 @@ export function CampaignChat({ campaignId, onStateChange, onApproved, onOpenPref
           {card.label}
           {card.replayed && <span className="ml-1 font-normal text-muted-foreground">(já feito — nada duplicado)</span>}
         </p>
-        {card.detail && <p className="mt-0.5 whitespace-pre-wrap text-muted-foreground">{card.detail}</p>}
+        {card.detail && card.type === 'content_review' ? (
+          <ContentReviewDetail text={card.detail} />
+        ) : (
+          card.detail && <p className="mt-0.5 whitespace-pre-wrap text-muted-foreground">{card.detail}</p>
+        )}
         {links.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {links

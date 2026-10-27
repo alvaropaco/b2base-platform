@@ -122,6 +122,33 @@ function waContactModel(prisma) {
 }
 
 /**
+ * emailDoc.blocks → HTML FINAL do e-mail para um lead — o MESMO renderer da
+ * prévia do painel (email-renderer.js, SC-006: preview ≡ envio) + rodapé de
+ * descadastro (FR-37). Sem blocos (ou emailDoc ausente) devolve null e o
+ * chamador cai no texto plano escapado de emailDocToText.
+ *
+ * Motivo (2026-10-26, pedido do dono): o template do motor carrega só o
+ * TEXTO achatado — o bloco `button` (link do WhatsApp) saía como
+ * "label: url" em texto plano e o bloco `image` (banner gerado) nem saía;
+ * o e-mail real nunca teve o botão que a prévia promete.
+ */
+function emailDocToHtml(emailDoc, lead, { utmTemplate = {}, unsubscribeMailto = null } = {}) {
+  const blocks = emailDoc && Array.isArray(emailDoc.blocks) ? emailDoc.blocks : [];
+  if (blocks.length === 0) return null;
+  const { renderEmail } = require('./email-renderer');
+  const { escapeHtml } = require('./variables');
+  const rendered = renderEmail({ blocks }, lead, { utmTemplate });
+  const mailto =
+    unsubscribeMailto ||
+    process.env.STUDIO_UNSUBSCRIBE_MAILTO ||
+    'mailto:unsubscribe@b2base.net?subject=unsubscribe';
+  const footer =
+    `<div style="margin-top:24px;padding-top:12px;border-top:1px solid #e2e8f0;font-size:12px;color:#64748b;">` +
+    `—<br/>Não quer mais receber? Responda "sair" ou <a href="${escapeHtml(mailto)}" style="color:#64748b;">use o link de descadastro</a>.</div>`;
+  return `${rendered.html}${footer}`;
+}
+
+/**
  * Extrai texto plano de um documento de blocos do editor (naive).
  * US5 substitui pelo renderer MJML — aqui só precisamos de insumo de texto
  * para o template do motor de e-mail.
@@ -791,6 +818,7 @@ module.exports = {
   syncPendingTemplates,
   emailAttachmentCapBytes,
   emailDocToText,
+  emailDocToHtml,
   compileSteps,
   enqueueBatch,
   waContactModel,

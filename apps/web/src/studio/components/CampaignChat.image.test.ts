@@ -108,3 +108,61 @@ describe('imageDownloadName — nome seguro para o download', () => {
     expect(imageDownloadName('')).toBe('imagem.png');
   });
 });
+
+// ── 2026-10-26: BOTÃO com link no card de revisão (pedido do dono) ──────────
+import { contentReviewButton } from './CampaignChat';
+
+describe('contentReviewButton — [label](url) do bloco button vira botão clicável', () => {
+  it('linha do botão do e-mail → {label, url} (mesmo destino do disparo)', () => {
+    expect(contentReviewButton('[Falar com a Arthur Company](https://wa.me/5512996399943)')).toEqual({
+      label: 'Falar com a Arthur Company',
+      url: 'https://wa.me/5512996399943',
+    });
+  });
+
+  it('URL com path/query e label curto', () => {
+    expect(contentReviewButton('[Ver mais](https://exemplo.com/a?b=1)')).toEqual({
+      label: 'Ver mais',
+      url: 'https://exemplo.com/a?b=1',
+    });
+  });
+
+  it('markdown incompleto, texto comum ou linha vazia → null (texto puro)', () => {
+    expect(contentReviewButton('[sem url]')).toBeNull();
+    expect(contentReviewButton('[label](nao-e-url)')).toBeNull();
+    expect(contentReviewButton('Olá {{firstName}}, tudo bem?')).toBeNull();
+    expect(contentReviewButton('')).toBeNull();
+  });
+});
+
+// Render REAL do componente (sem DOM): o botão sai como <a> clicável.
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ContentReviewDetail } from './CampaignChat';
+
+describe('ContentReviewDetail — render do card de revisão', () => {
+  const DETAIL = [
+    '**Assunto:** {{companyName}}: máquinas industriais',
+    'Olá {{firstName}}, tudo bem?',
+    '[Falar com a Arthur Company](https://wa.me/5512996399943)',
+  ].join('\n');
+  const render = (text: string) => renderToStaticMarkup(createElement(ContentReviewDetail, { text }));
+
+  it('linha de botão vira <a href> clicável com o rótulo (mesmo destino do e-mail)', () => {
+    const html = render(DETAIL);
+    expect(html).toContain('<a href="https://wa.me/5512996399943"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('Falar com a Arthur Company</a>');
+  });
+
+  it('negrito resolvido (sem asterisco cru) e linhas comuns como texto', () => {
+    const html = render(DETAIL);
+    expect(html).toContain('<strong class="text-foreground">Assunto:</strong>');
+    expect(html).not.toContain('**');
+    expect(html).toContain('Olá {{firstName}}, tudo bem?');
+  });
+
+  it('texto vazio não quebra', () => {
+    expect(render('')).toContain('<div class="mt-0.5 space-y-1">');
+  });
+});
