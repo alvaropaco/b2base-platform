@@ -1719,20 +1719,27 @@ function registerChatRoutes(router, context) {
           // do bridge, "label: url") — o markdown do card de revisão não vaza
           // para o e-mail (SC-006: teste ≡ disparo).
           const renderedBody = renderTemplate(emailDocToText(emailContent.emailDoc), SAMPLE);
+          // Banner EMBUTIDO no teste (2026-10-27): mesmo mecanismo do disparo
+          // real — a imagem viaja no e-mail (CID), não depende de APP_URL.
+          const testHtml =
+            emailDocToHtml(emailContent.emailDoc, SAMPLE, { utmTemplate: campaign.utmTemplate || {} }) ||
+            `<p>${renderedBody
+              .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+              .replace(/\n{2,}/g, '</p><p>')
+              .replace(/\n/g, '<br/>')}</p>`;
+          let testInlineImages = [];
+          try {
+            testInlineImages = require('./email-inline').extractInlineImages(testHtml, {
+              readGenerated: require('./storage').readGenerated,
+            }).inlineImages;
+          } catch (_err) { /* src remoto permanece */ }
           const emailProvider = require('../email-provider');
           await emailProvider.sendEmailForAccount(prisma, account.id, {
             to,
             subject: `[TESTE] ${renderTemplate(emailContent.subject || campaign.name, SAMPLE)}`,
             body: renderedBody,
-            // O teste tem que mostrar o MESMO e-mail do disparo (SC-006): com
-            // emailDoc o HTML sai do renderer da prévia — botão com link e
-            // banner reais; sem emailDoc, texto plano escapado como antes.
-            htmlBody:
-              emailDocToHtml(emailContent.emailDoc, SAMPLE, { utmTemplate: campaign.utmTemplate || {} }) ||
-              `<p>${renderedBody
-                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                .replace(/\n{2,}/g, '</p><p>')
-                .replace(/\n/g, '<br/>')}</p>`,
+            htmlBody: testHtml,
+            inlineImages: testInlineImages,
             messageId: `teste-${crypto.randomUUID()}`,
           });
           parts.push(`✉️ E-mail para ${to}`);
@@ -1785,18 +1792,26 @@ function registerChatRoutes(router, context) {
             });
             if (emailAccountLead) {
               const renderedLead = renderTemplate(emailDocToText(emailContentForLead.emailDoc), lead);
+              // Banner EMBUTIDO (2026-10-27): mesma regra do disparo real.
+              const previewHtml =
+                emailDocToHtml(emailContentForLead.emailDoc, lead, { utmTemplate: campaign.utmTemplate || {} }) ||
+                `<p>${renderedLead
+                  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                  .replace(/\n{2,}/g, '</p><p>')
+                  .replace(/\n/g, '<br/>')}</p>`;
+              let previewInlineImages = [];
+              try {
+                previewInlineImages = require('./email-inline').extractInlineImages(previewHtml, {
+                  readGenerated: require('./storage').readGenerated,
+                }).inlineImages;
+              } catch (_err) { /* src remoto permanece */ }
               const emailProviderLead = require('../email-provider');
               await emailProviderLead.sendEmailForAccount(prisma, emailAccountLead.id, {
                 to: emailTarget,
                 subject: renderTemplate(emailContentForLead.subject || campaign.name, lead),
                 body: renderedLead,
-                // Mesma regra do destino manual: prévia ≡ disparo (SC-006).
-                htmlBody:
-                  emailDocToHtml(emailContentForLead.emailDoc, lead, { utmTemplate: campaign.utmTemplate || {} }) ||
-                  `<p>${renderedLead
-                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                    .replace(/\n{2,}/g, '</p><p>')
-                    .replace(/\n/g, '<br/>')}</p>`,
+                htmlBody: previewHtml,
+                inlineImages: previewInlineImages,
                 messageId: `teste-${crypto.randomUUID()}`,
               });
               sentVia.push('e-mail');

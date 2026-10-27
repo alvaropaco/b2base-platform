@@ -2631,3 +2631,77 @@ test('QA: attachmentId de NÃO-imagem é recusado com erro honesto (nada de bann
     server.close();
   }
 });
+
+// ── 2026-10-27: banner do e-mail sai EMBUTIDO (CID) — sem depender de APP_URL ─
+// localhost nunca é alcançável pelo cliente de e-mail do lead: os BYTES do
+// banner viajam dentro da mensagem (anexo inline + cid), como no disparo real.
+
+test('QA: banner do e-mail de TESTE sai EMBUTIDO (inlineImages com cid e bytes)', async () => {
+  const os = require('node:os');
+  const path = require('node:path');
+  const fs = require('node:fs');
+  const storage = require('../studio/storage');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-inline-'));
+  const prevStorageDir = process.env.STUDIO_STORAGE_DIR;
+  process.env.STUDIO_STORAGE_DIR = tmpDir;
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({
+          reply: 'Enviando o teste.',
+          actions: [{ type: 'send_test_message', email: 'dono@empresa.com' }],
+        }),
+      };
+    }
+    return { content: '{}' };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  const emailProvider = require('../email-provider');
+  const emailsSent = [];
+  const realSendEmail = emailProvider.sendEmailForAccount;
+  emailProvider.sendEmailForAccount = async (_prisma, _accountId, payload) => {
+    emailsSent.push(payload);
+    return { messageId: 'pm-inline', threadId: 'th-inline' };
+  };
+  try {
+    prisma.user.rows.push({ id: 'user-1', name: 'Alvaro Paco', email: 'alvaro@empresa.com' });
+    // Banner REAL no storage público (mesmo pipeline da geração).
+    const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63fcffff3f030005fe02fea72d8b300000000049454e44ae426082', 'hex');
+    const bannerName = storage.saveGenerated(PNG, 'png');
+    const { body: c } = await api('POST', '/campaigns', { name: 'Banner embutido', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-inline', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'Teste {{firstName}}',
+      emailDoc: {
+        blocks: [
+          { type: 'image', src: `https://app.b2base.net/media/${bannerName}`, alt: 'Banner' },
+          { type: 'button', label: 'Falar com a Arthur Company', url: 'https://wa.me/5512996399943' },
+        ],
+      },
+    });
+    prisma.emailAccount.rows.push({ id: 'ea-inline', orgId: 'org-1', userId: 'user-1', provider: 'resend', email: 'venda@empresa.com', status: 'connected' });
+
+    const { res } = await api('POST', `/campaigns/${c.data.id}/chat`, {
+      message: 'envia um teste para dono@empresa.com',
+    });
+    assert.equal(res.status, 200);
+    assert.equal(emailsSent.length, 1, 'UM e-mail de teste');
+    const payload = emailsSent[0];
+    assert.equal(payload.inlineImages.length, 1, 'banner na lista de inline');
+    assert.equal(payload.inlineImages[0].fileName, bannerName);
+    assert.match(payload.inlineImages[0].cid, /^banner-[a-f0-9]+png$/);
+    assert.deepEqual(Buffer.from(payload.inlineImages[0].content, 'base64'), PNG, 'bytes do banner embarcados');
+    // O html segue com o src ORIGINAL — a troca por cid: é do provider que
+    // embute (SMTP/Resend). Provider sem anexo mantém o src remoto.
+    assert.ok(payload.htmlBody.includes(`/media/${bannerName}`), 'src original preservado no html');
+    // O botão/link do CTA permanece no html.
+    assert.ok(payload.htmlBody.includes('https://wa.me/5512996399943'));
+  } finally {
+    emailProvider.sendEmailForAccount = realSendEmail;
+    if (prevStorageDir === undefined) delete process.env.STUDIO_STORAGE_DIR;
+    else process.env.STUDIO_STORAGE_DIR = prevStorageDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    server.close();
+  }
+});

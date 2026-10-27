@@ -761,6 +761,20 @@ async function processSend(job) {
 
   let result;
   try {
+    // Banner do Studio EMBUTIDO (2026-10-27): imagens /media no HTML viram
+    // anexo inline (CID) — os bytes viajam DENTRO do e-mail e o banner abre
+    // em qualquer cliente, mesmo sem APP_URL público (localhost não é
+    // alcançável pelo cliente de e-mail do lead). Fail-safe: arquivo
+    // ausente → lista vazia e o src remoto permanece.
+    let inlineImages = [];
+    try {
+      const { extractInlineImages } = require('./studio/email-inline');
+      inlineImages = extractInlineImages(message.htmlBody, {
+        readGenerated: require('./studio/storage').readGenerated,
+      }).inlineImages;
+    } catch (inlineErr) {
+      console.warn(`[send] banner inline indisponível na mensagem ${messageId} — sigo com src remoto:`, inlineErr.message);
+    }
     result = await emailProvider.sendEmailForAccount(prisma, message.contact.emailAccount_id, {
       to: recipientEmail,
       subject: message.subject,
@@ -768,6 +782,7 @@ async function processSend(job) {
       htmlBody: message.htmlBody,
       messageId: messageIdHeader,
       attachments,
+      inlineImages,
     });
     if (Array.isArray(result?.attachmentsSkipped)) attachmentsSkipped.push(...result.attachmentsSkipped);
     if (attachmentsSkipped.length > 0) {

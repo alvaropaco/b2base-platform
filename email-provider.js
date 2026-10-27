@@ -23,6 +23,7 @@ const nodemailer = require('nodemailer');
 const { encrypt, decrypt } = require('./gmail-auth');
 const gmailApi = require('./gmail-api');
 const reputation = require('./studio/reputation');
+const { applyCid } = require('./studio/email-inline');
 
 const PROVIDERS = ['gmail', 'smtp', 'resend'];
 
@@ -127,26 +128,37 @@ function SMTPEmailProvider(account) {
     // ({fileName, content: Buffer, contentType}).
     capabilities: { replySync: false, attachments: true },
 
-    async send({ to, subject, body, htmlBody, messageId, attachments }) {
+    async send({ to, subject, body, htmlBody, messageId, attachments, inlineImages }) {
+      const inlines = Array.isArray(inlineImages) ? inlineImages : [];
       const info = await transporter.sendMail({
         from: _formatFrom(account.email, account.fromName),
         to,
         subject,
         text: body,
-        html: htmlBody || undefined,
+        // Banner do Studio EMBUTIDO (2026-10-27): os src das imagens /media
+        // viram `cid:` e os bytes vão como anexo inline (Content-ID) — o
+        // banner abre em qualquer cliente, mesmo sem APP_URL público.
+        html: inlines.length > 0 ? applyCid(htmlBody, inlines) : htmlBody || undefined,
         // Fixa o Message-ID header para permitir casar replies por
         // In-Reply-To quando houver leitura de caixa (IMAP) no futuro.
         // Sem id, o próprio nodemailer gera um válido.
         messageId: formatMessageId(messageId, account.email),
-        ...(Array.isArray(attachments) && attachments.length > 0
-          ? {
-              attachments: attachments.map((a) => ({
+        attachments: [
+          ...(Array.isArray(attachments) && attachments.length > 0
+            ? attachments.map((a) => ({
                 filename: a.fileName,
                 content: Buffer.from(a.content, 'base64'),
                 contentType: a.contentType || 'application/octet-stream',
-              })),
-            }
-          : {}),
+              }))
+            : []),
+          ...inlines.map((img) => ({
+            filename: img.embedFileName,
+            content: Buffer.from(img.content, 'base64'),
+            contentType: img.contentType,
+            cid: img.cid,
+            contentDisposition: 'inline',
+          })),
+        ],
       });
 
       return { messageId: info.messageId, threadId: null };
@@ -205,8 +217,9 @@ function ResendEmailProvider(account) {
     // Resend aceita anexos base64 no payload da API — suportado (Story 2.2).
     capabilities: { replySync: false, attachments: true },
 
-    async send({ to, subject, body, htmlBody, messageId, attachments }) {
+    async send({ to, subject, body, htmlBody, messageId, attachments, inlineImages }) {
       const mid = formatMessageId(messageId, account.email);
+      const inlines = Array.isArray(inlineImages) ? inlineImages : [];
       const res = await fetch(`${RESEND_API_BASE}/emails`, {
         method: 'POST',
         headers: {
@@ -218,17 +231,26 @@ function ResendEmailProvider(account) {
           to: [to],
           subject,
           text: body,
-          html: htmlBody || undefined,
+          // Banner do Studio EMBUTIDO (2026-10-27): src → `cid:` + anexo
+          // inline com content_id (a imagem viaja DENTRO do e-mail — abre
+          // mesmo sem APP_URL público).
+          html: inlines.length > 0 ? applyCid(htmlBody, inlines) : htmlBody || undefined,
           headers: mid ? { 'Message-ID': mid } : undefined,
-          ...(Array.isArray(attachments) && attachments.length > 0
-            ? {
-                attachments: attachments.map((a) => ({
+          attachments: [
+            ...(Array.isArray(attachments) && attachments.length > 0
+              ? attachments.map((a) => ({
                   filename: a.fileName,
                   content: a.content, // base64 (D8: bytes lidos do storage no send)
                   content_type: a.contentType || 'application/octet-stream',
-                })),
-              }
-            : {}),
+                }))
+              : []),
+            ...inlines.map((img) => ({
+              filename: img.embedFileName,
+              content: img.content, // base64
+              content_type: img.contentType,
+              content_id: img.cid,
+            })),
+          ],
         }),
       });
 
@@ -325,6 +347,14 @@ async function sendEmailForAccount(prisma, emailAccount_id, params) {
         reason: 'provider_sem_suporte',
       }));
       return result;
+    }
+    // Banner EMBUTIDO (2026-10-27): provider sem anexos (Gmail API) ignora
+    // inlineImages — o HTML mantém o src remoto de sempre (degradação: o
+    // banner depende de APP_URL público nesse caso).
+    if (Array.isArray(params.inlineImages) && params.inlineImages.length > 0 && provider.capabilities?.attachments !== true) {
+      console.warn(
+        `[email-provider] provider "${provider.provider}" sem suporte a anexos — o banner do Studio segue por URL pública (não embutido).`
+      );
     }
     return await provider.send(params);
   } catch (err) {
