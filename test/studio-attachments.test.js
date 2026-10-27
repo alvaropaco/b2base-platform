@@ -555,3 +555,80 @@ test('materiais por campanha: listagem separa os da campanha, anexos e os da org
     server.close();
   }
 });
+
+test('DISPARO AGENDADO/LOTE: banner do Studio sai EMBUTIDO (CID) pelo Gmail no processSend', async () => {
+  const dir = useTempStorage();
+  process.env.OUTREACH_ALLOWED_HOURS_START = '0';
+  process.env.OUTREACH_ALLOWED_HOURS_END = '24';
+  const png = Buffer.from(
+    '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63fcffff3f030005fe02fea72d8b300000000049454e44ae426082',
+    'hex'
+  );
+  const prisma = seedOrg(createFakePrisma());
+  // Execução Studio com conteúdo: banner REAL no storage + botão WhatsApp.
+  prisma.studioCampaign.rows.push({ id: 'sc-banner', orgId: 'org-1' });
+  prisma.studioContent.rows.push({
+    id: 'sc-banner-content', orgId: 'org-1', campaignId: 'sc-banner', channel: 'email',
+    kind: 'base', stepIndex: 1, variantLabel: 'A',
+    emailDoc: {
+      blocks: [
+        // Promovido para generated/ — MESMO mecanismo da produção
+        // (generate_image/promoção de anexo → saveGenerated → rota /media).
+        { type: 'image', src: `https://app.b2base.net/media/${require('../studio/storage').saveGenerated(png, 'png')}`, href: 'https://wa.me/5512996399943' },
+        { type: 'button', label: 'Falar com a gente no WhatsApp', url: 'https://wa.me/5512996399943', color: '#25D366' },
+      ],
+    },
+  });
+  prisma.outreachCampaign.rows.push({
+    id: 'camp-1', tenantId: 'org-1', status: 'active', studioCampaignId: 'sc-banner',
+    emailTemplateSubject: 'Oi {{firstName}}',
+    emailTemplateBody: 'Oi {{firstName}}, tudo bem?\n\nFalar com a gente no WhatsApp: https://wa.me/5512996399943',
+    studioAttachments: [],
+  });
+  prisma.emailAccount.rows.length = 0;
+  prisma.emailAccount.rows.push({ id: 'ea-g', tenantId: 'org-1', userId: 'user-1', provider: 'gmail', email: 'venda@empresa.com', status: 'connected' });
+  prisma.outreachContact.rows.push({ id: 'ct-1', campaignId: 'camp-1', prospectId: 'lead-1', status: 'SCHEDULED', emailAccount_id: 'ea-g' });
+  // O htmlBody SEMEADO é o que o processPrepare produz (emailDocToHtml real,
+  // já coberto no testes de prepare) — aqui validamos o estágio do SEND.
+  const { emailDocToHtml } = require('../studio/channel-bridge');
+  const bannerHtml = emailDocToHtml(prisma.studioContent.rows[0].emailDoc, { contactName: 'Ana' }, {});
+  prisma.outreachMessage.rows.push({
+    id: 'msg-g', contactId: 'ct-1', status: 'SCHEDULED', subject: 'Oi', body: 'corpo', htmlBody: bannerHtml,
+    contact: { prospectId: 'lead-1', status: 'SCHEDULED', campaign: { tenantId: 'org-1', status: 'active', studioAttachments: [] }, emailAccount_id: 'ea-g' },
+  });
+  prisma.prospect.rows.push({ id: 'lead-1', orgId: 'org-1', cnpjEmail: 'lead@e.com' });
+
+  // Captura o MIME que a Gmail API recebe (sendEmail stubado no limite MIME).
+  const gmailApi = require('../gmail-api');
+  const realSend = gmailApi.sendEmail;
+  let gmailMime = null;
+  gmailApi.sendEmail = async (_prisma, _accountId, params) => {
+    // Reproduz o comportamento real: applyCid + buildMimeMessage (a rota real
+    // chama sendEmail → buildMimeMessage; aqui exercitamos os DOIS estágios).
+    const { applyCid } = require('../studio/email-inline');
+    const html = params.inlineImages?.length ? applyCid(params.htmlBody, params.inlineImages) : params.htmlBody;
+    gmailMime = gmailApi.buildMimeMessage({ from: 'venda@empresa.com', to: params.to, subject: params.subject, messageIdHeader: '<g@e>', body: params.body, htmlBody: html, attachments: params.attachments || [], inlineImages: params.inlineImages || [] });
+    return { gmailMessageId: 'g-banner-1', gmailThreadId: null };
+  };
+  const workers = require('../outreach-workers');
+  workers._setPrismaForTests(prisma);
+  workers._setQueueFactoryForTests(() => ({ add: async () => ({ id: 'j' }), getJob: async () => null }));
+  try {
+    const result = await workers.processSend({ data: { messageId: 'msg-g' }, attemptsMade: 0, opts: { attempts: 3 }, id: 'j1' });
+    assert.equal(result.messageId, 'g-banner-1', 'envio concluído via Gmail');
+    assert.ok(gmailMime, 'MIME capturado');
+    // Imagem INLINE: os bytes viajam na mensagem (não src localhost).
+    assert.ok(gmailMime.includes('multipart/related'), 'related da imagem inline');
+    assert.match(gmailMime, /Content-ID: <banner-[a-f0-9]+png>/, 'Content-ID da imagem');
+    assert.match(gmailMime, /src="cid:banner-[a-f0-9]+png"/, 'HTML aponta para o cid');
+    assert.ok(!gmailMime.includes('/media/'), 'nenhum src remoto restou no MIME');
+    // Botão do WhatsApp preservado e clicável.
+    assert.ok(gmailMime.includes('href="https://wa.me/5512996399943"'), 'botão do WhatsApp intacto');
+    // Anexo comum não foi confundido com a imagem inline.
+    assert.ok(!gmailMime.includes('Content-Disposition: attachment; filename="banner'), 'banner não virou anexo para download');
+  } finally {
+    gmailApi.sendEmail = realSend;
+    delete process.env.OUTREACH_ALLOWED_HOURS_START;
+    delete process.env.OUTREACH_ALLOWED_HOURS_END;
+  }
+});
