@@ -14,6 +14,9 @@ module.exports = function mediaRoute(req, res) {
     const buffer = storage.readGenerated(req.params.name);
     const ext = String(req.params.name).split('.').pop().toLowerCase();
     res.setHeader('Content-Type', ext === 'jpg' ? 'image/jpeg' : `image/${ext}`);
+    // Servida sem sessão para o cliente de e-mail do lead: impede sniffing
+    // (o Content-Type é o contrato — nada de interpretar como HTML/script).
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     res.send(buffer);
   } catch (_e) {

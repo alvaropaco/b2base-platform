@@ -37,6 +37,27 @@ const QR_WAIT_MS = Number(process.env.STUDIO_QR_WAIT_MS || 25000);
 // origem do próprio pedido — mesmo padrão de cockpit-routes/server-prod. O
 // Cockpit é acessado no host público, então /media/:hash no mesmo host é
 // alcançável pelos clientes de e-mail; sem req (worker/testes), volta ''.
+/**
+ * URL pública final de uma imagem PROMOVIDA/gerada: com offload configurado
+ * (MEDIA_PUBLISH_*), publica o arquivo no bucket/CDN e devolve a URL pública
+ * dele; sem offload (ou falha), devolve a rota /media local na base
+ * APP_URL/origem — fail-safe de sempre. Nunca inventa domínio.
+ */
+async function mediaPublicSrc(fileName, req) {
+  const storage = require('./storage');
+  try {
+    const pub = await require('./media-publisher').publishMedia(fileName, {
+      readGenerated: storage.readGenerated,
+      readBuffer: storage.readBuffer,
+    });
+    if (pub.provider === 'remote' && pub.url) return pub.url;
+  } catch (err) {
+    console.warn('[media] publicação externa falhou — uso a rota /media local:', err.message);
+  }
+  const base = publicBaseUrl(req);
+  return base ? `${base}/media/${fileName}` : null;
+}
+
 function publicBaseUrl(req) {
   const fromEnv = String(process.env.APP_URL || '').replace(/\/$/, '');
   if (fromEnv) return fromEnv;
@@ -932,8 +953,9 @@ function registerChatRoutes(router, context) {
         // Fallback do base (2026-10-19): APP_URL ausente no servidor NÃO mata
         // mais a imagem gerada — a origem do próprio pedido monta o link
         // (mesmo padrão de cockpit-routes/server-prod).
-        const base = publicBaseUrl(req);
-        const imageUrl = base ? `${base}${imagePath}` : null;
+        // PUBLICAÇÃO (2026-10-27): com MEDIA_PUBLISH_* configurado, a URL é a
+        // do bucket/CDN (estável, pública, HTTPS) — independe de APP_URL.
+        const imageUrl = await mediaPublicSrc(fileName, req);
         let inserted = false;
         let emailNote = '';
         let ctaBlock = null;
@@ -2213,13 +2235,15 @@ function registerChatRoutes(router, context) {
             if (!['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) {
               throw httpError('NOT_AN_IMAGE', 400, 'Esse material não é imagem (png/jpg/webp/gif) — não vira banner de e-mail.');
             }
-            const base = publicBaseUrl(req);
-            if (!base) {
-              throw httpError('NO_PUBLIC_BASE', 409, 'Sem APP_URL/origem eu NÃO consigo publicar a imagem para o cliente de e-mail do lead. Configure APP_URL e tente de novo.');
-            }
             const buffer = storage.readBuffer(material.sourceRef);
             const promoted = storage.saveGenerated(buffer, ext);
-            action.imageUrl = `${base}/media/${promoted}`;
+            // Com publicação externa configurada, a URL é do bucket/CDN —
+            // APP_URL deixa de ser requisito para o cliente de e-mail do lead.
+            const remote = await mediaPublicSrc(promoted, req);
+            if (!remote) {
+              throw httpError('NO_PUBLIC_BASE', 409, 'Sem APP_URL/origem eu NÃO consigo publicar a imagem para o cliente de e-mail do lead. Configure APP_URL (ou MEDIA_PUBLISH_*) e tente de novo.');
+            }
+            action.imageUrl = remote;
             if (!action.imageAlt) action.imageAlt = `Material ${material.id.slice(-6)}`;
           }
           action.imageAlt = action.imageAlt || 'Banner da campanha';
@@ -2242,15 +2266,16 @@ function registerChatRoutes(router, context) {
           if (!['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) {
             throw httpError('NOT_AN_IMAGE', 400, `"${attachment.originalName}" não é imagem (png/jpg/webp/gif) — não vira banner de e-mail.`);
           }
-          const base = publicBaseUrl(req);
-          if (!base) {
-            throw httpError('NO_PUBLIC_BASE', 409, 'Sem APP_URL/origem eu NÃO consigo publicar a imagem para o cliente de e-mail do lead. Configure APP_URL e tente de novo.');
-          }
           const buffer = storage.readBuffer(attachment.fileName);
           const publicName = storage.saveGenerated(buffer, ext);
-          // Segue no fluxo do imageUrl: banner no topo + CTA herdado, em TODAS
-          // as variantes de e-mail (alt = nome original do arquivo).
-          action.imageUrl = `${base}/media/${publicName}`;
+          // Com publicação externa configurada, a URL é do bucket/CDN —
+          // APP_URL deixa de ser requisito. Segue no fluxo do imageUrl:
+          // banner no topo + CTA herdado, em TODAS as variantes.
+          const remote = await mediaPublicSrc(publicName, req);
+          if (!remote) {
+            throw httpError('NO_PUBLIC_BASE', 409, 'Sem APP_URL/origem eu NÃO consigo publicar a imagem para o cliente de e-mail do lead. Configure APP_URL (ou MEDIA_PUBLISH_*) e tente de novo.');
+          }
+          action.imageUrl = remote;
           if (!action.imageAlt) action.imageAlt = attachment.originalName.slice(0, 200);
         }
         // IMAGEM POR LINK no e-mail (2026-10-16, pedido do dono: e-mail com
