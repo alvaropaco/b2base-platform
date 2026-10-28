@@ -2283,6 +2283,37 @@ function registerChatRoutes(router, context) {
         // insere o banner NO TOPO do emailDoc (href opcional = banner
         // clicável). Todas as variantes de e-mail da campanha recebem.
         if (contents.length === 0 && action.imageUrl) {
+          // LINK EXTERNO → IMAGEM REAL (2026-10-28, caso do imgur): link de
+          // ÁLBUM (imgur.com/a/…) é página — o dono não deve caçar o link
+          // direto. Resolve a imagem direta, BAIXA os bytes para o NOSSO
+          // storage (o banner deixa de depender do imgur, que bloqueia com
+          // 429) e segue com src local — no envio vai EMBUTIDO por CID.
+          // URL DIRETA de imagem (termina em .jpg/.png/…) segue o contrato de
+          // sempre: o banner REFERENCIA a URL pública do dono (menos fetch,
+          // menos dependência). Só link de PÁGINA (ex.: álbum do imgur) é
+          // resolvido e os bytes trazidos para o nosso storage.
+          const isDirectImage = require('./resolve-image-link').isImageUrl(action.imageUrl);
+          if (!isDirectImage) try {
+            const storage = require('./storage');
+            const resolver = require('./resolve-image-link');
+            const { imageUrl: direct } = await resolver.resolveDirectImageUrl(action.imageUrl, {});
+            const bytes = await resolver.downloadImageBytes(direct, {});
+            const mime = require('./ai/vision').normalizeImageMime(bytes, direct);
+            const ext = require('./storage').extFromMime(mime, direct);
+            const promoted = storage.saveGenerated(bytes, ext);
+            const resolved = await mediaPublicSrc(promoted, req);
+            if (!resolved) {
+              throw httpError('NO_PUBLIC_BASE', 409, 'Sem APP_URL/origem eu NÃO consigo publicar a imagem para o cliente de e-mail do lead. Configure APP_URL (ou MEDIA_PUBLISH_*) e tente de novo.');
+            }
+            action.imageUrl = resolved;
+            if (!action.imageAlt) action.imageAlt = 'Imagem do link informado';
+          } catch (err) {
+            if (['IMAGE_LINK_INVALID', 'IMAGE_LINK_FETCH_FAILED', 'IMAGE_LINK_BLOCKED', 'IMAGE_LINK_HTTP_ERROR', 'IMAGE_LINK_NO_IMAGE', 'IMAGE_DOWNLOAD_FAILED', 'IMAGE_DOWNLOAD_HTTP_ERROR', 'IMAGE_DOWNLOAD_EMPTY', 'IMAGE_TOO_LARGE'].includes(err.code)) {
+              err.expose = true;
+              err.status = err.status || 400;
+            }
+            throw err;
+          }
           const rows = await prisma.studioContent.findMany({
             where: { campaignId: campaign.id, kind: 'base', stepIndex: 1, channel: 'email' },
           });
