@@ -1,0 +1,7 @@
+name = "b2base-media-relay"
+main = "worker.js"
+compatibility_date = "2026-10-28"
+
+# Sem rotas: fica em https://b2base-media-relay.<subdominio>.workers.dev
+# O segredo RELAY_AUTH é publicado com `wrangler secret put RELAY_AUTH`
+# (a app manda `Authorization: Bearer <segredo>` — MEDIA_FETCH_RELAY_AUTH).

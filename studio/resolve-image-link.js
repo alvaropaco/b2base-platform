@@ -23,6 +23,58 @@
 const FETCH_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // mesmo teto das fotos por anexo
 
+// ── Relay Cloudflare (Worker) para host que bloqueia o IP de origem ─────────
+// Caso real: imgur devolve 429/403 para IP de datacenter. Com o Worker
+// b2base-media-relay publicado (cloudflare/media-relay/) e as DUAS envs
+// configuradas, o fetch bloqueado tenta UMA vez pelo relay — o Cloudflare
+// busca na edge e devolve página/bytes. Sem relay configurado, bloqueio
+// vira erro honesto com causa (comportamento de sempre).
+
+const RELAY_URL = () => String(process.env.MEDIA_FETCH_RELAY_URL || '').replace(/\/$/, '');
+const RELAY_AUTH = () => String(process.env.MEDIA_FETCH_RELAY_AUTH || '');
+
+function isRelayConfigured() {
+  return Boolean(RELAY_URL() && RELAY_AUTH());
+}
+
+async function relayFetch(url, accept, { fetchImpl } = {}) {
+  const endpoint = `${RELAY_URL()}?url=${encodeURIComponent(String(url))}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error('timeout')), 20000);
+  try {
+    return await (fetchImpl || global.fetch)(endpoint, {
+      signal: controller.signal,
+      headers: { Authorization: RELAY_AUTH(), Accept: accept },
+      redirect: 'follow',
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Fetch de página/imagem com fallback: direto primeiro; 429/403 (ou falha de
+ * rede, quando há relay) → UMA tentativa pelo relay do Cloudflare.
+ */
+async function fetchWithRelayFallback(url, accept, { fetchImpl } = {}) {
+  const doFetch = fetchImpl || global.fetch;
+  let res = null;
+  let directErr = null;
+  try {
+    res = await doFetch(String(url), { headers: { 'User-Agent': FETCH_UA, Accept: accept }, redirect: 'follow' });
+  } catch (err) {
+    directErr = err;
+  }
+  if ((!res || res.status === 429 || res.status === 403) && isRelayConfigured()) {
+    try {
+      const via = await relayFetch(url, accept, { fetchImpl });
+      if (via) res = via;
+    } catch (_err) { /* queda no resultado direto/erro original */ }
+  }
+  if (!res) throw (directErr || new Error('fetch falhou'));
+  return res;
+}
+
 function isImageUrl(url) {
   return /\.(png|jpe?g|webp|gif)(\?|$)/i.test(String(url || '').split(/[?#]/)[0] || '');
 }
@@ -56,10 +108,9 @@ async function resolveDirectImageUrl(url, { fetchImpl } = {}) {
   }
   if (isImageUrl(target)) return { imageUrl: target };
 
-  const doFetch = fetchImpl || global.fetch;
   let res = null;
   try {
-    res = await doFetch(target, { headers: { 'User-Agent': FETCH_UA, Accept: 'text/html' }, redirect: 'follow' });
+    res = await fetchWithRelayFallback(target, 'text/html', { fetchImpl });
   } catch (err) {
     const e = new Error(`Não consegui abrir o link (${err.message}).`);
     e.code = 'IMAGE_LINK_FETCH_FAILED';
@@ -95,10 +146,9 @@ async function resolveDirectImageUrl(url, { fetchImpl } = {}) {
  * bytes no chamador). Só http/https; 429/403 vira causa explícita.
  */
 async function downloadImageBytes(url, { fetchImpl } = {}) {
-  const doFetch = fetchImpl || global.fetch;
   let res = null;
   try {
-    res = await doFetch(String(url), { headers: { 'User-Agent': FETCH_UA, Accept: 'image/*' }, redirect: 'follow' });
+    res = await fetchWithRelayFallback(String(url), 'image/*', { fetchImpl });
   } catch (err) {
     const e = new Error(`Não consegui baixar a imagem (${err.message}).`);
     e.code = 'IMAGE_DOWNLOAD_FAILED';
@@ -168,6 +218,7 @@ module.exports = {
   MAX_IMAGE_BYTES,
   isPageUrl,
   isImageUrl,
+  isRelayConfigured,
   extractDirectImageFromHtml,
   resolveDirectImageUrl,
   downloadImageBytes,

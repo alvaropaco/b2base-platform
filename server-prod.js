@@ -5784,6 +5784,15 @@ async function start() {
       } catch (backfillErr) {
         console.error('[materials:backfill] registro indisponível (pendentes seguem para o confirm_material):', backfillErr.message);
       }
+      // AUTO-CURA de banners presos em src de PÁGINA (2026-10-28): resolve a
+      // imagem direta, traz os bytes para o nosso storage e publica no bucket
+      // (R2) — emailDocs antigos saem curados antes da próxima conversa/envio.
+      try {
+        require('./studio/media-backfill').registerMediaBackfill(prisma);
+        console.log('[media:backfill] ✓ auto-cura de banners em src de página registrada');
+      } catch (mediaErr) {
+        console.error('[media:backfill] registro indisponível (cura segue no envio):', mediaErr.message);
+      }
       // specs/011 (AD-8): revalidação DNS diária do domínio de envio —
       // falha → floor do saldo efetivo zero (o gate bloqueia com instrução).
       require('./studio/dns-verify').registerDailyJob(prisma);
