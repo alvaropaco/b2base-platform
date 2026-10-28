@@ -141,7 +141,42 @@ async function downloadImageBytes(url, { fetchImpl } = {}) {
   return buffer;
 }
 
+/**
+ * Garante que TODO bloco image com src de PÁGINA (ex.: álbum do imgur) saia
+ * resolvido: baixa os bytes e PROMOVE para o storage do Studio — o src passa
+ * a ser local (/media/<hash>, embutível por CID no envio) ou a URL pública
+ * do bucket (quando MEDIA_PUBLISH_* configurado). `persist` salva o emailDoc
+ * na origem (melhor-esforço) para os próximos envios já usarem o resolvido.
+ *
+ * Usado por send_test_message (chat) E pelo disparo real (outreach-workers):
+ * o mesmo banner resolvido nos dois caminhos.
+ */
+async function ensureImageSourcesResolved(emailDoc, deps = {}) {
+  const storage = require('./storage');
+  const { fetchImpl, readGenerated, readBuffer, publishMedia, persist } = deps;
+  const blocks = emailDoc && Array.isArray(emailDoc.blocks) ? emailDoc.blocks : [];
+  for (const b of blocks) {
+    if (!b || b.type !== 'image' || typeof b.src !== 'string' || !isIndirectImgur(b.src)) continue;
+    const { imageUrl: direct } = await resolveDirectImageUrl(b.src, { fetchImpl });
+    const bytes = await downloadImageBytes(direct, { fetchImpl });
+    const mime = require('./ai/vision').normalizeImageMime(bytes, direct);
+    const promoted = storage.saveGenerated(bytes, storage.extFromMime(mime, direct));
+    let src = `/media/${promoted}`;
+    if (typeof publishMedia === 'function') {
+      const pub = await publishMedia(promoted, { readGenerated: storage.readGenerated, readBuffer: storage.readBuffer });
+      if (pub && pub.provider === 'remote' && pub.url) src = pub.url;
+    }
+    b.src = src;
+    if (typeof persist === 'function') {
+      try { await persist(emailDoc); } catch (_e) { /* melhor-esforço: o envio segue com o resolvido em memória */ }
+    }
+    break; // um banner por e-mail
+  }
+  return emailDoc;
+}
+
 module.exports = {
+  ensureImageSourcesResolved,
   MAX_IMAGE_BYTES,
   isIndirectImgur,
   isImageUrl,

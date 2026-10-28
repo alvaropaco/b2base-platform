@@ -319,30 +319,22 @@ async function processPrepare(job) {
         const doc = studioContent && studioContent.emailDoc;
         if (doc && Array.isArray(doc.blocks) && doc.blocks.length > 0) {
           // Banner com src de PÁGINA (caso real: álbum do imgur) → resolve a
-          // imagem direta, baixa os bytes e PROMOVE para o storage — o e-mail
-          // sai com src local (embutível por CID) e o emailDoc é atualizado
-          // na origem (resolve UMA vez; os próximos envios já usam o local).
-          for (const b of (Array.isArray(doc.blocks) ? doc.blocks : [])) {
-            if (b && b.type === 'image' && typeof b.src === 'string' && require('./studio/resolve-image-link').isIndirectImgur(b.src)) {
-              const resolver = require('./studio/resolve-image-link');
-              const { imageUrl: direct } = await resolver.resolveDirectImageUrl(b.src);
-              const bytes = await resolver.downloadImageBytes(direct);
-              const mime = require('./studio/ai/vision').normalizeImageMime(bytes, direct);
-              const promoted = require('./studio/storage').saveGenerated(bytes, require('./studio/storage').extFromMime(mime, direct));
-              const remote = await require('./studio/media-publisher').publishMedia(promoted, {
-                readGenerated: require('./studio/storage').readGenerated,
-                readBuffer: require('./studio/storage').readBuffer,
-              });
-              b.src = (remote.provider === 'remote' && remote.url) ? remote.url : `/media/${promoted}`;
+          // imagem direta, baixa os bytes e PROMOVE para o storage (helper
+          // compartilhado com o teste do chat) — o e-mail sai com src local
+          // (embutível por CID) e o emailDoc é atualizado na origem.
+          await require('./studio/resolve-image-link').ensureImageSourcesResolved(doc, {
+            readGenerated: require('./studio/storage').readGenerated,
+            readBuffer: require('./studio/storage').readBuffer,
+            publishMedia: (n, d) => require('./studio/media-publisher').publishMedia(n, d),
+            persist: async (docResolved) => {
               try {
                 await prisma.studioContent.updateMany({
                   where: { campaignId: campaign.studioCampaignId, channel: 'email', kind: 'base', stepIndex: 1 },
-                  data: { emailDoc: doc },
+                  data: { emailDoc: docResolved },
                 });
               } catch (_e) { /* persistência é melhor-esforço: o envio segue com o src resolvido em memória */ }
-              break; // um banner por e-mail
-            }
-          }
+            },
+          });
           const studioCampaign = await prisma.studioCampaign.findUnique({
             where: { id: campaign.studioCampaignId },
             select: { utmTemplate: true },

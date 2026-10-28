@@ -2853,3 +2853,107 @@ test('QA: material NÃO-imagem (pdf) é recusado com erro honesto — nunca vira
     server.close();
   }
 });
+
+// ── 2026-10-28: TESTE DO CHAT também resolve PÁGINA de imgur no banner ──────
+
+test('QA: emailDoc com src de PÁGINA imgur → teste sai com o banner RESOLVIDO (bytes no nosso storage)', async () => {
+  const os = require('node:os');
+  const path = require('node:path');
+  const fs = require('node:fs');
+  const storage = require('../studio/storage');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-imgur-'));
+  const prevStorageDir = process.env.STUDIO_STORAGE_DIR;
+  process.env.STUDIO_STORAGE_DIR = tmpDir;
+  const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63fcffff3f030005fe02fea72d8b300000000049454e44ae426082', 'hex');
+
+  const impl = async ({ user }) => {
+    if (user.includes('NOVA MENSAGEM DO USUÁRIO')) {
+      return {
+        content: JSON.stringify({ reply: 'Enviando o teste.', actions: [{ type: 'send_test_message', email: 'dono@empresa.com' }] }),
+      };
+    }
+    return { content: JSON.stringify({ reply: 'Ok.', actions: [{ type: 'none' }] }) };
+  };
+  const { server, prisma, api } = await startServer({ llmImpl: impl });
+  const emailProvider = require('../email-provider');
+  const emailsSent = [];
+  const realSendEmail = emailProvider.sendEmailForAccount;
+  emailProvider.sendEmailForAccount = async (_prisma, _accountId, payload) => {
+    emailsSent.push(payload);
+    return { messageId: 'pm-imgur' };
+  };
+  // fetch: página do álbum (og:image) + download da imagem direta.
+  const realFetch = global.fetch;
+  global.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('127.0.0.1')) return realFetch(url, opts); // API de teste local
+    if (u === 'https://imgur.com/a/bbhIHpT') {
+      return {
+        ok: true, status: 200,
+        text: async () => '<meta property="og:image" content="https://i.imgur.com/arte123.jpg" />',
+        json: async () => ({}),
+        arrayBuffer: async () => new ArrayBuffer(0),
+      };
+    }
+    if (u === 'https://i.imgur.com/arte123.jpg') {
+      return {
+        ok: true, status: 200,
+        text: async () => '', json: async () => ({}),
+        arrayBuffer: async () => PNG.buffer.slice(PNG.byteOffset, PNG.byteOffset + PNG.byteLength),
+      };
+    }
+    throw new Error('fetch inesperado: ' + u);
+  };
+  try {
+    prisma.user.rows.push({ id: 'user-1', name: 'Arthur Tamegao', email: 'arthur@empresa.com' });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Banner do álbum', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-imgur', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'Máquinas {{companyName}}',
+      emailDoc: {
+        blocks: [
+          { type: 'image', src: 'https://imgur.com/a/bbhIHpT', href: 'https://wa.me/5512996399943' },
+          { type: 'text', text: 'Olá {{firstName}}, tudo bem?' },
+          { type: 'button', label: 'Falar com a Arthur Company', url: 'https://wa.me/5512996399943' },
+        ],
+      },
+    });
+    prisma.emailAccount.rows.push({ id: 'ea-imgur', orgId: 'org-1', userId: 'user-1', provider: 'resend', email: 'venda@empresa.com', status: 'connected' });
+
+    const res = await api('POST', `/campaigns/${c.data.id}/chat`, { message: 'manda um email de teste para bigossijoaaoflavio@gmail.com' });
+    assert.equal(res.res.status, 200);
+    assert.equal(emailsSent.length, 1, 'UM e-mail de teste');
+
+    // O emailDoc na ORIGEM foi atualizado: src agora é o ARQUIVO promovido.
+    const row = prisma.studioContent.rows.find((r) => r.id === 'ce-imgur');
+    const [imageBlock] = row.emailDoc.blocks;
+    assert.equal(imageBlock.type, 'image');
+    // src RELATIVO é válido: o e-mail embute por CID (bytes viajam na mensagem) —
+    // a origem não é requisito quando não há URL pública.
+    assert.match(imageBlock.src, /^(https?:\/\/[^/]+)?\/media\/[a-f0-9]{32}\.(png|jpe?g)$/, 'src aponta para o ARQUIVO promovido no nosso storage');
+    const promoted = imageBlock.src.split('/media/')[1];
+    assert.ok(storage.generatedExists(promoted), 'bytes servíveis no storage público');
+    assert.deepEqual(storage.readGenerated(promoted), PNG, 'bytes da arte real preservados');
+    assert.equal(imageBlock.href, 'https://wa.me/5512996399943', 'CTA herdado');
+
+    // O e-mail enviado embute os bytes por CID (html → provider com inlineImages).
+    const payload = emailsSent[0];
+    // O provider real (SMTP/Resend/Gmail) converte este src para `cid:` e
+    // anexa os bytes — cobertura disso em test/studio-media-publisher e
+    // test/email-provider-inline. Aqui validamos o CONTRATO do payload.
+    assert.equal(payload.inlineImages.length, 1, 'banner vai EMBUTIDO (inline)');
+    assert.deepEqual(Buffer.from(payload.inlineImages[0].content, 'base64'), PNG, 'bytes reais no payload');
+    assert.ok(payload.htmlBody.includes(`/media/${promoted}`), 'html referencia o arquivo promovido (o provider troca por cid)');
+    assert.ok(!payload.htmlBody.includes('imgur.com'), 'nenhum link de imgur sobra no e-mail');
+    assert.equal(payload.htmlBody.includes('https://wa.me/5512996399943'), true, 'CTA preservado');
+  } finally {
+    emailProvider.sendEmailForAccount = realSendEmail;
+    global.fetch = realFetchRef;
+    if (prevStorageDir === undefined) delete process.env.STUDIO_STORAGE_DIR;
+    else process.env.STUDIO_STORAGE_DIR = prevStorageDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    server.close();
+  }
+  function realFetchRef() {}
+});

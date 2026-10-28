@@ -1734,6 +1734,23 @@ function registerChatRoutes(router, context) {
           }
           const emailContent = contents.find((c) => c.channel === 'email');
           if (!emailContent) throw httpError('NO_CONTENT', 409, 'A campanha não tem e-mail gerado — me peça para gerar.');
+          // Banner de PÁGINA (ex.: álbum do imgur) → resolve, baixa os bytes e
+          // persiste o emailDoc resolvido (o e-mail de teste ≡ disparo real).
+          try {
+            await require('./resolve-image-link').ensureImageSourcesResolved(emailContent.emailDoc, {
+              readGenerated: require('./storage').readGenerated,
+              readBuffer: require('./storage').readBuffer,
+              publishMedia: (n, d) => require('./media-publisher').publishMedia(n, d),
+              persist: async (docResolved) => {
+                await prisma.studioContent.update({ where: { id: emailContent.id }, data: { emailDoc: docResolved } });
+                emailContent.emailDoc = docResolved;
+              },
+            });
+          } catch (err) {
+            if (String(err.code || '').startsWith('IMAGE_LINK') || err.code === 'IMAGE_TOO_LARGE') { err.expose = true; err.status = 400; throw err; }
+            // Falha não-bloqueante de resolução: segue com o src original (log para diagnóstico).
+            console.warn('[test] resolução do banner falhou — sigo com o src atual:', err.message);
+          }
           const account = await prisma.emailAccount.findFirst({
             // Mesma tolerância do painel: contas antigas (Gmail) gravam userId,
             // não tenantId — filtrar só por orgId escondia a conta.
