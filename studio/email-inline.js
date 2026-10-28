@@ -16,7 +16,7 @@
  * envio por causa da embutida).
  */
 
-const INLINE_SRC_RE = /https?:\/\/[^"'\s>]*\/media\/([a-f0-9]{32}\.(?:png|jpe?g|webp|gif))/gi;
+const INLINE_SRC_RE = /(?:https?:\/\/[^"'\s>]*)?\/media\/([a-f0-9]{32}\.(?:png|jpe?g|webp|gif))/gi;
 
 function contentTypeFor(fileName) {
   const name = String(fileName || '').toLowerCase();

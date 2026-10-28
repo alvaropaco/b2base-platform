@@ -60,3 +60,12 @@ test('applyCid: troca TODAS as ocorrências do mesmo src pelo cid', () => {
   // applyCid SEM inline não altera nada (Gmail API mantém o src remoto).
   assert.equal(applyCid(html, []), html);
 });
+
+// ── src RELATIVO também embute (ambiente sem APP_URL) ────────────────────────
+test('src relativo /media/<hash> é extraído igualmente (sem depender de host)', () => {
+  const html = '<img src="/media/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png" />';
+  const { inlineImages } = extractInlineImages(html, io);
+  assert.equal(inlineImages.length, 1);
+  assert.deepEqual(Buffer.from(inlineImages[0].content, 'base64'), PNG);
+  assert.match(inlineImages[0].originalSrc, /^\/media\//);
+});

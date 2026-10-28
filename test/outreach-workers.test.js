@@ -390,3 +390,76 @@ test('T036: suíte manual com template continua single-shot (sem follow-up)', as
   assert.ok(!prepareQueue || prepareQueue.adds.length === 0, 'single-shot preservado');
   assert.strictEqual(prisma.db.events.length, 0);
 });
+
+test('Studio: src de PÁGINA do imgur no emailDoc é resolvido NO PREPARE, promovido e PERSISTIDO', async () => {
+  const IMG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63fcffff3f030005fe02fea72d8b300000000049454e44ae426082', 'hex');
+  const base = baseFixture({
+    campaignOverrides: {
+      emailTemplateSubject: 'Oi {{firstName}}',
+      emailTemplateBody: 'Corpo.',
+      studioCampaignId: 'sc_imgur',
+    },
+  });
+  const { prisma, job } = base;
+  // Storage real apontando para tmp (o banner promovido precisa existir).
+  const os = require('node:os');
+  const path = require('node:path');
+  const fs = require('node:fs');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'imgur-resolve-'));
+  const prevStorage = process.env.STUDIO_STORAGE_DIR;
+  process.env.STUDIO_STORAGE_DIR = tmp;
+  prisma.db.studioContentRow = {
+    campaignId: 'sc_imgur', channel: 'email', kind: 'base', stepIndex: 1,
+    emailDoc: {
+      blocks: [
+        { type: 'image', src: 'https://imgur.com/a/test123', href: 'https://wa.me/5512996399943' },
+        { type: 'button', label: 'Falar com a gente no WhatsApp', url: 'https://wa.me/5512996399943' },
+      ],
+    },
+  };
+  prisma.db.studioCampaignRow = { id: 'sc_imgur', utmTemplate: {} };
+
+  // Stub do fetch: página do álbum (og:image) + download da imagem direta.
+  const realFetch = global.fetch;
+  let updatedDoc = null;
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (u === 'https://imgur.com/a/test123') {
+      return { ok: true, status: 200, text: async () => '<meta property="og:image" content="https://i.imgur.com/direct99.jpg" />' };
+    }
+    if (u === 'https://i.imgur.com/direct99.jpg') {
+      return { ok: true, status: 200, arrayBuffer: async () => IMG.buffer.slice(IMG.byteOffset, IMG.byteOffset + IMG.byteLength) };
+    }
+    throw new Error('fetch inesperado: ' + u);
+  };
+  const origUpdateMany = prisma.studioContent.updateMany;
+  prisma.studioContent.updateMany = async ({ where, data }) => {
+    updatedDoc = data.emailDoc;
+    if (prisma.db.studioContentRow && prisma.db.studioContentRow.campaignId === where.campaignId) {
+      prisma.db.studioContentRow.emailDoc = data.emailDoc;
+    }
+    return { count: 1 };
+  };
+
+  try {
+    const result = await workers.processPrepare(job);
+    assert.ok(result.messageId, 'mensagem criada');
+    const html = String(prisma.db.messages[0].htmlBody);
+    assert.ok(!html.includes('imgur.com/a/test123'), 'nenhum src de página no e-mail');
+    assert.match(html, /\/media\/[a-f0-9]{32}\.jpg/, 'banner promovido com src local');
+    assert.ok(updatedDoc, 'emailDoc persistido na origem');
+    const persistedImg = updatedDoc.blocks.find((b) => b.type === 'image');
+    assert.match(persistedImg.src, /^\/media\/[a-f0-9]{32}\.jpg$/, 'emailDoc na origem aponta para o arquivo promovido');
+    assert.ok(require('fs').existsSync(path.join(tmp, 'generated', persistedImg.src.split('/media/')[1])), 'bytes reais no storage público');
+    // CID no send: a extração do html resolvido embute os bytes.
+    const { extractInlineImages } = require('../studio/email-inline');
+    const { inlineImages } = extractInlineImages(html, { readGenerated: require('../studio/storage').readGenerated });
+    assert.equal(inlineImages.length, 1);
+    assert.deepEqual(Buffer.from(inlineImages[0].content, 'base64'), IMG);
+  } finally {
+    global.fetch = realFetch;
+    prisma.studioContent.updateMany = origUpdateMany;
+    process.env.STUDIO_STORAGE_DIR = prevStorage;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
