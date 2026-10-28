@@ -290,13 +290,13 @@ test('generate_image com attachToEmail: banner herda o href do botão (clique ca
   }
 });
 
-// ── 6. LINK DE ÁLBUM do imgur → imagem direta resolvida + BYTES no storage ──
-// Caso real do dono: colou imgur.com/a/bbhIHpt (página de álbum) e o sistema
-// dizia que "não vira endereço público". Agora o servidor resolve o link
-// direto, BAIXA os bytes para o NOSSO storage (banner não depende do imgur)
-// e insere o banner com o CTA herdado.
+// ── 6. LINK DE PÁGINA (álbum externo) → imagem direta resolvida + BYTES ─────
+// O dono cola o link de uma PÁGINA (ex.: álbum de imagens em qualquer host) e
+// o sistema resolve o link direto (og:image), BAIXA os bytes para o NOSSO
+// storage (banner não depende do host de origem) e insere o banner com o CTA
+// herdado. Agnóstico de host — nenhum caso especial de site no código.
 
-test('imageUrl de ÁLBUM do imgur: resolve link direto, baixa os bytes e insere o banner com CTA', async () => {
+test('imageUrl de PÁGINA (álbum externo): resolve link direto, baixa os bytes e insere o banner com CTA', async () => {
   const IMG_BYTES = Buffer.from(
     '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63fcffff3f030005fe02fea72d8b300000000049454e44ae426082',
     'hex'
@@ -306,14 +306,14 @@ test('imageUrl de ÁLBUM do imgur: resolve link direto, baixa os bytes e insere 
     fetchImpl: async (u, opts = {}) => {
       const url = String(u);
       seen.push(url);
-      if (url === 'https://imgur.com/a/bbhIHpt') {
+      if (url === 'https://galeria.exemplo.com/a/bbhIHpt') {
         return {
           ok: true, status: 200,
-          text: async () => '<html><head><meta property="og:image" content="https://i.imgur.com/machines123.jpg" /></head><body>album</body></html>',
+          text: async () => '<html><head><meta property="og:image" content="https://cdn.exemplo.com/machines123.jpg" /></head><body>album</body></html>',
           json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0),
         };
       }
-      if (url === 'https://i.imgur.com/machines123.jpg') {
+      if (url === 'https://cdn.exemplo.com/machines123.jpg') {
         return {
           ok: true, status: 200,
           text: async () => '', json: async () => ({}),
@@ -341,36 +341,36 @@ test('imageUrl de ÁLBUM do imgur: resolve link direto, baixa os bytes e insere 
     // 1ª chamada: gate de confirmação; 2ª: com o selo → executa.
     const gated = await api('POST', `/campaigns/${c.data.id}/actions`, {
       type: 'edit_content',
-      params: { channel: 'email', imageUrl: 'https://imgur.com/a/bbhIHpt' },
+      params: { channel: 'email', imageUrl: 'https://galeria.exemplo.com/a/bbhIHpt' },
     });
     assert.ok(gated.body.data.card.type === 'confirm_change', 'gate pede confirmação');
     const out = await api('POST', `/campaigns/${c.data.id}/actions`, {
       type: 'edit_content',
-      params: { channel: 'email', imageUrl: 'https://imgur.com/a/bbhIHpt', confirmed: true },
+      params: { channel: 'email', imageUrl: 'https://galeria.exemplo.com/a/bbhIHpt', confirmed: true },
     });
     assert.equal(out.res.status, 200);
 
     const row = prisma.studioContent.rows.find((r) => r.id === 'ce-album');
     const [imageBlock] = row.emailDoc.blocks;
     assert.equal(imageBlock.type, 'image', 'banner no topo');
-    // Os BYTES ficam NO NOSSO storage (banner não depende do imgur depois).
+    // Os BYTES ficam NO NOSSO storage (banner não depende do host de origem).
     assert.match(imageBlock.src, /^https?:\/\/[^/]+\/media\/[a-f0-9]{32}\.(png|jpe?g)$/, 'src do NOSSO storage (servível e embutível por CID)');
     const promoted = imageBlock.src.split('/media/')[1];
     assert.deepEqual(require('../studio/storage').readGenerated(promoted), IMG_BYTES, 'bytes reais preservados');
     assert.equal(imageBlock.href, 'https://wa.me/5512996399943', 'CTA herdado');
     // A resolução passou pela página do álbum E pelo download da imagem direta.
-    assert.ok(seen.some((u) => u.includes('imgur.com/a/bbhIHpt')), 'álbum foi aberto para resolver o direto');
-    assert.ok(seen.some((u) => u.includes('i.imgur.com/machines123.jpg')), 'imagem direta baixada');
+    assert.ok(seen.some((u) => u.includes('galeria.exemplo.com/a/bbhIHpt')), 'página foi aberta para resolver o direto');
+    assert.ok(seen.some((u) => u.includes('cdn.exemplo.com/machines123.jpg')), 'imagem direta baixada');
   } finally {
     world.restore();
     world.close();
   }
 });
 
-test('imageUrl do imgur BLOQUEADO (429) → card honesto com os caminhos, sem inserir nada', async () => {
+test('imageUrl de página BLOQUEADA (429) → card honesto com os caminhos, sem inserir nada', async () => {
   const world = await startServer({
     fetchImpl: async (u) => {
-      if (String(u).includes('imgur.com')) {
+      if (String(u).includes('galeria.exemplo.com')) {
         return { ok: false, status: 429, text: async () => '', json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) };
       }
       throw new Error('fetch inesperado: ' + u);
@@ -378,7 +378,7 @@ test('imageUrl do imgur BLOQUEADO (429) → card honesto com os caminhos, sem in
   });
   const { api, prisma } = world;
   try {
-    const { body: c } = await api('POST', '/campaigns', { name: 'Imgur bloqueado', channels: ['email'] });
+    const { body: c } = await api('POST', '/campaigns', { name: 'Álbum bloqueado', channels: ['email'] });
     prisma.studioContent.rows.push({
       id: 'ce-429', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
       kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
@@ -386,18 +386,18 @@ test('imageUrl do imgur BLOQUEADO (429) → card honesto com os caminhos, sem in
       emailDoc: { blocks: [{ type: 'text', text: 'Olá' }, { type: 'button', label: 'B', url: 'https://wa.me/5512996399943' }] },
     });
 
-    // 1ª volta: gate. 2ª volta (selo): 429 do imgur vira ERRO 400 com os
+    // 1ª volta: gate. 2ª volta (selo): 429 do host vira ERRO 400 com os
     // caminhos reais (a rota /actions propaga erros exposable direto).
     await api('POST', `/campaigns/${c.data.id}/actions`, {
       type: 'edit_content',
-      params: { channel: 'email', imageUrl: 'https://imgur.com/a/bbhIHpt' },
+      params: { channel: 'email', imageUrl: 'https://galeria.exemplo.com/a/bbhIHpt' },
     });
     const res = await api('POST', `/campaigns/${c.data.id}/actions`, {
       type: 'edit_content',
-      params: { channel: 'email', imageUrl: 'https://imgur.com/a/bbhIHpt', confirmed: true },
+      params: { channel: 'email', imageUrl: 'https://galeria.exemplo.com/a/bbhIHpt', confirmed: true },
     });
     assert.equal(res.res.status, 400);
-    assert.match(res.body.message, /429/, 'diz que o imgur bloqueou (429)');
+    assert.match(res.body.message, /429/, 'diz que o site bloqueou (429)');
     assert.match(res.body.message, /link DIRETO|anexa o arquivo/i, 'aponta os caminhos reais');
     const row = prisma.studioContent.rows.find((r) => r.id === 'ce-429');
     assert.ok(!row.emailDoc.blocks.some((b) => b.type === 'image'), 'nada inserido com a fonte bloqueada');

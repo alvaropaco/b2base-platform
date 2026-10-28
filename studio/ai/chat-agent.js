@@ -731,7 +731,7 @@ function editContentHint(userMessage) {
       'IMAGEM NO E-MAIL — a action edit_content EXISTE para isso, em QUATRO formas:',
       '1) imagem que está como MATERIAL da campanha (materiais[] no estado, id REAL): {"type":"edit_content","channel":"email","materialId":"<id do material>"} — status "extracted" NÃO impede; o servidor publica a imagem e coloca NO TOPO;',
       '2) imagem JÁ ANEXADA pelo usuário (arquivo no chat): {"type":"edit_content","channel":"email","attachmentId":"<id do anexo>"} — o servidor publica a imagem e coloca NO TOPO;',
-      '3) imagem por LINK (ACEITA link de ÁLBUM do imgur — o servidor resolve o link direto da imagem sozinho e baixa os bytes): {"type":"edit_content","channel":"email","imageUrl":"<link EXATO que o usuário passou>"} — copie o link ITERALMENTE;',
+      '3) imagem por LINK (ACEITA link de PÁGINA com imagem — o servidor descobre o link direto da imagem sozinho, baixa os bytes para o NOSSO storage e publica no bucket): {"type":"edit_content","channel":"email","imageUrl":"<link EXATO que o usuário passou>"} — copie o link ITERALMENTE;',
       '4) GERAR/CRIAR a imagem: {"type":"generate_image","prompt":"<descrição detalhada>","attachToEmail":true}.',
       'PRIORIZE 1 e 2 (a imagem que o usuário JÁ TEM) — NUNCA exija URL pública para elas e NUNCA diga que a imagem',
       '"não vira endereço público" ou que é preciso gerar de novo. imageHref opcional = link do clique no banner;',

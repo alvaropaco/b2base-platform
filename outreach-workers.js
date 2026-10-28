@@ -318,10 +318,11 @@ async function processPrepare(job) {
         });
         const doc = studioContent && studioContent.emailDoc;
         if (doc && Array.isArray(doc.blocks) && doc.blocks.length > 0) {
-          // Banner com src de PÁGINA (caso real: álbum do imgur) → resolve a
-          // imagem direta, baixa os bytes e PROMOVE para o storage (helper
-          // compartilhado com o teste do chat) — o e-mail sai com src local
-          // (embutível por CID) e o emailDoc é atualizado na origem.
+          // Banner com src de PÁGINA (link que não é arquivo de imagem) →
+          // resolve a imagem direta, baixa os bytes e PROMOVE para o storage
+          // (helper compartilhado com o teste do chat) — o e-mail sai com a
+          // URL pública do bucket (ou src local, embutível por CID) e o
+          // emailDoc é atualizado na origem.
           await require('./studio/resolve-image-link').ensureImageSourcesResolved(doc, {
             readGenerated: require('./studio/storage').readGenerated,
             readBuffer: require('./studio/storage').readBuffer,

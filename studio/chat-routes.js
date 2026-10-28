@@ -1734,8 +1734,9 @@ function registerChatRoutes(router, context) {
           }
           const emailContent = contents.find((c) => c.channel === 'email');
           if (!emailContent) throw httpError('NO_CONTENT', 409, 'A campanha não tem e-mail gerado — me peça para gerar.');
-          // Banner de PÁGINA (ex.: álbum do imgur) → resolve, baixa os bytes e
-          // persiste o emailDoc resolvido (o e-mail de teste ≡ disparo real).
+          // Banner com src de PÁGINA (link que não é arquivo de imagem) →
+          // resolve, baixa os bytes e persiste o emailDoc resolvido
+          // (o e-mail de teste ≡ disparo real).
           try {
             await require('./resolve-image-link').ensureImageSourcesResolved(emailContent.emailDoc, {
               readGenerated: require('./storage').readGenerated,
@@ -2300,15 +2301,15 @@ function registerChatRoutes(router, context) {
         // insere o banner NO TOPO do emailDoc (href opcional = banner
         // clicável). Todas as variantes de e-mail da campanha recebem.
         if (contents.length === 0 && action.imageUrl) {
-          // LINK EXTERNO → IMAGEM REAL (2026-10-28, caso do imgur): link de
-          // ÁLBUM (imgur.com/a/…) é página — o dono não deve caçar o link
-          // direto. Resolve a imagem direta, BAIXA os bytes para o NOSSO
-          // storage (o banner deixa de depender do imgur, que bloqueia com
-          // 429) e segue com src local — no envio vai EMBUTIDO por CID.
+          // LINK EXTERNO → IMAGEM REAL (2026-10-28, agnóstico de host): link
+          // de PÁGINA (ex.: álbum/galeria) não exige o dono caçar o link
+          // direto. Resolve a imagem direta e BAIXA os bytes para o NOSSO
+          // storage — o banner sai pela URL pública do bucket (ou EMBUTIDO
+          // por CID), sem depender do site de origem depois.
           // URL DIRETA de imagem (termina em .jpg/.png/…) segue o contrato de
           // sempre: o banner REFERENCIA a URL pública do dono (menos fetch,
-          // menos dependência). Só link de PÁGINA (ex.: álbum do imgur) é
-          // resolvido e os bytes trazidos para o nosso storage.
+          // menos dependência). Só link de PÁGINA é resolvido e os bytes
+          // trazidos para o nosso storage.
           const isDirectImage = require('./resolve-image-link').isImageUrl(action.imageUrl);
           if (!isDirectImage) try {
             const storage = require('./storage');
