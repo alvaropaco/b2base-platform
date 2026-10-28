@@ -704,3 +704,56 @@ test('generate_image: prompt longo (>1000 chars) NÃO é cortado antes do gatewa
     world.close();
   }
 });
+
+// ── 2026-10-28: needs_manual NOVO formato nomeia o QUE configurar ───────────
+// O erro passa a citar LITELLM_URL/STUDIO_VISION_MODEL (causa nº1 do "não
+// consegui identificar o conteúdo") e o auto-heal reconhece o novo formato.
+
+test('visão inacessível (gateway fora) → failed com o GATEWAY no erro; auto-heal relê depois', async () => {
+  const prisma = createFakePrisma();
+  prisma.organization.rows.push({ id: 'org-1', plan: 'premium' });
+  prisma.studioMaterial.rows.push({
+    id: 'mat-gateway', orgId: 'org-1', campaignId: null, kind: 'image',
+    sourceRef: storage.saveGenerated(PNG, 'png'), mimeType: 'image/png',
+    extractionStatus: 'pending', origin: 'upload', variantLabel: null, confirmedAt: null,
+  });
+  // Gateway inalcançável (nenhum serviço na porta) — falha RÁPIDA e com causa.
+  const prevUrl = process.env.LITELLM_URL;
+  process.env.LITELLM_URL = 'http://127.0.0.1:9';
+  const svc = createMaterialService(prisma, {}); // sem imageExtract: visão REAL
+  const out = await svc.extractPendingImageMaterials({});
+  assert.equal(out.failed, 1, 'falha explicável');
+  const row = prisma.studioMaterial.rows.find((r) => r.id === 'mat-gateway');
+  assert.equal(row.extractionStatus, 'failed');
+  assert.match(row.extractionError, /127\.0\.0\.1:9/, 'erro cita o gateway sondado (diagnóstico direto)');
+
+  // Auto-heal: com a visão "de volta" (stub imageExtract, gateway configurado),
+  // o material NOVO formato é relido — sem config o sweep pula honestamente.
+  process.env.LITELLM_URL = 'http://litellm.test';
+  const read = [];
+  const svc2 = createMaterialService(prisma, {
+    imageExtract: async () => { read.push(row.id); return 'Banner lido agora que o gateway voltou.'; },
+    extractor: async () => ({ product: 'X', offer: 'Y', audience: 'Z' }),
+  });
+  const out2 = await svc2.extractPendingImageMaterials({});
+  assert.deepEqual(read, ['mat-gateway'], 'novo formato de erro é re-lido pelo auto-heal');
+  assert.equal(out2.extracted, 1);
+  assert.equal(prisma.studioMaterial.rows.find((r) => r.id === 'mat-gateway').extractionStatus, 'extracted');
+  if (prevUrl !== undefined) process.env.LITELLM_URL = prevUrl;
+});
+
+test('pendingMaterialHint inclui a CAUSA do material preso (transparência no Cockpit)', () => {
+  const hint = pendingMaterialHint(
+    'consegue ler a imagem do material?',
+    {
+      materials: [
+        {
+          id: 'mat-causa', kind: 'image', status: 'needs_manual',
+          error: 'Análise visual indisponível: o gateway de IA não está acessível',
+        },
+      ],
+    }
+  );
+  assert.ok(hint, 'hint gerado para material preso');
+  assert.match(hint, /causa: Análise visual indisponível/, 'a causa real vai para o agente (e para o dono)');
+});

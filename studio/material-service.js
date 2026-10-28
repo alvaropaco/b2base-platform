@@ -181,7 +181,7 @@ async function extractText(material) {
           where: { id: material.id },
           data: {
             extractionStatus: 'needs_manual',
-            extractionError: 'Modelo de visão não configurado: descreva o material manualmente e confirme.',
+            extractionError: `Análise visual indisponível: o gateway de IA (LITELLM_URL=${process.env.LITELLM_URL || 'http://localhost:4000'}) não está acessível ou não tem modelo de visão (STUDIO_VISION_MODEL). Inicie o gateway ou descreva o material manualmente e confirme.`,
           },
         });
         return { status: 'needs_manual' };
@@ -234,7 +234,7 @@ async function extractText(material) {
    * Reextrai SERIALIZADO, com o mesmo gate do upload automático (premium;
    * trial segue pelo caminho manual/confirm_material). Teto por rodada.
    */
-  const VISION_ERROR_RE = /VISION_|vis[ãa]o n[ãa]o configurad[oa]|vision timeout/i;
+  const VISION_ERROR_RE = /VISION_|vis[ãa]o n[ãa]o configurad[oa]|an[áa]lise visual indispon[íi]vel|gateway.*inacess[íi]vel|vision timeout/i;
   async function extractPendingImageMaterials({ max = 20 } = {}) {
     const vision = require('./ai/vision');
     if (!vision.isConfigured()) {

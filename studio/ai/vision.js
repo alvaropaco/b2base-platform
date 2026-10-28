@@ -118,6 +118,11 @@ async function describeImage({ buffer, mimeType = 'image/jpeg', hint = null, tim
   } catch (err) {
     if (!err.code) {
       err.code = (signalAborted(err)) ? 'VISION_TIMEOUT' : 'VISION_UNAVAILABLE';
+      if (err.code === 'VISION_UNAVAILABLE') {
+        // Diagnóstico direto: onde o gateway deveria estar (causa nº1 do
+        // "não consegui identificar o conteúdo").
+        err.message = `${err.message} — gateway ${llmUrl()} inacessível ou modelo sem suporte a visão`;
+      }
     }
     throw err;
   } finally {

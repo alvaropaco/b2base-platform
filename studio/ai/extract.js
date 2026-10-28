@@ -26,8 +26,13 @@ function createExtractor({ callLlm } = {}) {
     return [
       'Faça a extração estruturada do material comercial abaixo para uma campanha de prospecção.',
       'Responda SOMENTE com JSON no formato:',
-      '{"product":"...","offer":"...","benefits":["..."],"audience":"...","cta":"...","confidence":0.0}',
-      'Regras: extraia APENAS o que está no material — nunca invente benefícios ou números.',
+      '{"product":"...","offer":"...","benefits":["..."],"audience":"...","industry":"...","visible_text":["..."],"cta":"...","contacts":["..."],"missing_information":["..."],"confidence":0.0}',
+      'Regras: extraia APENAS o que está no material — nunca invente benefícios, preços ou números.',
+      'visible_text = TODO texto que aparece LITERALMENTE no material (banner/imagem), sem interpretar;',
+      'industry = setor/segmento de mercado mais provável; contacts = telefone/site/e-mail/contato visível;',
+      'missing_information = campos comerciais importantes que o material NÃO traz (ex.: "oferta/preterço", "público");',
+      'Diferencie TEXTO LIDO (visible_text) da interpretação comercial (product/offer/audience): o que não puder',
+      'ser inferido com segurança fica null/[] e entra em missing_information — nunca inventado.',
       'confidence = sua confiança (0 a 1) de que a extração representa o material.',
       sourceHint ? `Fonte do material: ${sourceHint}.` : '',
       '--- MATERIAL ---',
@@ -41,18 +46,25 @@ function createExtractor({ callLlm } = {}) {
     return [
       'Sua resposta anterior NÃO foi JSON utilizável. Responda novamente.',
       'Responda SOMENTE com o JSON completo, sem nenhum texto antes ou depois, sem cercas de código:',
-      '{"product":"...","offer":"...","benefits":["..."],"audience":"...","cta":"...","confidence":0.0}',
+      '{"product":"...","offer":"...","benefits":["..."],"audience":"...","industry":"...","visible_text":["..."],"cta":"...","contacts":["..."],"missing_information":["..."],"confidence":0.0}',
       '--- SUA RESPOSTA ANTERIOR (inválida) ---',
       String(previousRaw || '').slice(0, 1200),
     ].join('\n');
   }
 
   function normalize(parsed) {
+    const arr = (v, max) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim()).slice(0, max) : []);
     return {
       product: parsed.product || null,
       offer: parsed.offer || null,
-      benefits: Array.isArray(parsed.benefits) ? parsed.benefits.filter(Boolean).slice(0, 10) : [],
+      benefits: arr(parsed.benefits, 10),
       audience: parsed.audience || null,
+      // Campos comerciais completos (2026-10-27): texto LIDO da arte separado
+      // da interpretação; ausências explícitas em missing_information.
+      industry: parsed.industry || null,
+      visible_text: arr(parsed.visible_text, 20),
+      contacts: arr(parsed.contacts, 10),
+      missing_information: arr(parsed.missing_information, 10),
       cta: parsed.cta || null,
       confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.5,
     };

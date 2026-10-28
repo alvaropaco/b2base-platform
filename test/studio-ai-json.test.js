@@ -136,3 +136,43 @@ test('callLlmJson: erro de rede cru (fetch failed) é infra — consome retry de
   assert.equal(calls, 2, 'infra re-tenta antes de degradar');
   assert.match(String(calls), /2/);
 });
+
+// ── 2026-10-28: campos comerciais completos (lido vs. interpretado vs. ausente) ─
+
+test('extractor: campos NOVOS (industry/visible_text/contacts/missing_information) normalizados', async () => {
+  const extractor = createExtractor({
+    callLlm: async () => ({
+      content: JSON.stringify({
+        product: 'Torno CNC',
+        offer: null, // ausente → null (não inventa)
+        benefits: [],
+        audience: 'Indústrias metalúrgicas',
+        industry: 'Metalurgia',
+        visible_text: ['MÁQUINAS INDUSTRIAIS', 'Fale com a gente no WhatsApp'], // texto LITERAL da arte
+        contacts: ['(12) 99639-9943'],
+        missing_information: ['oferta/preço', 'prazo de entrega'],
+        cta: 'Fale com a gente no WhatsApp',
+        confidence: 0.8,
+      }),
+    }),
+  });
+  const out = await extractor.extractFromText('Banner: MÁQUINAS INDUSTRIAIS. Fale com a gente no WhatsApp.');
+  assert.equal(out.industry, 'Metalurgia');
+  assert.deepEqual(out.visible_text, ['MÁQUINAS INDUSTRIAIS', 'Fale com a gente no WhatsApp'], 'texto literal da arte');
+  assert.deepEqual(out.contacts, ['(12) 99639-9943']);
+  assert.deepEqual(out.missing_information, ['oferta/preço', 'prazo de entrega']);
+  assert.equal(out.offer, null, 'oferta ausente PERMANECE null (nada inventado)');
+});
+
+test('extractor: sem os campos novos (modelo antigo) → arrays vazios, sem quebra', async () => {
+  const extractor = createExtractor({
+    callLlm: async () => ({
+      content: JSON.stringify({ product: 'X', offer: 'Y', audience: 'Z', confidence: 0.5 }),
+    }),
+  });
+  const out = await extractor.extractFromText('material');
+  assert.equal(out.industry, null);
+  assert.deepEqual(out.visible_text, []);
+  assert.deepEqual(out.contacts, []);
+  assert.deepEqual(out.missing_information, []);
+});

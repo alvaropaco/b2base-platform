@@ -713,7 +713,7 @@ function pendingMaterialHint(userMessage, extras) {
   const imagensPresas = rows.filter((m) => m && ['failed', 'needs_manual'].includes(m.status) && IMAGE_MATERIAL_KINDS.includes(String(m.kind)));
   if (!pendings.length && !imagensPresas.length) return null;
   const list = [...pendings, ...imagensPresas]
-    .map((m) => `{"type":"confirm_material","materialId":"${m.id}"}${m.kind ? ` (${m.kind}${m.status !== 'pending' ? `, ${m.status}` : ''})` : ''}`)
+    .map((m) => `{"type":"confirm_material","materialId":"${m.id}"}${m.kind ? ` (${m.kind}${m.status !== 'pending' ? `, ${m.status}` : ''}${m.error ? ` — causa: ${m.error}` : ''})` : ''}`)
     .join(' · ');
   return [
     'LEITURA DE MATERIAL PENDENTE — a action confirm_material EXISTE e a EXTRAÇÃO RODA ANTES de confirmar',
