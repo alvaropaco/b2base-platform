@@ -58,3 +58,4 @@ apps/web/vite.config.d.ts
 
 # Storage local do Studio (materiais/anexos em dev e teste)
 .data/
+infisical-secrets-para-colar.txt
