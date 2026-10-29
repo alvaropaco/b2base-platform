@@ -24,18 +24,26 @@ async function generateAndStorePackage(prisma, composer, { campaign, sourceText,
     const variantLabel = String(tone).slice(0, 20);
     if (wants('email') && pack.email) {
       // LINK INVENTADO PELO MODELO (2026-10-29, caso real: botão apontando
-      // para domínio de exemplo apesar da regra no prompt): bloco button com
-      // URL placeholder NÃO é persistido — e-mail sem botão é melhor que
-      // botão levando o lead a domínio fictício. O link real entra pelo
-      // edit_content (ctaUrl) com o endereço verdadeiro do dono.
+      // para domínio de exemplo apesar da regra no prompt): URL placeholder
+      // ou ausente vira o DESTINO CANÔNICO do WhatsApp (cta-destination) —
+      // o botão "fale com a empresa" SEMPRE sai clicável apontando para o
+      // WhatsApp certo. Botão com link REAL do modelo é preservado; se houver
+      // um botão válido além do falso, o falso é descartado (nada duplicado).
       const { isPlaceholderLink } = require('./email-renderer');
-      const emailBlocks = (pack.email.blocks || []).filter((b) => {
-        if (b && b.type === 'button' && b.url && isPlaceholderLink(b.url)) {
-          console.warn('[compose] botão com URL placeholder descartado na geração (defina o link real pelo chat: ctaUrl)');
-          return false;
+      const { whatsappCtaUrl } = require('./cta-destination');
+      const rawBlocks = (pack.email.blocks || []).map((b) => ({ ...b }));
+      const hasValidButton = rawBlocks.some((b) => b && b.type === 'button' && b.url && !isPlaceholderLink(b.url));
+      const emailBlocks = [];
+      for (const b of rawBlocks) {
+        if (b && b.type === 'button' && (!b.url || isPlaceholderLink(b.url))) {
+          if (hasValidButton) {
+            console.warn('[compose] botão com URL placeholder descartado na geração (já existe botão com link real)');
+            continue; // falso fora — o real fica
+          }
+          b.url = whatsappCtaUrl(); // normaliza para o destino canônico
         }
-        return true;
-      });
+        emailBlocks.push(b);
+      }
       created.push(
         await prisma.studioContent.create({
           data: {

@@ -458,16 +458,9 @@ function validate(action, params = {}) {
         err.status = 400;
         throw err;
       }
-      // PLACEHOLDER DE DOMÍNIO (2026-10-29, caso real: botão apontando para
-      // "www.exemplo.com.br"): domínio de exemplo NUNCA vira CTA — erro
-      // honesto ANTES do gate (o dono não confirma uma troca que falharia).
-      if (hasCta && params.ctaUrl != null &&
-          require('../email-renderer').isPlaceholderLink(String(params.ctaUrl))) {
-        const err = new Error('Esse domínio parece de EXEMPLO (placeholder) — o botão precisa do destino REAL (ex.: https://wa.me/5512996399943 ou o site verdadeiro). Me passa o endereço certo?');
-        err.code = 'PLACEHOLDER_LINK';
-        err.status = 400;
-        throw err;
-      }
+      // PLACEHOLDER de domínio NÃO é rejeitado aqui: o handler NORMALIZA para
+      // o destino canônico do WhatsApp (cta-destination) — a IA não escolhe
+      // contato genérico, o servidor corrige antes de renderizar/enviar.
       if (!hasContents && !hasChannelText && !hasImage && !hasCta && !hasAttachment && !hasMaterial && !hasRemoveImage) {
         const err = new Error('edit_content exige `contents` (lista com ids), `channel` + texto (whatsappText/text), `imageUrl` (imagem por link no e-mail), `attachmentId` (imagem anexada como banner), `materialId` (material de imagem como banner), `removeImage` (tirar a imagem do e-mail) ou `ctaUrl` (link do botão do e-mail).');
         err.code = 'INVALID_ACTION_PARAMS';

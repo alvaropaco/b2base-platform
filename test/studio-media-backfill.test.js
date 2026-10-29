@@ -173,3 +173,47 @@ test('media-backfill: banner VÁLIDO no doc sobra intacto quando outro é removi
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('media-backfill: botão com link morto → cura para o WhatsApp canônico e persiste', async () => {
+  const { registerMediaBackfill } = require('../studio/media-backfill');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-backfill-cta-'));
+  const prevStorageDir = process.env.STUDIO_STORAGE_DIR;
+  process.env.STUDIO_STORAGE_DIR = tmpDir;
+  const realFetch = global.fetch;
+  const rows = [
+    {
+      id: 'row-cta-morto', orgId: 'org-1', channel: 'email',
+      emailDoc: {
+        blocks: [
+          { type: 'text', text: 'Olá' },
+          { type: 'button', label: 'Fale com a empresa', url: 'https://www.exemplo.com.br/contato' },
+        ],
+      },
+    },
+  ];
+  const updates = [];
+  const prisma = {
+    studioMaterial: { findMany: async () => [] },
+    studioContent: {
+      findMany: async ({ where } = {}) => rows.filter((r) => !where || !where.channel || r.channel === where.channel),
+      update: async ({ where, data }) => { updates.push({ id: where.id, emailDoc: data.emailDoc }); return { count: 1 }; },
+    },
+  };
+  global.fetch = async () => { throw new Error('sem fetch esperado'); };
+  try {
+    const { sweep } = registerMediaBackfill(prisma, { bootDelayMs: 1, intervalMs: 1 });
+    const out = await sweep('test');
+    assert.equal(out.checked, 1, 'linha com CTA morto entra na varredura');
+    assert.equal(out.healed, 1);
+    assert.equal(updates.length, 1, 'doc persistido');
+    const btn = updates[0].emailDoc.blocks.find((b) => b.type === 'button');
+    assert.equal(btn.url, 'https://wa.me/5512996399943', 'botão aponta para o WhatsApp canônico');
+    assert.equal(btn.label, 'Fale com a empresa', 'rótulo preservado');
+    // Sem fetch: a cura do CTA não depende de rede.
+  } finally {
+    global.fetch = realFetch;
+    if (prevStorageDir === undefined) delete process.env.STUDIO_STORAGE_DIR;
+    else process.env.STUDIO_STORAGE_DIR = prevStorageDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

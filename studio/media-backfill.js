@@ -28,6 +28,7 @@ function registerMediaBackfill(prisma, { logger = console, bootDelayMs = BOOT_DE
     running = true;
     try {
       const { ensureImageSourcesResolved, isPageUrl } = require('./resolve-image-link');
+      const { isUsableCtaUrl } = require('./cta-cure');
       const storage = require('./storage');
       const rows = await prisma.studioContent.findMany({
         where: { channel: 'email' },
@@ -38,7 +39,11 @@ function registerMediaBackfill(prisma, { logger = console, bootDelayMs = BOOT_DE
       let healed = 0;
       for (const row of rows) {
         const blocks = row.emailDoc && Array.isArray(row.emailDoc.blocks) ? row.emailDoc.blocks : [];
-        if (!blocks.some((b) => b && b.type === 'image' && typeof b.src === 'string' && isPageUrl(b.src))) continue;
+        const hasPageSrc = blocks.some((b) => b && b.type === 'image' && typeof b.src === 'string' && isPageUrl(b.src));
+        // CTA morto (placeholder/sem link) também entra na varredura — o botão
+        // de contato sai daqui SEMPRE clicável com o destino certo.
+        const needsCtaCure = blocks.some((b) => b && b.type === 'button' && !isUsableCtaUrl(b.url));
+        if (!hasPageSrc && !needsCtaCure) continue;
         checked += 1;
         if (healed >= MAX_HEALS_PER_SWEEP) break; // próximo sweep continua
         const before = JSON.stringify(row.emailDoc);
@@ -51,6 +56,20 @@ function registerMediaBackfill(prisma, { logger = console, bootDelayMs = BOOT_DE
               await prisma.studioContent.update({ where: { id: row.id }, data: { emailDoc: doc } });
             },
           });
+          // CURA DO CTA (2026-10-29): botão morto → WhatsApp dos materiais ou
+          // destino canônico. createIfMissing:false — o sweep CONSERVA o que
+          // existia (não inventa botão em e-mail que nunca teve um). A falha
+          // da cura não desfaz a cura da imagem.
+          try {
+            await require('./cta-cure').cureCta(prisma, {
+              campaign: { orgId: row.orgId }, emailDoc: row.emailDoc, createIfMissing: false,
+              persist: async (doc) => {
+                await prisma.studioContent.update({ where: { id: row.id }, data: { emailDoc: doc } });
+              },
+            });
+          } catch (cureErr) {
+            logger.warn(`[media:backfill] ${trigger}: ${String(row.id).slice(0, 8)} cura de CTA falhou (${cureErr.message}) — o próximo sweep tenta de novo.`);
+          }
           if (JSON.stringify(row.emailDoc) !== before) healed += 1;
         } catch (err) {
           logger.warn(`[media:backfill] ${trigger}: ${String(row.id).slice(0, 8)} não curou agora (${err.code || err.message}) — o próximo sweep tenta de novo.`);

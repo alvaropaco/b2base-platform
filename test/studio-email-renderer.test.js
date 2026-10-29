@@ -301,6 +301,27 @@ test('renderEmail: button com color green → estilo inline usa a COR do bloco',
   assert.ok(html.includes('Falar com a gente no WhatsApp'), 'texto do CTA');
 });
 
+test('HTML FINAL (emailDocToHtml): "Fale com a empresa" → wa.me; banner herda; links independentes intactos', () => {
+  // Caminho REAL do envio (channel-bridge.emailDocToHtml — Gmail/SMTP/Resend
+  // recebem exatamente este HTML). Critério de conclusão do dono (2026-10-29):
+  // clicar em "Fale com a empresa" abre o WhatsApp 5512996399943.
+  const { emailDocToHtml } = require('../studio/channel-bridge');
+  const html = emailDocToHtml({ blocks: [
+    { type: 'image', src: 'https://cdn.lojadofulano.com.br/banner.png', alt: 'Banner' },
+    { type: 'text', text: 'Olá {{firstName}}' },
+    { type: 'button', label: 'Fale com a empresa', url: 'https://wa.me/5512996399943', color: '#25D366' },
+    { type: 'button', label: 'Conheça o catálogo', url: 'https://lojadofulano.com.br/catalogo' },
+  ] }, LEAD);
+  assert.ok(html.includes('<a href="https://wa.me/5512996399943"'), 'botão de contato com href REAL no HTML final');
+  assert.ok(
+    (html.match(/wa\.me\/5512996399943/g) || []).length >= 2,
+    'banner clicável usa o MESMO destino do botão (herança do CTA)'
+  );
+  assert.ok(html.includes('href="https://lojadofulano.com.br/catalogo"'), 'link independente preservado sem alteração');
+  assert.ok(html.includes('Fale com a empresa'), 'rótulo preservado');
+  assert.ok(!html.includes('exemplo.com.br'), 'nenhum link de contato antigo/fictício');
+});
+
 test('renderEmail: button SEM color mantém o padrão atual (indigo)', () => {
   const { html } = renderEmail({
     blocks: [{ type: 'button', label: 'Agendar', url: 'https://exemplo.com' }],

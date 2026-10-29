@@ -493,11 +493,12 @@ test('edit_content removeImage:true TIRA a imagem do e-mail e mantém o resto', 
   }
 });
 
-// ── 8. CTA com PLACEHOLDER (2026-10-29): domínio de exemplo nunca vira link ──
-// Caso real: o modelo gerou o botão apontando para www.exemplo.com.br e o
-// clique levava o lead a um site fictício em vez do WhatsApp.
+// ── 8. CTA com PLACEHOLDER (2026-10-29): domínio de exemplo vira o canônico ──
+// Caso real: o modelo gerou o botão apontando para www.exemplo.com.br. Agora
+// o backend NORMALIZA: placeholder → WhatsApp canônico (cta-destination) —
+// o botão de contato nunca sai morto nem fictício.
 
-test('edit_content com ctaUrl PLACEHOLDER (domínio de exemplo) → 400 honesto pedindo o link real', async () => {
+test('edit_content com ctaUrl PLACEHOLDER → NORMALIZA para o WhatsApp canônico', async () => {
   const world = await startServer({});
   const { api, prisma } = world;
   try {
@@ -509,17 +510,20 @@ test('edit_content com ctaUrl PLACEHOLDER (domínio de exemplo) → 400 honesto 
       emailDoc: { blocks: [{ type: 'text', text: 'Olá' }] },
     });
 
-    // Falha ANTES do gate de confirmação — o dono não confirma uma troca
-    // que falharia (o modelo inventou o domínio, o servidor recusa na hora).
-    const res = await api('POST', `/campaigns/${c.data.id}/actions`, {
+    const gated = await api('POST', `/campaigns/${c.data.id}/actions`, {
       type: 'edit_content',
-      params: { channel: 'email', ctaUrl: 'https://www.exemplo.com.br', confirmed: true },
+      params: { channel: 'email', ctaUrl: 'https://www.exemplo.com.br/contato' },
     });
-    assert.equal(res.res.status, 400);
-    assert.match(res.body.message, /EXEMPLO|placeholder/i, 'explica que é placeholder');
-    assert.match(res.body.message, /wa\.me|REAL/i, 'aponta o formato do link real');
+    assert.ok(gated.body.data.card.type === 'confirm_change', 'gate pede confirmação');
+    const out = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'edit_content',
+      params: { channel: 'email', ctaUrl: 'https://www.exemplo.com.br/contato', confirmed: true },
+    });
+    assert.equal(out.res.status, 200);
     const row = prisma.studioContent.rows.find((r) => r.id === 'ce-cta');
-    assert.ok(!row.emailDoc.blocks.some((b) => b.type === 'button'), 'nada inserido com link fictício');
+    const btn = row.emailDoc.blocks.find((b) => b.type === 'button');
+    assert.ok(btn, 'botão criado');
+    assert.equal(btn.url, 'https://wa.me/5512996399943', 'placeholder virou o WhatsApp canônico');
   } finally {
     world.restore();
     world.close();

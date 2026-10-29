@@ -67,24 +67,38 @@ test('cta-cure: botão com destino VÁLIDO → intocado (não consulta materiais
   assert.equal(queried, false, 'materiais nem foram consultados');
 });
 
-test('cta-cure: sem WhatsApp nos materiais → não inventa destino', async () => {
+test('cta-cure: sem WhatsApp nos materiais → cura com o DESTINO CANÔNICO (nunca fica morto)', async () => {
   const doc = { blocks: [{ type: 'button', label: 'B', url: 'https://www.exemplo.com.br' }] };
   const prisma = stubPrisma([{ sourceRef: null, extraction: { product: 'máquinas' } }]);
   const out = await cureCta(prisma, { campaign: CAMP, emailDoc: doc });
-  assert.equal(out.cured, false);
-  assert.equal(out.reason, 'sem_whatsapp_nos_materiais');
-  assert.equal(doc.blocks[0].url, 'https://www.exemplo.com.br', 'doc intocado (o renderer bloqueia o link no HTML)');
+  assert.equal(out.cured, true);
+  assert.equal(out.via, 'padrao');
+  assert.equal(doc.blocks[0].url, 'https://wa.me/5512996399943', 'botão aponta para o WhatsApp canônico');
 });
 
-test('cta-cure: DOIS WhatsApps diferentes nos materiais → não adivinha', async () => {
+test('cta-cure: DOIS WhatsApps diferentes nos materiais → usa o destino canônico (não adivinha entre eles)', async () => {
   const doc = { blocks: [{ type: 'button', label: 'B', url: 'https://www.exemplo.com.br' }] };
   const prisma = stubPrisma([
     { sourceRef: 'https://wa.me/5512996399943', extraction: null },
     { sourceRef: 'https://wa.me/5511888888888', extraction: null },
   ]);
   const out = await cureCta(prisma, { campaign: CAMP, emailDoc: doc });
-  assert.equal(out.cured, false);
-  assert.equal(out.reason, 'varios_whatsapps_nos_materiais');
+  assert.equal(out.cured, true);
+  assert.equal(out.via, 'padrao');
+  assert.equal(doc.blocks[0].url, 'https://wa.me/5512996399943');
+});
+
+test('cta-cure: WHATSAPP_CTA_URL sobrescreve o destino canônico (multi-tenant futuro)', async () => {
+  const doc = { blocks: [{ type: 'button', label: 'B', url: 'https://www.exemplo.com.br' }] };
+  const prisma = stubPrisma([]);
+  process.env.WHATSAPP_CTA_URL = 'https://wa.me/5511000000000';
+  try {
+    const out = await cureCta(prisma, { campaign: CAMP, emailDoc: doc, persist: async () => {} });
+    assert.equal(out.cured, true);
+    assert.equal(doc.blocks[0].url, 'https://wa.me/5511000000000', 'env vence o default');
+  } finally {
+    delete process.env.WHATSAPP_CTA_URL;
+  }
 });
 
 test('cta-cure: OutreachCampaign usa tenantId como org', async () => {

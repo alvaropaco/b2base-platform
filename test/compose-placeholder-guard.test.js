@@ -55,7 +55,7 @@ test('compose: botão com URL de exemplo NÃO é persistido; botão com link rea
   assert.ok(data.emailDoc.blocks.some((b) => b.type === 'text'), 'texto intacto');
 });
 
-test('compose: TODO botão placeholder fora → e-mail persiste SEM botão e ctaUrl null', async () => {
+test('compose: botão placeholder SEM outro válido → normaliza para o DESTINO CANÔNICO', async () => {
   const pack = {
     title: 'Oferta',
     email: {
@@ -73,6 +73,31 @@ test('compose: TODO botão placeholder fora → e-mail persiste SEM botão e cta
     campaign: CAMPAIGN, sourceText: 'base', tones: ['formal'], orgId: 'org-1',
   });
   const data = prisma.created[0];
-  assert.ok(!data.emailDoc.blocks.some((b) => b.type === 'button'), 'nenhum botão fictício');
-  assert.equal(data.ctaUrl, null, 'ctaUrl null — o real entra pelo chat');
+  const buttons = data.emailDoc.blocks.filter((b) => b.type === 'button');
+  assert.equal(buttons.length, 1, 'um botão (normalizado)');
+  assert.equal(buttons[0].url, 'https://wa.me/5512996399943', 'placeholder virou o WhatsApp canônico');
+  assert.equal(buttons[0].label, 'Saiba mais', 'rótulo preservado');
+  assert.equal(data.ctaUrl, 'https://wa.me/5512996399943', 'ctaUrl canônico');
+});
+
+test('compose: botão SEM url nenhuma → também sai com o destino canônico', async () => {
+  const pack = {
+    title: 'Oferta',
+    email: {
+      subject: 'S',
+      preheader: null,
+      blocks: [
+        { type: 'text', text: 'Oi' },
+        { type: 'button', label: 'Fale com a empresa' },
+      ],
+    },
+    whatsapp: null,
+  };
+  const prisma = stubPrisma();
+  await generateAndStorePackage(prisma, stubComposer(pack), {
+    campaign: CAMPAIGN, sourceText: 'base', tones: ['comercial'], orgId: 'org-1',
+  });
+  const data = prisma.created[0];
+  const btn = data.emailDoc.blocks.find((b) => b.type === 'button');
+  assert.equal(btn.url, 'https://wa.me/5512996399943', 'botão nasce clicável apontando para o WhatsApp');
 });
