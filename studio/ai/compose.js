@@ -53,6 +53,8 @@ function createComposer({ callLlm } = {}) {
         'O CTA vai SEMPRE num bloco button (rótulo + url + color), NUNCA como link no meio do texto;',
         'quando o botão abrir conversa no WhatsApp, use color "#25D366" (verde WhatsApp);',
         'URL só http/https e vinda da BASE — NUNCA invente link, número ou endereço.',
+        'NUNCA use domínio de exemplo/fictício (exemplo.com.br, example.com, seudominio.com…): se a base',
+        'não traz o link real do CTA, o botão sai SEM o campo url — o servidor pede o endereço ao usuário.',
         'Nunca invente números ou benefícios que não estejam na base.',
       ]
         .filter(Boolean)

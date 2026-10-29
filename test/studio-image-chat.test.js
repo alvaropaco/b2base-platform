@@ -492,3 +492,68 @@ test('edit_content removeImage:true TIRA a imagem do e-mail e mantém o resto', 
     world.close();
   }
 });
+
+// ── 8. CTA com PLACEHOLDER (2026-10-29): domínio de exemplo nunca vira link ──
+// Caso real: o modelo gerou o botão apontando para www.exemplo.com.br e o
+// clique levava o lead a um site fictício em vez do WhatsApp.
+
+test('edit_content com ctaUrl PLACEHOLDER (domínio de exemplo) → 400 honesto pedindo o link real', async () => {
+  const world = await startServer({});
+  const { api, prisma } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'CTA real', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-cta', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'S', whatsappText: null,
+      emailDoc: { blocks: [{ type: 'text', text: 'Olá' }] },
+    });
+
+    // Falha ANTES do gate de confirmação — o dono não confirma uma troca
+    // que falharia (o modelo inventou o domínio, o servidor recusa na hora).
+    const res = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'edit_content',
+      params: { channel: 'email', ctaUrl: 'https://www.exemplo.com.br', confirmed: true },
+    });
+    assert.equal(res.res.status, 400);
+    assert.match(res.body.message, /EXEMPLO|placeholder/i, 'explica que é placeholder');
+    assert.match(res.body.message, /wa\.me|REAL/i, 'aponta o formato do link real');
+    const row = prisma.studioContent.rows.find((r) => r.id === 'ce-cta');
+    assert.ok(!row.emailDoc.blocks.some((b) => b.type === 'button'), 'nada inserido com link fictício');
+  } finally {
+    world.restore();
+    world.close();
+  }
+});
+
+test('edit_content com ctaUrl REAL (wa.me) troca o botão normalmente', async () => {
+  const world = await startServer({});
+  const { api, prisma } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'CTA wa.me', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-cta-real', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'S', whatsappText: null,
+      emailDoc: { blocks: [{ type: 'text', text: 'Olá' }] },
+    });
+
+    const gated = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'edit_content',
+      params: { channel: 'email', ctaUrl: 'https://wa.me/5512996399943' },
+    });
+    assert.ok(gated.body.data.card.type === 'confirm_change', 'gate pede confirmação');
+    const out = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'edit_content',
+      params: { channel: 'email', ctaUrl: 'https://wa.me/5512996399943', confirmed: true },
+    });
+    assert.equal(out.res.status, 200);
+    const row = prisma.studioContent.rows.find((r) => r.id === 'ce-cta-real');
+    const btn = row.emailDoc.blocks.find((b) => b.type === 'button');
+    assert.ok(btn, 'botão criado');
+    assert.equal(btn.url, 'https://wa.me/5512996399943', 'link do WhatsApp real');
+  } finally {
+    world.restore();
+    world.close();
+  }
+});

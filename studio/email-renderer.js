@@ -75,10 +75,30 @@ function applyUtm(url, utmTemplate) {
  * parâmetros preservados); protocolo perigoso (javascript:, data:…), URL
  * relativa ou inválada é BLOQUEADA (devolve '') e credenciais na URL
  * (user:pass@host) NUNCA saem no HTML.
+ *
+ * PLACEHOLDER DE DOMÍNIO (2026-10-29, caso real: o modelo inventou
+ * "www.exemplo.com.br" como destino do botão): link de exemplo é BLOQUEADO —
+ * o lead nunca é levado a domínio fictício; o botão sai SEM link (span) e o
+ * banner sem <a>.
  */
+const PLACEHOLDER_HOST_RE = /(^|\.)(exemplo|example|test|teste|seudominio|seusite|meusite|sualoja|dominio|demo)\.(com|com\.br|net|org|io|br|dev|app|xyz|site)$/i;
+
+function isPlaceholderLink(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return false;
+  let host = '';
+  try {
+    host = new URL(raw).hostname.toLowerCase();
+  } catch (_err) {
+    host = raw.replace(/^https?:\/\//i, '').split(/[/?#]/)[0].toLowerCase();
+  }
+  return PLACEHOLDER_HOST_RE.test(host);
+}
+
 function sanitizeLink(url) {
   const raw = String(url || '').trim();
   if (!raw) return '';
+  if (isPlaceholderLink(raw)) return ''; // domínio de exemplo NUNCA vira link
   let parsed;
   try {
     parsed = new URL(raw);
@@ -189,4 +209,4 @@ function fallbackHtml(inner) {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width"/></head><body style="margin:0;background:#f4f4f7;"><div style="max-width:600px;margin:0 auto;padding:24px;font-family:Arial,sans-serif;">${inner}</div></body></html>`;
 }
 
-module.exports = { renderEmail, resolveConditions, matchesCondition, applyUtm, sanitizeLink, normalizeHexColor };
+module.exports = { renderEmail, resolveConditions, matchesCondition, applyUtm, sanitizeLink, isPlaceholderLink, normalizeHexColor };

@@ -36,7 +36,7 @@ const DOC = {
       text: 'Para indústrias como a sua, temos algo especial.',
       condition: { field: 'industry', op: 'contains', value: 'indústria' },
     },
-    { type: 'button', label: 'Agendar conversa', url: 'https://exemplo.com/cta?foo=1' },
+    { type: 'button', label: 'Agendar conversa', url: 'https://lojadofulano.com.br/cta?foo=1' },
     { type: 'text', text: 'Não quer mais receber? Faça o descadastro.' },
   ],
 };
@@ -90,7 +90,7 @@ test('UTM automática anexada aos links da campanha (FR-037)', () => {
   );
   // Sem UTM configurada → link intacto.
   const plain = renderEmail(DOC, LEAD);
-  assert.ok(plain.html.includes('https://exemplo.com/cta?foo=1'), 'URL original preservada sem UTM');
+  assert.ok(plain.html.includes('https://lojadofulano.com.br/cta?foo=1'), 'URL original preservada sem UTM');
 });
 
 // ── Checks de qualidade (T058: spam, links, a11y — FR-036) ─────────────────
@@ -133,7 +133,7 @@ test('checks: conteúdo limpo → ok, sem itens', async () => {
     emailDoc: { blocks: [
       { type: 'text', text: 'Olá! Gostaria de apresentar nossa solução.' },
       { type: 'image', src: 'https://img/exemplo.png', alt: 'Diagrama da solução' },
-      { type: 'button', label: 'Agendar', url: 'https://ok.exemplo.com' },
+      { type: 'button', label: 'Agendar', url: 'https://lojadofulano.com.br' },
     ] },
     origin: 'manual', variantLabel: 'A', kind: 'base', stepIndex: 1,
     editHistory: [], ctaUrl: null, tone: null,
@@ -159,11 +159,11 @@ test('renderEmail: bloco image por link → <img> com src/alt (banner full-width
 
 test('renderEmail: image com href → banner CLICÁVEL com UTM da campanha', () => {
   const { html } = renderEmail({
-    blocks: [{ type: 'image', src: 'https://cdn.exemplo.com/banner.jpg', alt: 'Banner', href: 'https://exemplo.com/cta' }],
+    blocks: [{ type: 'image', src: 'https://cdn.exemplo.com/banner.jpg', alt: 'Banner', href: 'https://lojadofulano.com.br/cta' }],
   }, LEAD, { utmTemplate: { utmSource: 'email', utmCampaign: 'dobradeiras' } });
   const anchor = html.match(/<a href="([^"]+)"[^>]*><img/);
   assert.ok(anchor, 'img embrulhada em <a>');
-  assert.ok(anchor[1].startsWith('https://exemplo.com/cta?'), 'href do clique');
+  assert.ok(anchor[1].startsWith('https://lojadofulano.com.br/cta?'), 'href do clique');
   assert.ok(anchor[1].includes('utm_campaign=dobradeiras'), 'UTM aplicada ao clique (FR-037)');
 });
 
@@ -227,7 +227,7 @@ test('emailDocToHtml: sem blocos → null (chamador cai no texto plano)', () => 
 // absoluto (wa.me incluído, parâmetros preservados); protocolo perigoso é
 // bloqueado e credenciais na URL nunca saem no HTML.
 
-const { sanitizeLink, normalizeHexColor } = require('../studio/email-renderer');
+const { sanitizeLink, isPlaceholderLink, normalizeHexColor } = require('../studio/email-renderer');
 
 test('sanitizeLink: http/https passa (wa.me com path e query preservados)', () => {
   assert.equal(sanitizeLink('https://wa.me/5512996399943'), 'https://wa.me/5512996399943');
@@ -236,7 +236,35 @@ test('sanitizeLink: http/https passa (wa.me com path e query preservados)', () =
     'https://wa.me/5512996399943?text=Ol%C3%A1%20Arthur',
     'query preservada'
   );
-  assert.equal(sanitizeLink(' http://exemplo.com/promo?a=1&b=2 '), 'http://exemplo.com/promo?a=1&b=2');
+  assert.equal(sanitizeLink(' http://lojadofulano.com.br/promo?a=1&b=2 '), 'http://lojadofulano.com.br/promo?a=1&b=2');
+});
+
+test('sanitizeLink: domínio PLACEHOLDER (exemplo/example…) é BLOQUEADO — caso real do botão inventado', () => {
+  // 2026-10-29: o modelo inventou "www.exemplo.com.br" como destino do botão
+  // do WhatsApp — link de exemplo NUNCA vira href.
+  assert.equal(sanitizeLink('https://www.exemplo.com.br'), '');
+  assert.equal(isPlaceholderLink('https://www.exemplo.com.br'), true);
+  assert.equal(isPlaceholderLink('https://example.com/promo'), true);
+  assert.equal(isPlaceholderLink('https://seudominio.com'), true);
+  assert.equal(isPlaceholderLink('https://wa.me/5512996399943'), false);
+  assert.equal(isPlaceholderLink('https://minhaempresa.com.br'), false);
+});
+
+test('renderEmail: button com URL placeholder sai SEM link (span estilizado)', () => {
+  const { html } = renderEmail({
+    blocks: [{ type: 'button', label: 'Fale no WhatsApp', url: 'https://www.exemplo.com.br', color: '#25D366' }],
+  }, LEAD);
+  assert.ok(!html.includes('exemplo.com.br'), 'domínio fictício não vai no HTML');
+  assert.ok(!html.includes('<a href'), 'nenhum link no botão placeholder');
+  assert.ok(html.includes('<span'), 'rótulo segue visível');
+});
+
+test('renderEmail: banner com href placeholder NÃO é envelopado em <a>', () => {
+  const { html } = renderEmail({
+    blocks: [{ type: 'image', src: 'https://cdn.exemplo-real.com/banner.png', href: 'https://example.com' }],
+  }, LEAD);
+  assert.ok(!html.includes('example.com'), 'href fictício não vai no HTML');
+  assert.ok(html.includes('<img'), 'banner segue renderizado');
 });
 
 test('sanitizeLink: javascript:, data:, relativa e vazia → BLOQUEADAS', () => {
@@ -250,8 +278,8 @@ test('sanitizeLink: javascript:, data:, relativa e vazia → BLOQUEADAS', () => 
 });
 
 test('sanitizeLink: credenciais na URL (user:pass@host) NUNCA saem no link', () => {
-  const clean = sanitizeLink('https://user:secreta@exemplo.com/oferta?a=1');
-  assert.ok(clean.startsWith('https://exemplo.com/oferta'), 'userinfo removido: ' + clean);
+  const clean = sanitizeLink('https://user:secreta@lojadofulano.com.br/oferta?a=1');
+  assert.ok(clean.startsWith('https://lojadofulano.com.br/oferta'), 'userinfo removido: ' + clean);
   assert.ok(!clean.includes('secreta'));
   assert.ok(clean.includes('a=1'), 'query preservada');
 });

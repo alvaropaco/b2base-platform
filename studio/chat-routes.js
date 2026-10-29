@@ -2379,8 +2379,15 @@ function registerChatRoutes(router, context) {
           if (rows.length === 0) {
             throw httpError('NO_CONTENT', 409, 'A campanha não tem conteúdo de e-mail para editar — me peça para gerar primeiro.');
           }
-          const { sanitizeLink, normalizeHexColor } = require('./email-renderer');
+          const { isPlaceholderLink, sanitizeLink, normalizeHexColor } = require('./email-renderer');
           const newUrl = action.ctaUrl != null ? sanitizeLink(String(action.ctaUrl)) : null;
+          if (action.ctaUrl != null && isPlaceholderLink(String(action.ctaUrl))) {
+            throw httpError(
+              'PLACEHOLDER_LINK',
+              400,
+              'Esse domínio parece de EXEMPLO (placeholder) — o botão precisa do destino REAL (ex.: https://wa.me/5512996399943 ou o site verdadeiro). Me passa o endereço certo?'
+            );
+          }
           if (action.ctaUrl != null && !newUrl) {
             throw httpError(
               'INVALID_LINK',
