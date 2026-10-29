@@ -80,6 +80,11 @@ test('bug 6: toda action do manifest é declarada no SYSTEM_PROMPT (capacidades 
   // regra do nome proibido.
   assert.ok(!/imgur/i.test(SYSTEM_PROMPT), 'SYSTEM_PROMPT não cita o serviço externo');
   assert.ok(SYSTEM_PROMPT.includes('REGRA DO NOME PROIBIDO'));
+  // Status de entrega (QA 2026-10-29): o agente repetia "problema de entrega /
+  // falta autenticar o domínio" de turnos antigos mesmo com o usuário dizendo
+  // que chegou — a regra trava a resolução pelo que o usuário/estado mostram.
+  assert.ok(SYSTEM_PROMPT.includes('STATUS DE ENTREGA E RESOLUÇÃO'));
+  assert.ok(SYSTEM_PROMPT.includes('histórico não é estado'));
 });
 
 test('sanitizador de fronteira: nome do serviço externo não entra nem sai (modelo input/output)', () => {
