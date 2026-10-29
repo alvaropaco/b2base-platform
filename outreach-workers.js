@@ -336,6 +336,24 @@ async function processPrepare(job) {
               } catch (_e) { /* persistência é melhor-esforço: o envio segue com o src resolvido em memória */ }
             },
           });
+          // CURA DO CTA (2026-10-29): botão sem destino válido (placeholder de
+          // exemplo/sem link) + WhatsApp único nos materiais da org → o botão
+          // aponta para ele. O lead NUNCA fica com botão morto por src legado.
+          try {
+            await require('./studio/cta-cure').cureCta(prisma, {
+              campaign, emailDoc: doc,
+              persist: async (docCured) => {
+                try {
+                  await prisma.studioContent.updateMany({
+                    where: { campaignId: campaign.studioCampaignId, channel: 'email', kind: 'base', stepIndex: 1 },
+                    data: { emailDoc: docCured },
+                  });
+                } catch (_e) { /* melhor-esforço: o envio segue com o doc curado em memória */ }
+              },
+            });
+          } catch (err) {
+            console.warn('[prepare] cura do CTA falhou — sigo com o doc atual:', err.message);
+          }
           const studioCampaign = await prisma.studioCampaign.findUnique({
             where: { id: campaign.studioCampaignId },
             select: { utmTemplate: true },

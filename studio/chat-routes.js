@@ -1756,6 +1756,20 @@ function registerChatRoutes(router, context) {
             // Falha não-bloqueante de resolução: segue com o src original (log para diagnóstico).
             console.warn('[test] resolução do banner falhou — sigo com o src atual:', err.message);
           }
+          // CURA DO CTA (2026-10-29): botão sem destino válido (placeholder de
+          // exemplo/sem link) + WhatsApp único nos materiais → o botão aponta
+          // para ele. O teste do chat ≡ disparo real: mesmo conserto nos dois.
+          try {
+            await require('./cta-cure').cureCta(prisma, {
+              campaign, emailDoc: emailContent.emailDoc,
+              persist: async (docCured) => {
+                await prisma.studioContent.update({ where: { id: emailContent.id }, data: { emailDoc: docCured } });
+                emailContent.emailDoc = docCured;
+              },
+            });
+          } catch (err) {
+            console.warn('[test] cura do CTA falhou — sigo com o doc atual:', err.message);
+          }
           const account = await prisma.emailAccount.findFirst({
             // Mesma tolerância do painel: contas antigas (Gmail) gravam userId,
             // não tenantId — filtrar só por orgId escondia a conta.
