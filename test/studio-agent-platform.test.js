@@ -70,6 +70,11 @@ test('bug 6: toda action do manifest é declarada no SYSTEM_PROMPT (capacidades 
   // Anti-negação (QA 2026-10-02, 3ª bateria): o modelo negava que dava para
   // criar/renomear pelo chat — a regra absoluta precisa estar no prompt.
   assert.ok(SYSTEM_PROMPT.includes('REGRA ABSOLUTA CONTRA NEGAÇÃO FALSA'));
+  // Anti-negação de hospedagem (QA 2026-10-28): o modelo dizia "não tenho
+  // acesso ao Cloudflare" — o FATO de que o servidor publica no bucket R2
+  // sozinho precisa estar no prompt (o agente nunca pede login/link externo).
+  assert.ok(SYSTEM_PROMPT.includes('HOSPEDAGEM DE IMAGEM (Cloudflare'));
+  assert.ok(SYSTEM_PROMPT.includes('bucket Cloudflare R2 da própria B2Base'));
 });
 
 test('QA 5ª bateria: detector e extrator da intenção de captura de leads', () => {

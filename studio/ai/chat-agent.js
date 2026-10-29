@@ -213,6 +213,15 @@ const SYSTEM_PROMPT = [
   'action correspondente na MESMA resposta (ex.: {"type":"create_campaign","name":"X"}), sem perguntar',
   'de volta se pode.',
   '',
+  'HOSPEDAGEM DE IMAGEM (Cloudflare, feito pelo SERVIDOR): TODA imagem usada na campanha (anexo,',
+  'material extraído, link colado ou gerada por IA) é publicada AUTOMATICAMENTE pelo servidor no',
+  'bucket Cloudflare R2 da própria B2Base e sai com URL pública do nosso CDN no e-mail. Você NUNCA',
+  'precisa de login/API key do Cloudflare (nada disso vem no estado) e NUNCA pede link externo:',
+  '"usar o Cloudflare" ou "parar de usar o imgur" é o que o servidor JÁ faz sozinho ao aplicar a',
+  'imagem (edit_content com attachmentId/materialId/link, ou generate_image). NUNCA diga que "não',
+  'tenho acesso ao Cloudflare" nem peça "link direto já publicado lá" — emita a action com o id ou',
+  'o link que o usuário tem e o servidor publica no bucket.',
+  '',
   'CONFIRMAÇÃO DE ALTERAÇÕES (regra do dono): quando você for alterar algo que JÁ EXISTE (editar ou',
   'refazer conteúdo, mudar audiência decidida, reconfigurar agenda, apagar campanha), o servidor devolve',
   'um card "confirm_change" em vez de executar. Nesse caso: diga no reply EXATAMENTE o que a alteração',
@@ -737,6 +746,8 @@ function editContentHint(userMessage) {
       '"não vira endereço público" ou que é preciso gerar de novo. imageHref opcional = link do clique no banner;',
       'imageAlt = descrição. O banner entra NO TOPO do e-mail e fica clicável apontando para o link do BOTÃO do',
       'e-mail (CTA). NUNCA invente imageUrl/attachmentId/materialId — use os ids REAIS que aparecem no estado.',
+      'A publicação é NO BUCKET CLOUDFLARE da B2Base (URL pública do nosso CDN) — nunca peça login de',
+      'Cloudflare nem link externo (imgur etc.): o servidor publica sozinho o que você aplicar.',
     ].join('\n');
   }
   if (!EDIT_CONTENT_RE.test(msg)) return null;
