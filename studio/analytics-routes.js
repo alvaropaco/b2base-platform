@@ -73,7 +73,36 @@ function registerAnalyticsRoutes(router, context) {
         { conversions: funnel.conversions, convertedValue: campaign.convertedValue },
         { sent: funnel.sent }
       );
-      res.json({ success: true, data: { funnel, roi, campaign: { id: campaign.id, name: campaign.name, goalMetric: campaign.goalMetric } } });
+      // EXECUÇÃO AO VIVO (2026-10-29): o funil zerado em silêncio era beco sem
+      // diagnóstico — sem saber se a execução está vinculada e quantos
+      // contatos estão enviados/na fila/falhos, o dono não distingue "ainda
+      // não saiu" de "desvinculado". Contagem AO VIVO dos contatos da
+      // execução de e-mail (independe do rollup diário).
+      let execution = null;
+      if (campaign.emailExecutionId) {
+        const contacts = await prisma.outreachContact.findMany({
+          where: { campaignId: campaign.emailExecutionId },
+          select: { status: true },
+        });
+        const contactsByStatus = {};
+        let total = 0;
+        for (const c of contacts) {
+          contactsByStatus[c.status] = (contactsByStatus[c.status] || 0) + 1;
+          total += 1;
+        }
+        execution = {
+          linked: true,
+          emailExecutionId: campaign.emailExecutionId,
+          total,
+          contactsByStatus,
+          sent: (contactsByStatus.SENT || 0) + (contactsByStatus.DELIVERED_INFERRED || 0) +
+            (contactsByStatus.OPENED_INFERRED || 0) + (contactsByStatus.REPLIED || 0) +
+            (contactsByStatus.BOUNCED || 0) + (contactsByStatus.UNSUBSCRIBED || 0),
+        };
+      } else {
+        execution = { linked: false, emailExecutionId: null, total: null, contactsByStatus: null, sent: null };
+      }
+      res.json({ success: true, data: { funnel, roi, execution, campaign: { id: campaign.id, name: campaign.name, goalMetric: campaign.goalMetric } } });
     } catch (err) {
       next(err);
     }

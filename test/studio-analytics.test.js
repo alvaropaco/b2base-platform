@@ -149,3 +149,69 @@ test('rota GET /analytics recalcula o rollup on-demand — sem job, Enviados ref
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+// ── 2026-10-29: EXECUÇÃO AO VIVO no monitor — funil zerado deixa de ser beco ─
+// "Acabei de fazer os disparos e o monitor mostra 0": sem saber se a execução
+// está vinculada e quantos contatos estão enviados/na fila/falhos, o dono não
+// distingue "ainda não saiu" de "desvinculado".
+
+test('rota GET /analytics traz a EXECUÇÃO AO VIVO (fila real por status)', async () => {
+  const express = require('express');
+  const { registerAnalyticsRoutes: analyticsRoutes } = require('../studio/analytics-routes');
+
+  const prisma = basePrisma();
+  prisma.studioCampaign.rows[0].emailExecutionId = 'exec-1';
+  const dia = new Date('2026-10-29T14:00:00Z');
+  prisma.outreachContact.rows.push(
+    { id: 'oc-s1', campaignId: 'exec-1', prospectId: 'l1', status: 'SENT', sentAt: dia },
+    { id: 'oc-s2', campaignId: 'exec-1', prospectId: 'l2', status: 'SENT', sentAt: dia },
+    { id: 'oc-q1', campaignId: 'exec-1', prospectId: 'l3', status: 'QUEUED' },
+    { id: 'oc-f1', campaignId: 'exec-1', prospectId: 'l4', status: 'FAILED' }
+  );
+
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => { req.studio = { orgId: 'org-1', userId: 'u1' }; next(); });
+  analyticsRoutes(app, { prisma });
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/campaigns/camp-a/analytics`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    const execution = body.data.execution;
+    assert.ok(execution, 'bloco execution presente');
+    assert.equal(execution.linked, true);
+    assert.equal(execution.emailExecutionId, 'exec-1');
+    assert.equal(execution.total, 4);
+    assert.equal(execution.sent, 2, 'ao vivo: 2 enviados (QUEUED/FAILED não contam como enviados)');
+    assert.equal(execution.contactsByStatus.QUEUED, 1);
+    assert.equal(execution.contactsByStatus.FAILED, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('rota GET /analytics sem execução vinculada → linked:false (o monitor AVISA, não zera em silêncio)', async () => {
+  const express = require('express');
+  const { registerAnalyticsRoutes: analyticsRoutes } = require('../studio/analytics-routes');
+
+  const prisma = basePrisma();
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => { req.studio = { orgId: 'org-1', userId: 'u1' }; next(); });
+  analyticsRoutes(app, { prisma });
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/campaigns/camp-a/analytics`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.data.execution.linked, false, 'aviso de falta de vínculo');
+    assert.equal(body.data.execution.sent, null);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

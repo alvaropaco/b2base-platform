@@ -19,6 +19,7 @@ import {
   fetchLeadHistory,
   fetchQueue,
   StudioRequestError,
+  type CampaignExecutionLive,
   type CampaignFunnel,
   type LeadHistory,
   type QueueRow,
@@ -101,6 +102,7 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
   const [campaignId, setCampaignId] = useState<string | null>(initialCampaignId || null);
   const [detail, setDetail] = useState<StudioCampaignDetail | null>(null);
   const [funnel, setFunnel] = useState<CampaignFunnel | null>(null);
+  const [execution, setExecution] = useState<CampaignExecutionLive | null | undefined>(undefined);
   const [queue, setQueue] = useState<Awaited<ReturnType<typeof fetchQueue>> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -140,6 +142,7 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
       ]);
       setDetail(d);
       setFunnel(a?.funnel ?? null);
+      setExecution(a?.execution ?? null);
       setQueue(q);
     } catch (err) {
       setError(err instanceof StudioRequestError ? err.message : 'Falha ao carregar o monitor');
@@ -335,6 +338,28 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
               <FunnelCard label="Bounces" value={funnel == null ? '—' : (funnel.bounces ?? 0).toLocaleString('pt-BR')} />
               <FunnelCard label="Descadastros" value={funnel == null ? '—' : (funnel.unsubs ?? 0).toLocaleString('pt-BR')} />
             </div>
+            {/* EXECUÇÃO AO VIVO (2026-10-29): fila real da execução vinculada —
+                funil zerado deixa de ser beco (ou está na fila, ou faltou
+                vínculo, e o monitor DIZ qual dos dois). */}
+            {execution?.linked && (
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                Fila ao vivo: <strong>{(execution.sent ?? 0).toLocaleString('pt-BR')}</strong> enviado(s) ·{' '}
+                {(
+                  (execution.contactsByStatus?.QUEUED || 0) +
+                  (execution.contactsByStatus?.SELECTED || 0) +
+                  (execution.contactsByStatus?.SCHEDULED || 0) +
+                  (execution.contactsByStatus?.GENERATING || 0)
+                ).toLocaleString('pt-BR')}{' '}
+                aguardando ·{' '}
+                {(execution.contactsByStatus?.FAILED || 0).toLocaleString('pt-BR')} com falha
+              </p>
+            )}
+            {execution != null && !execution.linked && (detail?.status === 'running' || detail?.status === 'scheduled') && (
+              <p role="status" className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                Esta campanha está SEM execução de e-mail vinculada — os disparos feitos agora não estão sendo contados
+                aqui. No chat, me peça: "relança o disparo de e-mail desta campanha".
+              </p>
+            )}
             {funnel?.estimated && (
               <p className="mt-1.5 text-[10px] text-muted-foreground">
                 Entregas/aberturas estimadas pelo provedor de envio quando o evento exato não é reportado.

@@ -356,12 +356,21 @@ export interface CampaignFunnel {
   rates: { deliveredRate: number; openRate: number; clickRate: number; replyRate: number; bounceRate: number };
 }
 
+export interface CampaignExecutionLive {
+  linked: boolean;
+  emailExecutionId: string | null;
+  total: number | null;
+  contactsByStatus: Record<string, number> | null;
+  sent: number | null;
+}
+
 export async function fetchCampaignAnalytics(id: string): Promise<{
   funnel: CampaignFunnel;
   roi: Record<string, unknown>;
   campaign: { id: string; name: string; goalMetric?: string | null };
+  execution?: CampaignExecutionLive | null;
 }> {
-  const data = await request<{ data: { funnel: CampaignFunnel; roi: Record<string, unknown>; campaign: { id: string; name: string; goalMetric?: string | null } } }>(
+  const data = await request<{ data: { funnel: CampaignFunnel; roi: Record<string, unknown>; campaign: { id: string; name: string; goalMetric?: string | null }; execution?: CampaignExecutionLive | null } }>(
     `/campaigns/${encodeURIComponent(id)}/analytics`
   );
   return data.data;
