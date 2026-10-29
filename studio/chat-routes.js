@@ -1795,7 +1795,7 @@ function registerChatRoutes(router, context) {
             }).inlineImages;
           } catch (_err) { /* src remoto permanece */ }
           const emailProvider = require('../email-provider');
-          await emailProvider.sendEmailForAccount(prisma, account.id, {
+          const sentResult = await emailProvider.sendEmailForAccount(prisma, account.id, {
             to,
             subject: `[TESTE] ${renderTemplate(emailContent.subject || campaign.name, SAMPLE)}`,
             body: renderedBody,
@@ -1804,6 +1804,11 @@ function registerChatRoutes(router, context) {
             messageId: `teste-${crypto.randomUUID()}`,
           });
           parts.push(`✉️ E-mail para ${to}`);
+          // DIAGNÓSTICO REAL (2026-10-29): conta/provider + id da mensagem —
+          // "não chegou" deixa de ser adivinhação (o painel do provider —
+          // Resend/Gmail/SMTP — localiza o id exato e mostra o status).
+          const viaConta = account.email ? `${account.email} (${account.provider})` : String(account.provider || 'e-mail');
+          parts.push(`📤 Saiu por ${viaConta}${sentResult && sentResult.messageId ? ` · id ${String(sentResult.messageId).slice(0, 48)}` : ''}`);
           // TRANSPARÊNCIA DO CLIQUE (2026-10-29): o card mostra o destino REAL
           // do botão no e-mail enviado — sem isso "o botão não abre nada" era
           // um beco sem diagnóstico (placeholder bloqueado no render, cura
