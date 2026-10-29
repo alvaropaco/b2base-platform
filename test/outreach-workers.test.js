@@ -55,6 +55,28 @@ function makeFakePrisma({ campaign, prospect, settings }) {
     },
     outreachMessage: {
       async findMany() { return []; },
+      async findFirst({ where }) {
+        return db.messages.find((m) => m.contactId === where.contactId) || null;
+      },
+      async findUnique({ where, include }) {
+        const row = db.messages.find((m) => m.id === where.id) || null;
+        if (!row) return null;
+        if (include && include.contact) {
+          const contact = db.contacts.find((c) => c.id === row.contactId) || null;
+          return {
+            ...row,
+            contact: contact
+              ? { ...contact, campaign: db.campaignRow && contact.campaignId === db.campaignRow.id ? { ...db.campaignRow } : null }
+              : null,
+          };
+        }
+        return row;
+      },
+      async update({ where, data }) {
+        const row = db.messages.find((m) => m.id === where.id);
+        if (row) Object.assign(row, data);
+        return row;
+      },
       async create({ data }) {
         const row = { id: id('om'), createdAt: new Date(), ...data };
         db.messages.push(row);
@@ -462,4 +484,80 @@ test('Studio: src de PÁGINA no emailDoc é resolvido NO PREPARE, promovido e PE
     process.env.STUDIO_STORAGE_DIR = prevStorage;
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+// ── 2026-10-29: BACKFILL DA CONTA — causa raiz do monitor em 0 ──────────────
+// Pré-matrícula (enrollAudience) cria o contato SEM emailAccount_id; o
+// prepare antigo nunca backfilava e TODO envio falhava com "No email
+// account configured". Auditoria com dados reais de produção (159 contatos
+// null, execução ativa, conta conectada existente na org).
+
+test('prepare: contato pré-matriculado SEM conta → backfila com a conta do job', async () => {
+  const { prisma, job } = baseFixture({
+    campaignOverrides: { emailTemplateSubject: 'S {{firstName}}', emailTemplateBody: 'Corpo {{firstName}}' },
+  });
+  // O estado REAL do banco: contato da pré-matrícula, sem conta nenhuma.
+  prisma.db.contacts.push({
+    id: 'ct_pre', campaignId: 'camp_1', prospectId: 'pr_1',
+    emailAccount_id: null, status: 'QUEUED', outreachSequence: 0,
+  });
+  await workers.processPrepare(job);
+  const contact = prisma.db.contacts.find((c) => c.id === 'ct_pre');
+  assert.equal(contact.emailAccount_id, 'ea_1', 'conta do job BACKFILADA no contato');
+  assert.equal(contact.status, 'SCHEDULED');
+  assert.ok(prisma.db.messages.length > 0, 'mensagem gerada normalmente');
+});
+
+test('prepare: contato que JÁ TEM conta → mantém a dele (job sem conta não zera)', async () => {
+  const { prisma } = baseFixture({
+    campaignOverrides: { emailTemplateSubject: 'S {{firstName}}', emailTemplateBody: 'Corpo {{firstName}}' },
+  });
+  prisma.db.contacts.push({
+    id: 'ct_tem', campaignId: 'camp_1', prospectId: 'pr_1',
+    emailAccount_id: 'ea_keep', status: 'QUEUED', outreachSequence: 0,
+  });
+  const jobSemConta = { id: 'job_2', data: { prospectId: 'pr_1', campaignId: 'camp_1', tenantId: 'org_1' } };
+  await workers.processPrepare(jobSemConta);
+  const contact = prisma.db.contacts.find((c) => c.id === 'ct_tem');
+  assert.equal(contact.emailAccount_id, 'ea_keep', 'conta existente preservada');
+});
+
+test('send: fallback resolve a conta conectada da ORG do contato', async () => {
+  const { _resolveContactEmailAccount } = workers;
+  const account = { id: 'ea_ok', email: 'vendas@b2base.net', tenantId: 'org_1', status: 'connected' };
+  const prisma = {
+    emailAccount: { findFirst: async ({ where }) => (where.tenantId === 'org_1' ? account : null) },
+  };
+  const message = { contact: { campaign: { tenantId: 'org_1' } } };
+  const out = await _resolveContactEmailAccount(prisma, message);
+  assert.equal(out.id, 'ea_ok');
+  // Org sem nenhuma conta conectada → null (sem invenção).
+  const prismaVazio = { emailAccount: { findFirst: async () => null } };
+  assert.equal(await _resolveContactEmailAccount(prismaVazio, message), null);
+  // Sem org no contato → null.
+  assert.equal(await _resolveContactEmailAccount(prismaVazio, { contact: { campaign: {} } }), null);
+});
+
+test('send: contato sem conta + org SEM conta conectada → FAILED com causa clara e estorno', async () => {
+  const { prisma, job } = baseFixture({
+    campaignOverrides: { emailTemplateSubject: 'S {{firstName}}', emailTemplateBody: 'Corpo {{firstName}}' },
+  });
+  // Mensagem pronta, contato SEM conta, org SEM conta conectada nenhuma.
+  prisma.db.contacts.push({
+    id: 'ct_send', campaignId: 'camp_1', prospectId: 'pr_1',
+    emailAccount_id: null, status: 'SCHEDULED',
+  });
+  prisma.db.messages.push({
+    id: 'om_send', contactId: 'ct_send', status: 'SCHEDULED',
+    subject: 'S', body: 'corpo', htmlBody: null,
+  });
+  prisma.emailAccount = { findFirst: async () => null };
+  const sendJob = { id: 'sendjob_1', data: { messageId: 'om_send' } };
+  const out = await workers.processSend(sendJob);
+  assert.equal(out.failed, 'no_email_account', 'falha explícita (não retry eterno)');
+  const msg = prisma.db.messages.find((m) => m.id === 'om_send');
+  assert.equal(msg.status, 'FAILED', 'mensagem marcada FAILED');
+  assert.match(msg.error, /Sem conta de e-mail conectada/i, 'causa clara registrada');
+  const contact = prisma.db.contacts.find((c) => c.id === 'ct_send');
+  assert.equal(contact.emailAccount_id, null, 'nada inventado');
 });

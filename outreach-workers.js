@@ -252,7 +252,13 @@ async function processPrepare(job) {
   // Upsert outreach_contact. Chegando aqui: ou o contato é novo, ou é
   // follow-up de contato não-terminal (SENT → próxima sequência volta a
   // SCHEDULED, o fluxo normal da sequência).
+  // BACKFILL DA CONTA (2026-10-29, causa raiz do monitor em 0): contatos
+  // PRÉ-MATRICULADOS (bridge.compile → enrollAudience) nascem SEM
+  // emailAccount_id — o update antigo nunca backfilava e TODO envio falhava
+  // com "No email account configured". O job trouxe a conta resolvida da
+  // org: grava quando o contato não tem nenhuma.
   const nextSequence = Math.max(existing?.outreachSequence || 0, followupSequence || 1);
+  const accountForContact = emailAccountId || existing?.emailAccount_id || null;
   let contact = await prisma.outreachContact.upsert({
     where: {
       prospectId_campaignId: { prospectId, campaignId },
@@ -260,7 +266,7 @@ async function processPrepare(job) {
     create: {
       campaignId,
       prospectId,
-      emailAccount_id: emailAccountId || null,
+      emailAccount_id: accountForContact,
       status: 'SCHEDULED',
       outreachSequence: nextSequence,
       scheduledAt: new Date(Date.now() + 60 * 1000), // 1 min min
@@ -269,8 +275,17 @@ async function processPrepare(job) {
       status: 'SCHEDULED',
       outreachSequence: nextSequence,
       scheduledAt: new Date(Date.now() + 60 * 1000),
+      ...(emailAccountId && !existing?.emailAccount_id ? { emailAccount_id: emailAccountId } : {}),
     },
   });
+  // Contato criado por outra rota sem conta e o job trouxe uma: backfila
+  // também fora do update do upsert (idempotente).
+  if (!contact.emailAccount_id && accountForContact) {
+    contact = await prisma.outreachContact.update({
+      where: { id: contact.id },
+      data: { emailAccount_id: accountForContact },
+    });
+  }
 
   // Conteúdo: template custom da campanha (suíte multicanal) quando
   // configurado; senão geração via IA com fallback de template. A IA recebe os
@@ -637,6 +652,16 @@ async function _refundForTerminalContact(prisma, message, reason) {
   return _refundForMessage(prisma, message, reason);
 }
 
+/**
+ * Conta de e-mail conectada da ORG do contato (fallback do send e reuso no
+ * prepare). org no OutreachCampaign é tenantId. Null quando não há nenhuma.
+ */
+async function _resolveContactEmailAccount(prisma, message) {
+  const orgId = message?.contact?.campaign?.tenantId || message?.contact?.campaign?.orgId;
+  if (!orgId) return null;
+  return (await prisma.emailAccount.findFirst({ where: { tenantId: orgId, status: 'connected' } })) || null;
+}
+
 async function processSend(job) {
   const { messageId } = job.data;
 
@@ -650,7 +675,9 @@ async function processSend(job) {
       contact: {
         include: {
           // studioCampaignId: refId compartilhado com o sync de fila (Epic 3).
-          campaign: { select: { tenantId: true, studioAttachments: true, studioCampaignId: true } },
+          // status: a checagem "campanha pausada" (abaixo) precisa do status —
+          // sem ele no select, pausar NÃO parava o envio (auditoria 2026-10-29).
+          campaign: { select: { tenantId: true, status: true, studioAttachments: true, studioCampaignId: true } },
         },
       },
     },
@@ -712,7 +739,27 @@ async function processSend(job) {
 
   // Check rate limit
   if (!message.contact.emailAccount_id) {
-    throw new Error(`No email account configured for contact ${message.contactId}`);
+    // BACKFILL NA HORA DO ENVIO (2026-10-29, causa raiz do monitor em 0):
+    // contato pré-matriculado sem conta (o prepare antigo não backfilava)
+    // NÃO falha para sempre — resolve a conta conectada da org AGORA e
+    // persiste no contato. Org sem conta conectada → falha COM CAUSA clara
+    // (nada inventado) + estorno do débito.
+    const account = await _resolveContactEmailAccount(prisma, message);
+    if (!account) {
+      metrics.incEmailFailed();
+      await prisma.outreachMessage.update({
+        where: { id: messageId },
+        data: { status: 'FAILED', error: 'Sem conta de e-mail conectada na organização — conecte uma conta de envio e relance.' },
+      });
+      await _refundForMessage(prisma, message, 'org sem conta de e-mail conectada');
+      return { failed: 'no_email_account', messageId };
+    }
+    await prisma.outreachContact.update({
+      where: { id: message.contact.id },
+      data: { emailAccount_id: account.id },
+    });
+    message.contact.emailAccount_id = account.id;
+    console.log(`[send] contato sem conta — backfill com ${account.email} (${account.id})`);
   }
 
   const rateLimit = await checkLimit(
@@ -1287,6 +1334,7 @@ module.exports = {
   buildOutreachPrompt,
   _scheduleFollowup,
   _enqueueSend,
+  _resolveContactEmailAccount,
   getPrisma,
   _setPrismaForTests,
   _setQueueFactoryForTests,

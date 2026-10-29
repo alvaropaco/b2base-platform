@@ -103,6 +103,7 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
   const [detail, setDetail] = useState<StudioCampaignDetail | null>(null);
   const [funnel, setFunnel] = useState<CampaignFunnel | null>(null);
   const [execution, setExecution] = useState<CampaignExecutionLive | null | undefined>(undefined);
+  const [analyticsError, setAnalyticsError] = useState(false);
   const [queue, setQueue] = useState<Awaited<ReturnType<typeof fetchQueue>> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -134,22 +135,34 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
       return;
     }
     setError(null);
-    try {
-      const [d, a, q] = await Promise.all([
-        fetchCampaign(campaignId),
-        fetchCampaignAnalytics(campaignId).catch(() => null),
-        fetchQueue(campaignId).catch(() => ({ rows: [], flowStatus: 'flowing' })),
-      ]);
-      setDetail(d);
-      setFunnel(a?.funnel ?? null);
-      setExecution(a?.execution ?? null);
-      setQueue(q);
-    } catch (err) {
-      setError(err instanceof StudioRequestError ? err.message : 'Falha ao carregar o monitor');
-    } finally {
+    const [dRes, aRes, qRes] = await Promise.allSettled([
+      fetchCampaign(campaignId),
+      fetchCampaignAnalytics(campaignId),
+      fetchQueue(campaignId).catch(() => ({ rows: [], flowStatus: 'flowing' })),
+    ]);
+    if (dRes.status === 'rejected') {
+      setError(dRes.reason instanceof StudioRequestError ? dRes.reason.message : 'Falha ao carregar o monitor');
       setLoading(false);
+      return;
     }
+    setDetail(dRes.value);
+    setFunnel(aRes.status === 'fulfilled' ? aRes.value?.funnel ?? null : null);
+    setExecution(aRes.status === 'fulfilled' ? aRes.value?.execution ?? null : null);
+    // CONSULTA FALHADA ≠ ZERO (2026-10-29): métricas indisponíveis aparecem
+    // como indisponíveis, nunca como resultado confirmado.
+    setAnalyticsError(aRes.status === 'rejected');
+    setQueue(qRes.status === 'fulfilled' ? qRes.value : { rows: [], flowStatus: 'unknown' });
+    setLoading(false);
   }, [campaignId]);
+
+  // POLLING (2026-10-29): campanha em voo/agendada atualiza sozinha a cada
+  // 20s — o dono não precisa ficar apertando "Atualizar" para ver o funil
+  // andar. Fora de voo, sem polling.
+  useEffect(() => {
+    if (!campaignId || (detail?.status !== 'running' && detail?.status !== 'scheduled')) return;
+    const timer = setInterval(() => { void load(); }, 20000);
+    return () => clearInterval(timer);
+  }, [campaignId, detail?.status, load]);
 
   useEffect(() => {
     void (async () => {
@@ -316,6 +329,12 @@ export function CampaignMonitorView({ initialCampaignId }: { initialCampaignId?:
           {/* Funil — cada etapa do disparo com número grande e taxa de apoio. */}
           <section>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Evolução dos disparos</h3>
+            {analyticsError && (
+              <p role="status" className="mb-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900">
+                Falha ao consultar as métricas agora — os números abaixo podem estar desatualizados. Toque em "Atualizar"
+                em instantes.
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <FunnelCard label="Enviados" value={funnel == null ? '—' : (funnel.sent ?? summary?.sentCount ?? 0).toLocaleString('pt-BR')} />
               <FunnelCard
