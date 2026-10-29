@@ -778,6 +778,27 @@ function editContentHint(userMessage) {
   ].join('\n');
 }
 
+// TROCA DO BOTÃO/CTA (2026-10-29): "faça esse botão direcionar para
+// https://wa.me/…" — frase natural do dono que NÃO casava com nenhum hint.
+// Dispara quando a fala cita botão/CTA JUNTO com um destino (URL explícita,
+// wa.me cru, ou verbo de destino).
+const CTA_DEST_RE = /\b(bot(ã|a)o|cta)\b/i;
+const CTA_TARGET_RE = /(https?:\/\/\S+|\bwa\.me\/\d+|\bdirecion\w*|\bapont\w*|\blink do bot(ã|a)o|\bdestin\w+)/i;
+
+function ctaHint(userMessage) {
+  const msg = String(userMessage || '');
+  if (!CTA_DEST_RE.test(msg) || !CTA_TARGET_RE.test(msg)) return null;
+  return [
+    'TROCA DO BOTÃO DO E-MAIL — a action edit_content EXISTE para isso, sem ids:',
+    '{"type":"edit_content","channel":"email","ctaUrl":"<link EXATO que o usuário passou>","ctaColor":"#25D366" quando for WhatsApp}.',
+    'ctaLabel opcional (rótulo pedido pelo usuário; sem ele o servidor mantém o rótulo atual).',
+    'A URL vai EXATAMENTE como o usuário passou — complete o https:// se faltar (wa.me/5511… → https://wa.me/5511…) —',
+    'e vale para TODAS as variantes de e-mail. NUNCA troque o domínio nem use domínio de exemplo.',
+    'O servidor devolve card de confirmação — diga que o botão "Confirmar alteração" está no card',
+    'e NÃO reemita a action no mesmo turno.',
+  ].join('\n');
+}
+
 /**
  * CONSENTIMENTO WhatsApp em LOTE (QA 2026-10-07: o modelo dividia em lotes
  * de 3 pedindo 'continua' — inaceitável). Qualquer pedido de registrar
@@ -979,7 +1000,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
       buildOrgBlock(extras),
       buildHistoryBlock(history),
       skills.selectFor(userMessage),
-      hintOverride || pendingMaterialHint(userMessage, extras) || campaignManagementHint(userMessage) || exportLeadsHint(userMessage) || imageGenHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || editContentHint(userMessage) || consentBatchHint(userMessage) || selectVariantHint(userMessage) || launchLimitHint(userMessage),
+      hintOverride || pendingMaterialHint(userMessage, extras) || campaignManagementHint(userMessage) || exportLeadsHint(userMessage) || imageGenHint(userMessage) || emailConnectHint(userMessage) || testMessageHint(userMessage) || ctaHint(userMessage) || editContentHint(userMessage) || consentBatchHint(userMessage) || selectVariantHint(userMessage) || launchLimitHint(userMessage),
       `NOVA MENSAGEM DO USUÁRIO: ${userMessage}`,
       'Decida as ações e escreva a resposta para o usuário.',
     ]
@@ -1135,6 +1156,7 @@ module.exports = {
   extractChannelIntent,
   testMessageIntent,
   testMessageHint,
+  ctaHint,
   editContentHint,
   consentBatchHint,
   selectVariantHint,

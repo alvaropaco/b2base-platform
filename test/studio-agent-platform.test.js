@@ -15,7 +15,7 @@ const express = require('express');
 const { createFakePrisma } = require('./helpers/fake-prisma');
 const { createStudioRouter } = require('../studio/router');
 const manifest = require('../studio/actions/manifest.v1');
-const { SYSTEM_PROMPT, semNomeDeServicoExterno, campaignManagementHint, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery } = require('../studio/ai/chat-agent');
+const { SYSTEM_PROMPT, semNomeDeServicoExterno, ctaHint, campaignManagementHint, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery } = require('../studio/ai/chat-agent');
 
 /** segment-nl stub: traduz a descrição em critérios determinísticos. */
 function segmentStub({ user }) {
@@ -95,6 +95,20 @@ test('sanitizador de fronteira: nome do serviço externo não entra nem sai (mod
   assert.ok(saida.includes('Cloudflare'), 'menção legítima ao nosso Cloudflare fica intacta');
   // Texto sem o nome passa intocado.
   assert.equal(semNomeDeServicoExterno('banner publicado no bucket'), 'banner publicado no bucket');
+});
+
+test('hint de CTA: "faça esse botão direcionar para https://wa.me/…" dispara com a URL intacta', () => {
+  // Frase real do dono (2026-10-29) — não casava com nenhum hint e o agente
+  // ficava sem guia para trocar o destino do botão.
+  const hint = ctaHint('no botão "falar com o time comercial", faça esse botão direcionar para https://wa.me/5512996399943');
+  assert.ok(hint, 'hint dispara');
+  assert.ok(hint.includes('"ctaUrl"'), 'ensina a action edit_content com ctaUrl');
+  assert.ok(hint.includes('EXATAMENTE'), 'URL vai iterally');
+  // wa.me cru também dispara (o modelo completa o https://).
+  assert.ok(ctaHint('o botão tem que apontar para wa.me/5512996399943'), 'wa.me sem scheme dispara');
+  // Contextos alheios NÃO disparam (nada de hint na tela errada).
+  assert.equal(ctaHint('a planilha ficou pronta com o botão de download'), null, 'botão de download não é CTA');
+  assert.equal(ctaHint('me manda o conteúdo do e-mail'), null, 'fala sem botão/CTA não dispara');
 });
 
 test('QA 5ª bateria: detector e extrator da intenção de captura de leads', () => {
