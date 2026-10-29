@@ -15,7 +15,7 @@ const express = require('express');
 const { createFakePrisma } = require('./helpers/fake-prisma');
 const { createStudioRouter } = require('../studio/router');
 const manifest = require('../studio/actions/manifest.v1');
-const { SYSTEM_PROMPT, campaignManagementHint, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery } = require('../studio/ai/chat-agent');
+const { SYSTEM_PROMPT, semNomeDeServicoExterno, campaignManagementHint, extractRenameTarget, extractCreateTarget, leadCaptureIntent, extractCaptureQuery } = require('../studio/ai/chat-agent');
 
 /** segment-nl stub: traduz a descrição em critérios determinísticos. */
 function segmentStub({ user }) {
@@ -75,6 +75,26 @@ test('bug 6: toda action do manifest é declarada no SYSTEM_PROMPT (capacidades 
   // sozinho precisa estar no prompt (o agente nunca pede login/link externo).
   assert.ok(SYSTEM_PROMPT.includes('HOSPEDAGEM DE IMAGEM (Cloudflare'));
   assert.ok(SYSTEM_PROMPT.includes('bucket Cloudflare R2 da própria B2Base'));
+  // Esquecimento do serviço externo (QA 2026-10-29, "pare de citar o imgur"):
+  // o prompt NÃO pode conter o nome (o modelo ecoa o que lê) e precisa ter a
+  // regra do nome proibido.
+  assert.ok(!/imgur/i.test(SYSTEM_PROMPT), 'SYSTEM_PROMPT não cita o serviço externo');
+  assert.ok(SYSTEM_PROMPT.includes('REGRA DO NOME PROIBIDO'));
+});
+
+test('sanitizador de fronteira: nome do serviço externo não entra nem sai (modelo input/output)', () => {
+  // ENTRADA: estado/histórico/mensagem com o nome viram "hospedagem externa".
+  const entrada = semNomeDeServicoExterno(
+    'HISTÓRICO: USUÁRIO: pare de usar o Imgur\nestado: {"src":"https://imgur.com/a/bbhIHpt"}\nNOVA MENSAGEM DO USUÁRIO: use o imgur'
+  );
+  assert.ok(!/imgur/i.test(entrada), 'nome não entra no prompt');
+  assert.ok(entrada.includes('hospedagem externa'), 'vira termo genérico');
+  // SAÍDA: reply do modelo com o nome sai limpo para o usuário.
+  const saida = semNomeDeServicoExterno('Saí do Imgur — sua foto agora está no Cloudflare.');
+  assert.ok(!/imgur/i.test(saida), 'nome não sai na resposta');
+  assert.ok(saida.includes('Cloudflare'), 'menção legítima ao nosso Cloudflare fica intacta');
+  // Texto sem o nome passa intocado.
+  assert.equal(semNomeDeServicoExterno('banner publicado no bucket'), 'banner publicado no bucket');
 });
 
 test('QA 5ª bateria: detector e extrator da intenção de captura de leads', () => {

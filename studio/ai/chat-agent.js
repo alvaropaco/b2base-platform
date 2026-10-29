@@ -61,6 +61,17 @@ function extractReplySoFar(raw) {
   return out;
 }
 
+// ESQUECIMENTO DO SERVIÇO EXTERNO (2026-10-29, pedido do dono: "pare de citar
+// o imgur"): o modelo ecoa o que lê — então NENHUM texto entra no prompt com
+// o nome do serviço (estado, histórico ou mensagem nova) e NENHUMA resposta
+// sai com ele. O que está gravado no banco fica intacto; a troca é SÓ na
+// fronteira do modelo — o agente fala de "hospedagem externa" e da hospedagem
+// própria (bucket Cloudflare da B2Base).
+const SERVICO_EXTERNO_RE = /imgur/gi;
+function semNomeDeServicoExterno(text) {
+  return String(text || '').replace(SERVICO_EXTERNO_RE, 'hospedagem externa');
+}
+
 const SYSTEM_PROMPT = [
   'Você é o assistente de criação de campanhas do B2Base (prospecção B2B no Brasil).',
   'Você conversa em português, de forma curta e objetiva, UMA pergunta por vez quando faltar informação.',
@@ -217,10 +228,14 @@ const SYSTEM_PROMPT = [
   'material extraído, link colado ou gerada por IA) é publicada AUTOMATICAMENTE pelo servidor no',
   'bucket Cloudflare R2 da própria B2Base e sai com URL pública do nosso CDN no e-mail. Você NUNCA',
   'precisa de login/API key do Cloudflare (nada disso vem no estado) e NUNCA pede link externo:',
-  '"usar o Cloudflare" ou "parar de usar o imgur" é o que o servidor JÁ faz sozinho ao aplicar a',
-  'imagem (edit_content com attachmentId/materialId/link, ou generate_image). NUNCA diga que "não',
-  'tenho acesso ao Cloudflare" nem peça "link direto já publicado lá" — emita a action com o id ou',
-  'o link que o usuário tem e o servidor publica no bucket.',
+  '"usar o Cloudflare" é o que o servidor JÁ faz sozinho ao aplicar a imagem (edit_content com',
+  'attachmentId/materialId/link, ou generate_image). NUNCA diga que "não tenho acesso ao Cloudflare"',
+  'nem peça "link direto já publicado lá" — emita a action com o id ou o link que o usuário tem e o',
+  'servidor publica no bucket.',
+  'REGRA DO NOME PROIBIDO: NUNCA escreva na sua resposta o nome de nenhum serviço externo de',
+  'hospedagem de imagem — nem para dizer que parou de usá-lo, nem para dar instruções sobre ele.',
+  'Se o usuário citar um serviço assim, responda SEM repetir o nome: a imagem sai pela hospedagem',
+  'própria da B2Base (bucket Cloudflare) quando você aplicar a action.',
   '',
   'CONFIRMAÇÃO DE ALTERAÇÕES (regra do dono): quando você for alterar algo que JÁ EXISTE (editar ou',
   'refazer conteúdo, mudar audiência decidida, reconfigurar agenda, apagar campanha), o servidor devolve',
@@ -747,7 +762,7 @@ function editContentHint(userMessage) {
       'imageAlt = descrição. O banner entra NO TOPO do e-mail e fica clicável apontando para o link do BOTÃO do',
       'e-mail (CTA). NUNCA invente imageUrl/attachmentId/materialId — use os ids REAIS que aparecem no estado.',
       'A publicação é NO BUCKET CLOUDFLARE da B2Base (URL pública do nosso CDN) — nunca peça login de',
-      'Cloudflare nem link externo (imgur etc.): o servidor publica sozinho o que você aplicar.',
+      'Cloudflare nem link de serviço externo de imagem: o servidor publica sozinho o que você aplicar.',
     ].join('\n');
   }
   if (!EDIT_CONTENT_RE.test(msg)) return null;
@@ -952,7 +967,10 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
   }
 
   async function orchestrate({ campaign, history, userMessage, extras, onLlmCall = () => {}, onReplyDelta = null, hintOverride = null }) {
-    const user = [
+    // O modelo NÃO vê o nome do serviço externo em NENHUMA parte do prompt
+    // (estado, histórico e mensagem nova passam pelo sanitizador — ver
+    // semNomeDeServicoExterno): sem o nome no contexto, não há eco.
+    const user = semNomeDeServicoExterno([
       buildStateBlock(campaign, extras),
       buildOrgBlock(extras),
       buildHistoryBlock(history),
@@ -962,7 +980,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
       'Decida as ações e escreva a resposta para o usuário.',
     ]
       .filter(Boolean)
-      .join('\n\n');
+      .join('\n\n'));
 
     // Telemetria por tentativa (StudioChatTrace via onLlmCall) + reparo de
     // JSON POR ESTÁGIO (3 tentativas de parse + 2 de validação, com deadline
@@ -1012,7 +1030,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
           temperature: 0.4,
           maxTokens: 1200,
           tag: 'studio:chat',
-          onDelta: (fullSoFar) => onReplyDelta(extractReplySoFar(fullSoFar)),
+          onDelta: (fullSoFar) => onReplyDelta(semNomeDeServicoExterno(extractReplySoFar(fullSoFar))),
         });
         onLlmCall({
           durationMs: Date.now() - streamStartedAt,
@@ -1026,7 +1044,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
         const parsed = parseModelJson(streamedRaw);
         if (parsed && typeof parsed === 'object' && typeof parsed.reply === 'string' && parsed.reply.trim()) {
           return {
-            reply: parsed.reply,
+            reply: semNomeDeServicoExterno(parsed.reply),
             actions: Array.isArray(parsed.actions) ? parsed.actions.filter((a) => a && a.type) : [],
             degraded: false,
           };
@@ -1063,7 +1081,7 @@ function createChatAgent({ callLlm, callLlmStream } = {}) {
         tag: 'studio:chat',
       });
       return {
-        reply: parsed.reply,
+        reply: semNomeDeServicoExterno(parsed.reply),
         actions: Array.isArray(parsed.actions) ? parsed.actions.filter((a) => a && a.type) : [],
         degraded: false,
       };
@@ -1101,6 +1119,7 @@ function extractCaptureState(userMessage) {
 module.exports = {
   createChatAgent,
   SYSTEM_PROMPT,
+  semNomeDeServicoExterno,
   extractReplySoFar,
   campaignManagementHint,
   exportLeadsHint,
