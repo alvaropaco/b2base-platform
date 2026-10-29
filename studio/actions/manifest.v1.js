@@ -36,7 +36,7 @@ const ACTIONS_V1 = {
   // Onda "criação sem bloqueios" (2026-09-29) — ADITIVAS (AD-6), sem tocar
   // forma/idempotência/chaves das 9 originais:
   attach_files: { version: 1, idempotency: 'params', description: 'Vincula anexos de mensagem (StudioAttachment) à campanha — ids ordenados na chave de idempotência' },
-  edit_content: { version: 1, idempotency: 'params', description: 'Edita conteúdo da campanha pelo serviço único do PATCH — assunto/texto/emailDoc, imagem por link (imageUrl), imagem anexada como banner (attachmentId), material de imagem como banner (materialId) e CTA do e-mail (ctaUrl/ctaLabel/ctaColor); editável em voo no que ainda não saiu' },
+  edit_content: { version: 1, idempotency: 'params', description: 'Edita conteúdo da campanha pelo serviço único do PATCH — assunto/texto/emailDoc, imagem por link (imageUrl), imagem anexada como banner (attachmentId), material de imagem como banner (materialId), tirar a imagem (removeImage) e CTA do e-mail (ctaUrl/ctaLabel/ctaColor); editável em voo no que ainda não saiu' },
   // Epic 2 (FR7, D1/D2; 2026-09-30) — ADITIVA (AD-6): captura híbrida de
   // leads (base própria + fallback MCP CNPJ). Idempotente por params: repetir
   // o MESMO pedido devolve o MESMO card sem re-executar (FR8/AD-6). Disponível
@@ -416,6 +416,10 @@ function validate(action, params = {}) {
       // CTA EDITÁVEL (2026-10-27): {ctaUrl, ctaLabel?, ctaColor?} troca o
       // botão do e-mail pelo chat — texto/cor/URL editáveis e persistidos.
       const hasCta = params.ctaUrl != null || params.ctaLabel != null || params.ctaColor != null;
+      // TIRAR A IMAGEM (2026-10-29): {channel:'email', removeImage:true}
+      // remove TODOS os blocos image do e-mail (banner é único; a troca é
+      // pelo imageUrl/attachmentId/materialId — a remoção é explícita).
+      const hasRemoveImage = params.removeImage === true;
       if (hasImage) {
         if (!/^https?:\/\//i.test(String(params.imageUrl))) {
           const err = new Error('edit_content: imageUrl deve ser um link http(s) da imagem.');
@@ -442,14 +446,20 @@ function validate(action, params = {}) {
         err.status = 400;
         throw err;
       }
+      if (hasRemoveImage && params.channel && params.channel !== 'email') {
+        const err = new Error('edit_content: removeImage vale para o canal E-MAIL — use channel "email".');
+        err.code = 'INVALID_ACTION_PARAMS';
+        err.status = 400;
+        throw err;
+      }
       if (hasCta && params.ctaUrl != null && !/^https?:\/\//i.test(String(params.ctaUrl))) {
         const err = new Error('edit_content: ctaUrl deve ser um link http/https COMPLETO (ex.: https://wa.me/5512996399943) — nunca invente URL ou número.');
         err.code = 'INVALID_ACTION_PARAMS';
         err.status = 400;
         throw err;
       }
-      if (!hasContents && !hasChannelText && !hasImage && !hasCta && !hasAttachment && !hasMaterial) {
-        const err = new Error('edit_content exige `contents` (lista com ids), `channel` + texto (whatsappText/text), `imageUrl` (imagem por link no e-mail), `attachmentId` (imagem anexada como banner), `materialId` (material de imagem como banner) ou `ctaUrl` (link do botão do e-mail).');
+      if (!hasContents && !hasChannelText && !hasImage && !hasCta && !hasAttachment && !hasMaterial && !hasRemoveImage) {
+        const err = new Error('edit_content exige `contents` (lista com ids), `channel` + texto (whatsappText/text), `imageUrl` (imagem por link no e-mail), `attachmentId` (imagem anexada como banner), `materialId` (material de imagem como banner), `removeImage` (tirar a imagem do e-mail) ou `ctaUrl` (link do botão do e-mail).');
         err.code = 'INVALID_ACTION_PARAMS';
         err.status = 400;
         throw err;

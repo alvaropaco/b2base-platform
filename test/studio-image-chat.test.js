@@ -406,3 +406,89 @@ test('imageUrl de página BLOQUEADA (429) → card honesto com os caminhos, sem 
     world.close();
   }
 });
+
+// ── 7. BANNER ÚNICO (2026-10-29): aplicar outra imagem TROCA, nunca empilha ──
+// Caso real: e-mail saiu com 10+ imagens porque cada edit_content prependava
+// um bloco image novo. Agora a inserção remove as imagens anteriores.
+
+test('edit_content com imageUrl TROCA o banner anterior — o e-mail fica com UMA imagem só', async () => {
+  const world = await startServer({});
+  const { api, prisma } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Banner único', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-uma', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'S', whatsappText: null,
+      emailDoc: {
+        blocks: [
+          { type: 'image', src: 'https://cdn.velha.com/banner-antigo.jpg' },
+          { type: 'image', src: 'https://cdn.velha.com/banner-antigo-2.png' },
+          { type: 'text', text: 'Olá' },
+          { type: 'button', label: 'B', url: 'https://wa.me/5512996399943' },
+        ],
+      },
+    });
+
+    // Direta (termina em .jpg) nem passa por resolução — vai verbatim.
+    const gated = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'edit_content',
+      params: { channel: 'email', imageUrl: 'https://cdn.exemplo.com/banner-novo.jpg' },
+    });
+    assert.ok(gated.body.data.card.type === 'confirm_change', 'gate pede confirmação');
+    const out = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'edit_content',
+      params: { channel: 'email', imageUrl: 'https://cdn.exemplo.com/banner-novo.jpg', confirmed: true },
+    });
+    assert.equal(out.res.status, 200);
+
+    const row = prisma.studioContent.rows.find((r) => r.id === 'ce-uma');
+    const images = row.emailDoc.blocks.filter((b) => b.type === 'image');
+    assert.equal(images.length, 1, 'UMA imagem só no e-mail');
+    assert.equal(images[0].src, 'https://cdn.exemplo.com/banner-novo.jpg', 'a NOVA (a antiga saiu)');
+    assert.ok(row.emailDoc.blocks.some((b) => b.type === 'text'), 'texto intacto');
+    assert.ok(row.emailDoc.blocks.some((b) => b.type === 'button'), 'botão intacto');
+  } finally {
+    world.restore();
+    world.close();
+  }
+});
+
+test('edit_content removeImage:true TIRA a imagem do e-mail e mantém o resto', async () => {
+  const world = await startServer({});
+  const { api, prisma } = world;
+  try {
+    const { body: c } = await api('POST', '/campaigns', { name: 'Sem imagem', channels: ['email'] });
+    prisma.studioContent.rows.push({
+      id: 'ce-remove', orgId: 'org-1', campaignId: c.data.id, channel: 'email',
+      kind: 'base', stepIndex: 1, variantLabel: 'A', tone: 'comercial',
+      subject: 'S', whatsappText: null,
+      emailDoc: {
+        blocks: [
+          { type: 'image', src: 'https://cdn.exemplo.com/banner.jpg' },
+          { type: 'text', text: 'Olá' },
+          { type: 'button', label: 'B', url: 'https://wa.me/5512996399943' },
+        ],
+      },
+    });
+
+    const gated = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'edit_content',
+      params: { channel: 'email', removeImage: true },
+    });
+    assert.ok(gated.body.data.card.type === 'confirm_change', 'gate pede confirmação');
+    const out = await api('POST', `/campaigns/${c.data.id}/actions`, {
+      type: 'edit_content',
+      params: { channel: 'email', removeImage: true, confirmed: true },
+    });
+    assert.equal(out.res.status, 200);
+
+    const row = prisma.studioContent.rows.find((r) => r.id === 'ce-remove');
+    assert.ok(!row.emailDoc.blocks.some((b) => b.type === 'image'), 'nenhuma imagem sobra');
+    assert.ok(row.emailDoc.blocks.some((b) => b.type === 'text'), 'texto intacto');
+    assert.ok(row.emailDoc.blocks.some((b) => b.type === 'button'), 'botão intacto');
+  } finally {
+    world.restore();
+    world.close();
+  }
+});

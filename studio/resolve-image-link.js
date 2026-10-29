@@ -179,36 +179,51 @@ async function downloadImageBytes(url, { fetchImpl } = {}) {
 }
 
 /**
- * Garante que TODO bloco image com src de PÁGINA (link que não é arquivo de
- * imagem) saia resolvido: extrai a imagem direta do HTML, baixa os bytes e
- * PROMOVE para o storage do Studio — o src passa a ser a URL pública do
- * bucket (quando MEDIA_PUBLISH_* configurado) ou local (/media/<hash>,
- * embutível por CID no envio). `persist` salva o emailDoc na origem
- * (melhor-esforço) para os próximos envios já usarem o resolvido.
+ * Garante que NENHUM bloco image do emailDoc fique com src de PÁGINA (link
+ * que não é arquivo de imagem — não renderiza em cliente de e-mail):
+ *   - resolve a imagem direta, baixa os bytes e PROMOVE para o storage do
+ *     Studio — o src passa a ser a URL pública do bucket (quando
+ *     MEDIA_PUBLISH_* configurado) ou local (/media/<hash>, embutível por
+ *     CID no envio);
+ *   - o que NÃO resolve (host virou shell sem imagem, bloqueio sem relay) é
+ *     REMOVIDO do doc em vez de segurar o envio — banner de página nunca
+ *     renderizaria de qualquer forma. O emailDoc é persistido na origem
+ *     (melhor-esforço) com a cura.
  *
- * Usado por send_test_message (chat) E pelo disparo real (outreach-workers):
- * o mesmo banner resolvido nos dois caminhos.
+ * Usado por send_test_message (chat), pelo disparo real (outreach-workers) e
+ * pela auto-cura (media-backfill): o mesmo banner resolvido em todos os
+ * caminhos — e o envio NUNCA fica bloqueado por src legado quebrado.
  */
 async function ensureImageSourcesResolved(emailDoc, deps = {}) {
   const storage = require('./storage');
   const { fetchImpl, readGenerated, readBuffer, publishMedia, persist } = deps;
   const blocks = emailDoc && Array.isArray(emailDoc.blocks) ? emailDoc.blocks : [];
-  for (const b of blocks) {
+  let changed = false;
+  // Ordem reversa: remoção por splice não bagunça índices ainda não vistos.
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
     if (!b || b.type !== 'image' || typeof b.src !== 'string' || !isPageUrl(b.src)) continue;
-    const { imageUrl: direct } = await resolveDirectImageUrl(b.src, { fetchImpl });
-    const bytes = await downloadImageBytes(direct, { fetchImpl });
-    const mime = require('./ai/vision').normalizeImageMime(bytes, direct);
-    const promoted = storage.saveGenerated(bytes, storage.extFromMime(mime, direct));
-    let src = `/media/${promoted}`;
-    if (typeof publishMedia === 'function') {
-      const pub = await publishMedia(promoted, { readGenerated: storage.readGenerated, readBuffer: storage.readBuffer });
-      if (pub && pub.provider === 'remote' && pub.url) src = pub.url;
+    try {
+      const { imageUrl: direct } = await resolveDirectImageUrl(b.src, { fetchImpl });
+      const bytes = await downloadImageBytes(direct, { fetchImpl });
+      const mime = require('./ai/vision').normalizeImageMime(bytes, direct);
+      const promoted = storage.saveGenerated(bytes, storage.extFromMime(mime, direct));
+      let src = `/media/${promoted}`;
+      if (typeof publishMedia === 'function') {
+        const pub = await publishMedia(promoted, { readGenerated: storage.readGenerated, readBuffer: storage.readBuffer });
+        if (pub && pub.provider === 'remote' && pub.url) src = pub.url;
+      }
+      b.src = src;
+      changed = true;
+    } catch (_err) {
+      // Sem cura possível: o banner sai da mensagem (nunca renderizaria) e o
+      // doc segue limpo — o envio NUNCA fica refém de um src legado quebrado.
+      blocks.splice(i, 1);
+      changed = true;
     }
-    b.src = src;
-    if (typeof persist === 'function') {
-      try { await persist(emailDoc); } catch (_e) { /* melhor-esforço: o envio segue com o resolvido em memória */ }
-    }
-    break; // um banner por e-mail
+  }
+  if (changed && typeof persist === 'function') {
+    try { await persist(emailDoc); } catch (_e) { /* melhor-esforço: o envio segue com o resolvido em memória */ }
   }
   return emailDoc;
 }

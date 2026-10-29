@@ -267,6 +267,9 @@ function actionParams(action) {
       // Material de imagem promovido a banner: o id do material identifica o
       // conteúdo (a URL pública é derivada dele no handler).
       if (action.materialId != null) params.materialId = String(action.materialId);
+      // Tirar a imagem (2026-10-29): entra na chave — remover NÃO é replay de
+      // nenhum outro edit.
+      if (action.removeImage === true) params.removeImage = true;
       return params;
     }
     default:
@@ -983,13 +986,14 @@ function registerChatRoutes(router, context) {
                 // Banner CLICÁVEL (2026-10-27, pedido do dono): o botão
                 // desenhado na arte é só pixel — o clique no banner cai na
                 // MESMA conversa do botão do e-mail (wa.me do material).
+                // BANNER ÚNICO (2026-10-29): geração nova TROCA a anterior.
                 const cta = existingBlocks.find((b) => b && b.type === 'button' && b.url);
                 return {
                   id: row.id,
                   emailDoc: {
                     blocks: [
                       { type: 'image', src: imageUrl, alt: promptText.slice(0, 200), ...(cta ? { href: cta.url } : {}) },
-                      ...existingBlocks,
+                      ...existingBlocks.filter((b) => !(b && b.type === 'image')),
                     ],
                   },
                 };
@@ -2351,10 +2355,16 @@ function registerChatRoutes(router, context) {
               ...(action.imageHref ? { href: String(action.imageHref) } : cta ? { href: cta.url } : {}),
             };
           };
-          contents = rows.map((row) => ({
-            id: row.id,
-            emailDoc: { blocks: [imageBlockFor(row), ...((row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [])] },
-          }));
+          contents = rows.map((row) => {
+            const existingBlocks = (row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [];
+            return {
+              id: row.id,
+              // BANNER ÚNICO (2026-10-29): aplicar uma imagem TROCA a anterior —
+              // sem isso cada edit_content empilhava mais um bloco image e o
+              // e-mail saía com dezenas.
+              emailDoc: { blocks: [imageBlockFor(row), ...existingBlocks.filter((b) => !(b && b.type === 'image'))] },
+            };
+          });
         }
         // CTA EDITÁVEL PELO CHAT (2026-10-27, pedido do dono): {ctaUrl,
         // ctaLabel?, ctaColor?} troca o botão do e-mail — texto, cor e URL
@@ -2415,6 +2425,25 @@ function registerChatRoutes(router, context) {
         }
         // QA 2026-10-06: "troca a mensagem por <texto>" — o modelo NÃO tem o id
         // no estado; canal + texto resolve o conteúdo base AQUI.
+        // TIRAR A IMAGEM (2026-10-29): {channel:'email', removeImage:true}
+        // remove TODOS os blocos image do e-mail — o banner é ÚNICO (aplicar
+        // outra imagem TROCA a anterior); a remoção explícita existe para o
+        // "me tira essa imagem" do dono sem precisar aplicar outra.
+        if (contents.length === 0 && action.removeImage) {
+          const rows = await prisma.studioContent.findMany({
+            where: { campaignId: campaign.id, kind: 'base', stepIndex: 1, channel: 'email' },
+          });
+          if (rows.length === 0) {
+            throw httpError('NO_CONTENT', 409, 'A campanha não tem conteúdo de e-mail para editar — me peça para gerar primeiro.');
+          }
+          contents = rows.map((row) => {
+            const existingBlocks = (row.emailDoc && Array.isArray(row.emailDoc.blocks)) ? row.emailDoc.blocks : [];
+            return {
+              id: row.id,
+              emailDoc: { blocks: existingBlocks.filter((b) => !(b && b.type === 'image')) },
+            };
+          });
+        }
         if (contents.length === 0 && action.channel && (action.whatsappText != null || action.text != null || action.subject != null)) {
           // Normaliza o canal (o modelo pode emitir "WhatsApp" — canais são
           // minúsculos no banco; sem isso viraria no-op silencioso).

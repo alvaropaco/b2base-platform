@@ -86,7 +86,7 @@ test('media-backfill: src de PÁGINA no emailDoc é curado e PERSISTIDO; src nos
   }
 });
 
-test('media-backfill: resolução bloqueada NÃO derruba o sweep — linha fica para o próximo', async () => {
+test('media-backfill: src que NÃO resolve é REMOVIDO do doc (nada preso em página) e persistido', async () => {
   const { registerMediaBackfill } = require('../studio/media-backfill');
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-backfill-block-'));
   const prevStorageDir = process.env.STUDIO_STORAGE_DIR;
@@ -96,14 +96,19 @@ test('media-backfill: resolução bloqueada NÃO derruba o sweep — linha fica 
     {
       id: 'row-bloqueada',
       channel: 'email',
-      emailDoc: { blocks: [{ type: 'image', src: 'https://galeria.exemplo.com/a/fracasso' }] },
+      emailDoc: {
+        blocks: [
+          { type: 'image', src: 'https://galeria.exemplo.com/a/fracasso' },
+          { type: 'text', text: 'Olá' },
+        ],
+      },
     },
   ];
   const updates = [];
   const prisma = {
     studioContent: {
-      findMany: async () => rows,
-      update: async ({ where, data }) => { updates.push({ id: where.id }); return { count: 1 }; },
+      findMany: async ({ where } = {}) => rows.filter((r) => !where || !where.channel || r.channel === where.channel),
+      update: async ({ where, data }) => { updates.push({ id: where.id, emailDoc: data.emailDoc }); return { count: 1 }; },
     },
   };
   global.fetch = async () => ({ ok: false, status: 429, text: async () => '' });
@@ -111,9 +116,56 @@ test('media-backfill: resolução bloqueada NÃO derruba o sweep — linha fica 
     const { sweep } = registerMediaBackfill(prisma, { bootDelayMs: 1, intervalMs: 1 });
     const out = await sweep('test');
     assert.equal(out.checked, 1);
-    assert.equal(out.healed, 0, 'nada curado com o host bloqueado (sem relay configurado)');
-    assert.equal(updates.length, 0, 'nada persistido');
-    assert.equal(rows[0].emailDoc.blocks[0].src, 'https://galeria.exemplo.com/a/fracasso', 'src intocado');
+    assert.equal(out.healed, 1, 'o doc mudou (banner quebrado removido) — conta como curado');
+    assert.equal(updates.length, 1, 'doc curado persistido na origem');
+    const blocks = updates[0].emailDoc.blocks;
+    assert.ok(!blocks.some((b) => b.type === 'image'), 'banner com src de página quebrado SAIU do doc');
+    assert.ok(blocks.some((b) => b.type === 'text'), 'resto do conteúdo intacto');
+    // Nada com src de página sobra — nem no doc em memória (o chat não vê mais).
+    assert.ok(!rows[0].emailDoc.blocks.some((b) => b.type === 'image' && String(b.src || '').includes('galeria.exemplo.com')));
+  } finally {
+    global.fetch = realFetch;
+    if (prevStorageDir === undefined) delete process.env.STUDIO_STORAGE_DIR;
+    else process.env.STUDIO_STORAGE_DIR = prevStorageDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('media-backfill: banner VÁLIDO no doc sobra intacto quando outro é removido', async () => {
+  const { registerMediaBackfill } = require('../studio/media-backfill');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-backfill-keep-'));
+  const prevStorageDir = process.env.STUDIO_STORAGE_DIR;
+  process.env.STUDIO_STORAGE_DIR = tmpDir;
+  const realFetch = global.fetch;
+  const rows = [
+    {
+      id: 'row-mista',
+      channel: 'email',
+      emailDoc: {
+        blocks: [
+          { type: 'image', src: 'https://galeria.exemplo.com/a/morta' },
+          { type: 'image', src: '/media/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png' },
+          { type: 'text', text: 'Oi' },
+        ],
+      },
+    },
+  ];
+  const updates = [];
+  const prisma = {
+    studioContent: {
+      findMany: async ({ where } = {}) => rows.filter((r) => !where || !where.channel || r.channel === where.channel),
+      update: async ({ where, data }) => { updates.push({ id: where.id, emailDoc: data.emailDoc }); return { count: 1 }; },
+    },
+  };
+  global.fetch = async () => ({ ok: false, status: 429, text: async () => '' });
+  try {
+    const { sweep } = registerMediaBackfill(prisma, { bootDelayMs: 1, intervalMs: 1 });
+    const out = await sweep('test');
+    assert.equal(out.healed, 1);
+    const blocks = updates[0].emailDoc.blocks;
+    assert.equal(blocks.length, 2, 'só o banner quebrado saiu');
+    assert.equal(blocks[0].src, '/media/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png', 'banner válido preservado');
+    assert.equal(blocks[1].type, 'text');
   } finally {
     global.fetch = realFetch;
     if (prevStorageDir === undefined) delete process.env.STUDIO_STORAGE_DIR;
