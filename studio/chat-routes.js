@@ -1804,6 +1804,15 @@ function registerChatRoutes(router, context) {
             messageId: `teste-${crypto.randomUUID()}`,
           });
           parts.push(`✉️ E-mail para ${to}`);
+          // TRANSPARÊNCIA DO CLIQUE (2026-10-29): o card mostra o destino REAL
+          // do botão no e-mail enviado — sem isso "o botão não abre nada" era
+          // um beco sem diagnóstico (placeholder bloqueado no render, cura
+          // não aplicada, etc.).
+          const ctaButton = ((emailContent.emailDoc && emailContent.emailDoc.blocks) || [])
+            .find((b) => b && b.type === 'button');
+          parts.push(ctaButton && ctaButton.url
+            ? `🔗 Botão do e-mail → ${ctaButton.url}`
+            : '⚠️ O botão do e-mail foi SEM link válido — me peça: "troca o link do botão para <seu link>" que eu aplico e reenvio o teste.');
         }
 
         if (parts.length === 0 && leadNames.length === 0) {
