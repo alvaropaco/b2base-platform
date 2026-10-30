@@ -5,6 +5,10 @@
 // ENTRE instâncias de worker (research R6). Estado é runtime-only: após
 // restart/deploy o circuito reabre sozinho se o provider continuar ruim.
 //
+// O semáforo de concorrência é um ZSET de leases (score = deadline em ms):
+// leases vencidos são purgados a cada acquire, então a morte de um worker
+// segurando o slot não trava o provider para sempre (auto-cura em `leaseMs`).
+//
 // Estados: HEALTHY → DEGRADED (taxa de erro ≥ limiar) → OPEN (tudo falhando;
 // TTL) → HALF-OPEN (sonda após expiração) → HEALTHY | OPEN.
 // =============================================================================
@@ -18,6 +22,7 @@ function createProviderRegistry({
   openMs = 30 * 1000,
   errorRateThreshold = 0.5,
   minSample = 3,
+  leaseMs = 2 * 60 * 1000,
 } = {}) {
   const stateKey = (p) => `cb:${p}:state`;
   const lastKey = (p) => `cb:${p}:last`; // memória de "estava OPEN" além do TTL
@@ -70,12 +75,20 @@ function createProviderRegistry({
       return { ok: false, reason: 'RATE_LIMIT', retryAfterMs };
     }
 
-    // ── Concorrência (semáforo distribuído; lease liberado no release) ──────
-    const active = await redis.incr(concKey(provider));
-    if (active > concurrency) {
-      await redis.decr(concKey(provider));
+    // ── Concorrência (semáforo distribuído com lease por membro) ────────────
+    // Cada slot ativo é um lease individual num ZSET com deadline (score =
+    // instante de expiração em ms). Leases vencidos são purgados em todo
+    // acquire: um worker que morre segurando o slot NÃO trava o provider para
+    // sempre — o slot é reclamado automaticamente após `leaseMs`.
+    const cKey = concKey(provider);
+    await redis.zremrangebyscore(cKey, '-inf', clock.now());
+    const active = await redis.zcard(cKey);
+    if (active >= concurrency) {
       return { ok: false, reason: 'CONCURRENCY', retryAfterMs: 500 };
     }
+    const member = `${process.pid}:${clock.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    await redis.zadd(cKey, clock.now() + leaseMs, member);
+    await redis.pexpire(cKey, leaseMs * 2); // higiene: chave ociosa expira
 
     return {
       ok: true,
@@ -83,8 +96,7 @@ function createProviderRegistry({
       ticket: {
         provider,
         async release() {
-          const v = await redis.decr(concKey(provider));
-          if (v < 0) await redis.set(concKey(provider), '0');
+          await redis.zrem(cKey, member);
         },
       },
     };
@@ -135,7 +147,7 @@ function createProviderRegistry({
       provider,
       state,
       rpm: { limit: rpm, used: parseInt((await redis.get(rateKey(provider, bucket))) || '0', 10) },
-      concurrency: { limit: concurrency, used: parseInt((await redis.get(concKey(provider))) || '0', 10) },
+      concurrency: { limit: concurrency, used: await redis.zcard(concKey(provider)) },
       errorRate: tot ? err / tot : 0,
       avgLatencyMs: null, // latência agregada vive nas métricas prom (US8)
     };
