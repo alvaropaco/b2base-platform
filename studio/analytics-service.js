@@ -46,11 +46,14 @@ async function rollupDaily(prisma, campaignId) {
       const key = dayKey(contact.sentAt).toISOString();
       const bucket = bucketFor(key);
       bucket.sent += 1;
-      if (['SENT', 'DELIVERED_INFERRED', 'OPENED_INFERRED', 'REPLIED'].includes(contact.status)) bucket.delivered += 1;
+      // CONFIRMADOS primeiro (2026-10-30, webhooks do Resend): DELIVERED e
+      // OPENED são eventos reais do provider; os _INFERRED continuam sendo
+      // contados como estimativa (flag estimated do funil).
+      if (['SENT', 'DELIVERED', 'DELIVERED_INFERRED', 'OPENED', 'OPENED_INFERRED', 'REPLIED'].includes(contact.status)) bucket.delivered += 1;
       if (contact.status === 'DELIVERED_INFERRED') { bucket.deliveredEstimated += 1; bucket.opensEstimated += 1; }
       if (contact.status === 'BOUNCED') bucket.bounces += 1;
       if (contact.status === 'UNSUBSCRIBED') bucket.unsubs += 1;
-      if (contact.status === 'OPENED_INFERRED' || contact.status === 'REPLIED') {
+      if (contact.status === 'OPENED' || contact.status === 'OPENED_INFERRED' || contact.status === 'REPLIED') {
         bucket.opens += 1;
         openedViaStatus.add(contact.id);
       }
@@ -74,6 +77,12 @@ async function rollupDaily(prisma, campaignId) {
         if (event.type === 'email_clicked') {
           bucketFor(dayKey(event.createdAt).toISOString()).clicks += 1;
           continue;
+        }
+        // Abertura CONFIRMADA do webhook (Resend email.opened): conta como
+        // abertura real (não estimada) quando o status não registrou.
+        if (event.type === 'email_opened' && !openedViaStatus.has(event.contactId)) {
+          bucketFor(dayKey(event.createdAt).toISOString()).opens += 1;
+          openedViaStatus.add(event.contactId);
         }
         if (event.type === 'email_opened_inferred' && !openedViaStatus.has(event.contactId)) {
           const bucket = bucketFor(dayKey(event.createdAt).toISOString());

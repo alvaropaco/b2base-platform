@@ -250,6 +250,34 @@ app.post('/api/webhooks/stripe', async (req, res) => {
     res.status(500).json({ error: 'Webhook handler failed' });
   }
 });
+// Webhook do Resend: PÚBLICO — autenticado por assinatura Svix sobre o payload
+// cru (req.rawBody, capturado no express.json verify). Entrega/bounce/abertura/
+// clique REAIS substituem as métricas inferidas (resend-webhook).
+app.post('/api/webhooks/resend', async (req, res) => {
+  try {
+    const secret = process.env.RESEND_WEBHOOK_SECRET;
+    if (!secret) {
+      console.error('[resend-webhook] RESEND_WEBHOOK_SECRET não configurado — webhook rejeitado');
+      return res.status(503).json({ success: false, error: 'Webhook não configurado.' });
+    }
+    const { verifySvixSignature, applyResendEvent } = require('./studio/resend-webhook');
+    const check = verifySvixSignature(req.rawBody, req.headers, secret);
+    if (!check.ok) {
+      console.warn(`[resend-webhook] rejeitado (${check.reason})`);
+      return res.status(400).json({ success: false, error: `Assinatura/replay inválidos: ${check.reason}` });
+    }
+    const payload = typeof req.body === 'object' && req.body !== null ? req.body : JSON.parse(String(req.rawBody || '{}'));
+    const result = await applyResendEvent(prisma, payload);
+    if (!result.handled) console.log(`[resend-webhook] ${payload.type || '?'}: ${result.reason}`);
+    // 200 mesmo quando não correlaciona (ids de outra conta/org não devem
+    // gerar retry infinito no provider).
+    res.json({ received: true, handled: result.handled, reason: result.reason || null });
+  } catch (err) {
+    console.error('[resend-webhook] error:', err.message);
+    // 500 faz o Resend reentregar com backoff — correto para falha transitória.
+    res.status(500).json({ error: 'Webhook handler failed' });
+  }
+});
 // GET /api/version — PÚBLICO. Identifica o build rodando no pod: GIT_SHA é
 // injetado como build-arg no Dockerfile pela CI. Sem ele não há como conferir
 // remotamente se um fix específico chegou ao cluster ("está no main mas
